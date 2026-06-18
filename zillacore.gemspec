@@ -14,18 +14,7 @@ Gem::Specification.new do |s|
   signing_key_path = File.expand_path('~/.ssh/gem-private_key.pem')
   s.signing_key = signing_key_path if File.exist?(signing_key_path)
 
-  s.files = Dir[
-    "lib/**/*",
-    "bin/*",
-    "receiver.rb",
-    "views/**/*",
-    "monitor/**/*",
-    "templates/**/*",
-    "script/*",
-    "certs/*",
-    "README.md",
-    "CHANGELOG.md"
-  ]
+  s.files = `git ls-files -z`.split("\x0").reject { |f| f.start_with?("test/", "tmp/", ".") }
   s.executables = ["zillacore"]
 
   s.add_dependency "puma", "~> 7.2"
@@ -33,6 +22,8 @@ Gem::Specification.new do |s|
   s.add_dependency "sinatra", "~> 4.1"
   s.add_dependency "websocket-client-simple", "~> 0.8.0"
 
+  s.add_development_dependency "minitest", "~> 5.25"
+  s.add_development_dependency "rake", "~> 13.0"
   s.add_development_dependency "rubocop", "~> 1.75"
   s.add_development_dependency "rubocop-performance", "~> 1.25"
   s.metadata["rubygems_mfa_required"] = "true"
