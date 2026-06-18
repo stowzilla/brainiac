@@ -123,25 +123,14 @@ def auto_deploy_after_session(deploy_intent:, card_internal_id:, card_number:, w
   state = load_deployment_state
   config = DEPLOYMENTS_CONFIG["environments"] || {}
 
-  # Resolve which environment to deploy to
-  env_key = if deploy_intent.is_a?(String) && !deploy_intent.empty?
-              deploy_intent
-            else
-              # Auto-detect: find an env already occupied by this card
-              state.find { |_k, v| v["card_number"] == card_number && v["status"] == "occupied" }&.first
-            end
-
-  unless env_key
-    LOG.info "[Deploy] Auto-deploy skipped — card ##{card_number} not currently deployed to any environment"
-    return
-  end
+  env_key = resolve_deploy_environment(deploy_intent, state, card_number)
+  return unless env_key
 
   unless config.key?(env_key)
     LOG.warn "[Deploy] Auto-deploy skipped — unknown environment: #{env_key}"
     return
   end
 
-  # Only deploy if this machine owns the environment
   env_owner = config[env_key]["owner"]
   unless env_owner && env_owner.downcase == AI_AGENT_NAME.downcase
     LOG.info "[Deploy] Auto-deploy skipped #{env_key} — owner is #{env_owner.inspect}, this machine is #{AI_AGENT_NAME}"
@@ -161,27 +150,47 @@ def auto_deploy_after_session(deploy_intent:, card_internal_id:, card_number:, w
   aws_profile = config.dig(env_key, "aws_profile")
   deploy_env["AWS_PROFILE"] = aws_profile if aws_profile
 
+  run_deploy(deploy_env, deploy_script, env_key, worktree_path: worktree_path, card_number: card_number, agent_name: agent_name)
+end
+
+# Resolve which environment to deploy to from the intent.
+def resolve_deploy_environment(deploy_intent, state, card_number)
+  if deploy_intent.is_a?(String) && !deploy_intent.empty?
+    deploy_intent
+  else
+    existing = state.find { |_k, v| v["card_number"] == card_number && v["status"] == "occupied" }&.first
+    LOG.info "[Deploy] Auto-deploy skipped — card ##{card_number} not currently deployed to any environment" unless existing
+    existing
+  end
+end
+
+# Execute deploy script with terraform lock retry logic.
+def run_deploy(deploy_env, deploy_script, env_key, worktree_path:, card_number:, agent_name:)
   stdout, stderr, status = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree_path)
 
   if status.success?
     deploy_to_environment(env_key, worktree_path: worktree_path, deployed_by: "#{agent_name} [deploy]")
     LOG.info "[Deploy] Auto-deploy to #{env_key} succeeded for card ##{card_number}"
   elsif terraform_lock_error?(stdout, stderr)
-    # Retry after clearing terraform lock
-    lock_file = File.join(worktree_path, "infrastructure/#{env_key}/.terraform.lock.hcl")
-    FileUtils.rm_f(lock_file)
-    Open3.capture3("terraform", "init", "-upgrade", chdir: File.join(worktree_path, "infrastructure/#{env_key}"))
-    stdout2, stderr2, status2 = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree_path)
-    if status2.success?
-      deploy_to_environment(env_key, worktree_path: worktree_path, deployed_by: "#{agent_name} [deploy]")
-      LOG.info "[Deploy] Auto-deploy to #{env_key} succeeded (after terraform lock fix) for card ##{card_number}"
-    else
-      record_deploy_failure(env_key, worktree_path: worktree_path, stdout: stdout2, stderr: stderr2)
-      LOG.error "[Deploy] Auto-deploy to #{env_key} failed (after retry) for card ##{card_number}"
-    end
+    retry_deploy_after_lock_fix(deploy_env, deploy_script, env_key, worktree_path: worktree_path, card_number: card_number, agent_name: agent_name)
   else
     record_deploy_failure(env_key, worktree_path: worktree_path, stdout: stdout, stderr: stderr)
     LOG.error "[Deploy] Auto-deploy to #{env_key} failed for card ##{card_number}"
+  end
+end
+
+# Retry deploy after clearing terraform lock.
+def retry_deploy_after_lock_fix(deploy_env, deploy_script, env_key, worktree_path:, card_number:, agent_name:)
+  lock_file = File.join(worktree_path, "infrastructure/#{env_key}/.terraform.lock.hcl")
+  FileUtils.rm_f(lock_file)
+  Open3.capture3("terraform", "init", "-upgrade", chdir: File.join(worktree_path, "infrastructure/#{env_key}"))
+  stdout2, stderr2, status2 = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree_path)
+  if status2.success?
+    deploy_to_environment(env_key, worktree_path: worktree_path, deployed_by: "#{agent_name} [deploy]")
+    LOG.info "[Deploy] Auto-deploy to #{env_key} succeeded (after terraform lock fix) for card ##{card_number}"
+  else
+    record_deploy_failure(env_key, worktree_path: worktree_path, stdout: stdout2, stderr: stderr2)
+    LOG.error "[Deploy] Auto-deploy to #{env_key} failed (after retry) for card ##{card_number}"
   end
 end
 

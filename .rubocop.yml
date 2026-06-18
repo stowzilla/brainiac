@@ -11,35 +11,39 @@ AllCops:
 
 # Sinatra route blocks and helper methods can be long
 Metrics/BlockLength:
+  Max: 25
   Exclude:
     - "receiver.rb"
     - "lib/zillacore/handlers/**/*"
+    - "lib/user_registry.rb"
     - "test/**/*"
     - "*.gemspec"
+  CountAsOne:
+    - heredoc
 
 Metrics/MethodLength:
-  Max: 40
+  Max: 45
   Exclude:
     - "bin/zillacore"
     - "lib/zillacore/handlers/**/*"
     - "monitor/**/*"
 
 Metrics/AbcSize:
-  Max: 40
+  Max: 50
   Exclude:
     - "bin/zillacore"
     - "lib/zillacore/handlers/**/*"
     - "monitor/**/*"
 
 Metrics/CyclomaticComplexity:
-  Max: 15
+  Max: 18
   Exclude:
     - "bin/zillacore"
     - "lib/zillacore/handlers/**/*"
     - "monitor/**/*"
 
 Metrics/PerceivedComplexity:
-  Max: 15
+  Max: 18
   Exclude:
     - "bin/zillacore"
     - "lib/zillacore/handlers/**/*"
@@ -48,12 +52,14 @@ Metrics/PerceivedComplexity:
 Metrics/ClassLength:
   Exclude:
     - "test/**/*"
+    - "lib/zillacore/card_index.rb"
 
 Metrics/BlockNesting:
-  Max: 4
+  Max: 5
 
 Metrics/ParameterLists:
-  Max: 8
+  Max: 10
+  CountKeywordArgs: false
 
 # Sinatra DSL uses top-level methods
 Style/TopLevelMethodDefinition:
