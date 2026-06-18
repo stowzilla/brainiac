@@ -10,6 +10,7 @@ require "net/http"
 require "socket"
 
 SOCKET_PATH = "/tmp/zillacore-monitor.sock"
+API_URL = "http://localhost:4567/api/status"
 CONFIG_PATH = File.expand_path("~/.zillacore/waybar.json")
 
 # Load agent configuration from JSON
@@ -28,14 +29,32 @@ end
 
 AGENTS, DEFAULT_EMOJI = load_agent_config
 
-def fetch_state
+def fetch_state_from_socket
   socket = UNIXSocket.new(SOCKET_PATH)
   data = socket.read
   socket.close
   JSON.parse(data)
-rescue Errno::ENOENT
-  system("notify-send", "ZillaCore", "Monitor daemon not running")
-  exit 1
+end
+
+def fetch_state_from_api
+  uri = URI(API_URL)
+  response = Net::HTTP.get_response(uri)
+  return nil unless response.is_a?(Net::HTTPSuccess)
+
+  JSON.parse(response.body)
+end
+
+def fetch_state
+  # Prefer socket (daemon mode) — faster, no HTTP overhead
+  fetch_state_from_socket
+rescue Errno::ENOENT, Errno::ECONNREFUSED
+  # Daemon not running — fall back to direct API call
+  data = fetch_state_from_api
+  unless data
+    system("notify-send", "ZillaCore", "Server not reachable")
+    exit 1
+  end
+  data
 rescue StandardError => e
   system("notify-send", "ZillaCore Error", e.message)
   exit 1

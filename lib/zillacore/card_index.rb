@@ -308,49 +308,8 @@ class CardIndex
       seen_boards = Set.new
 
       PROJECTS.each do |project_key, config|
-        repo_path = config["repo_path"]
-        next unless repo_path && File.directory?(repo_path)
-
-        fizzy_yaml = File.join(repo_path, ".fizzy.yaml")
-        unless File.exist?(fizzy_yaml)
-          LOG.debug "[CardIndex] Skipping '#{project_key}' — no .fizzy.yaml"
-          next
-        end
-
-        begin
-          board_id = YAML.safe_load_file(fizzy_yaml)["board"]
-        rescue StandardError => e
-          LOG.warn "[CardIndex] Could not read .fizzy.yaml for '#{project_key}': #{e.message}"
-          next
-        end
-
-        if seen_boards.include?(board_id)
-          LOG.debug "[CardIndex] Skipping '#{project_key}' — board #{board_id} already fetched"
-          next
-        end
-        seen_boards << board_id
-
-        begin
-          output = run_cmd("fizzy", "card", "list", "--all", chdir: repo_path, env: default_fizzy_env)
-          cards = JSON.parse(output)["data"] || []
-          cards.each do |card|
-            num = card["number"]
-            next unless num
-            next if key?(num.to_s)
-
-            index_card(
-              number: num,
-              title: card["title"] || card["description"]&.slice(0, 80) || "untitled",
-              creator_name: card.dig("creator", "name"),
-              creator_id: card.dig("creator", "id"),
-              tags: card["tags"] || [],
-              closed: card["closed"] || false
-            )
-            backfilled += 1
-          end
-        rescue StandardError => e
-          LOG.warn "[CardIndex] Backfill failed for project '#{project_key}': #{e.message}"
-        end
+        result = backfill_project(project_key, config, seen_boards)
+        backfilled += result if result
       end
 
       save
@@ -359,6 +318,54 @@ class CardIndex
       ensure_card_titles_collection
       schedule_qmd_reindex
     end
+  end
+
+  # Backfill cards for a single project. Returns count of new cards indexed, or nil if skipped.
+  def backfill_project(project_key, config, seen_boards)
+    repo_path = config["repo_path"]
+    return nil unless repo_path && File.directory?(repo_path)
+
+    fizzy_yaml = File.join(repo_path, ".fizzy.yaml")
+    unless File.exist?(fizzy_yaml)
+      LOG.debug "[CardIndex] Skipping '#{project_key}' — no .fizzy.yaml"
+      return nil
+    end
+
+    begin
+      board_id = YAML.safe_load_file(fizzy_yaml)["board"]
+    rescue StandardError => e
+      LOG.warn "[CardIndex] Could not read .fizzy.yaml for '#{project_key}': #{e.message}"
+      return nil
+    end
+
+    if seen_boards.include?(board_id)
+      LOG.debug "[CardIndex] Skipping '#{project_key}' — board #{board_id} already fetched"
+      return nil
+    end
+    seen_boards << board_id
+
+    count = 0
+    output = run_cmd("fizzy", "card", "list", "--all", chdir: repo_path, env: default_fizzy_env)
+    cards = JSON.parse(output)["data"] || []
+    cards.each do |card|
+      num = card["number"]
+      next unless num
+      next if key?(num.to_s)
+
+      index_card(
+        number: num,
+        title: card["title"] || card["description"]&.slice(0, 80) || "untitled",
+        creator_name: card.dig("creator", "name"),
+        creator_id: card.dig("creator", "id"),
+        tags: card["tags"] || [],
+        closed: card["closed"] || false
+      )
+      count += 1
+    end
+    count
+  rescue StandardError => e
+    LOG.warn "[CardIndex] Backfill failed for project '#{project_key}': #{e.message}"
+    0
   end
 
   # --- Startup ---

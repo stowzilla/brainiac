@@ -286,49 +286,11 @@ def prefetch_card_context(card_number, repo_path:, agent_name: nil)
   env = fizzy_env_for(agent_name)
   parts = []
 
-  # Fetch card details
-  begin
-    card_output = run_cmd("fizzy", "card", "show", card_number.to_s, chdir: repo_path, env: env)
-    card_data = begin
-      JSON.parse(card_output)["data"]
-    rescue StandardError
-      nil
-    end
-    if card_data
-      parts << "## Card ##{card_number}: #{card_data["title"]}"
-      parts << "Status: #{card_data["status"]}" if card_data["status"]
-      tags = (card_data["tags"] || []).map { |t| t.is_a?(Hash) ? t["name"] : t }
-      parts << "Tags: #{tags.join(", ")}" unless tags.empty?
-      body = card_data.dig("body", "plain_text") || card_data["body"]
-      parts << "\n#{body}" if body && !body.to_s.strip.empty?
-    end
-  rescue StandardError => e
-    LOG.warn "Could not pre-fetch card ##{card_number}: #{e.message}"
-    return ""
-  end
+  card_parts = fetch_card_details(card_number, repo_path: repo_path, env: env)
+  return "" if card_parts.nil?
 
-  # Fetch comments (limited to last 5 with body truncation to reduce prompt bloat)
-  begin
-    comments_output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: repo_path, env: env)
-    comments_data = JSON.parse(comments_output)["data"] || []
-    unless comments_data.empty?
-      total = comments_data.size
-      comments_data = comments_data.last(PREFETCH_COMMENT_LIMIT)
-      parts << "\n## Comments#{" (last #{PREFETCH_COMMENT_LIMIT} of #{total})" if total > PREFETCH_COMMENT_LIMIT}"
-      comments_data.each do |c|
-        author = c.dig("creator", "name") || "Unknown"
-        body = c.dig("body", "plain_text") || ""
-        cid = c["id"]
-        next if body.strip.empty?
-
-        body = "#{body[0...COMMENT_BODY_TRUNCATE_LENGTH]}… [truncated]" if body.length > COMMENT_BODY_TRUNCATE_LENGTH
-        parts << "\n### #{author} (comment ID: #{cid})\n#{body}"
-      end
-    end
-  rescue StandardError => e
-    LOG.warn "Could not pre-fetch comments for card ##{card_number}: #{e.message}"
-  end
-
+  parts.concat(card_parts)
+  parts.concat(fetch_card_comments(card_number, repo_path: repo_path, env: env))
   return "" if parts.empty?
 
   context = parts.join("\n")
@@ -339,12 +301,59 @@ def prefetch_card_context(card_number, repo_path:, agent_name: nil)
   CARD_CONTEXT
 
   CARD_CONTEXT_CACHE[cache_key] = { context: result, at: Time.now }
-  # Evict stale entries to prevent unbounded growth
   CARD_CONTEXT_CACHE.delete_if { |_, v| (Time.now - v[:at]) > CARD_CONTEXT_CACHE_TTL * 5 } if CARD_CONTEXT_CACHE.size > 50
   result
 rescue StandardError => e
   LOG.warn "prefetch_card_context failed for card ##{card_number}: #{e.message}"
   ""
+end
+
+# Fetch card details from Fizzy. Returns array of text parts, or nil on failure.
+def fetch_card_details(card_number, repo_path:, env:)
+  card_output = run_cmd("fizzy", "card", "show", card_number.to_s, chdir: repo_path, env: env)
+  card_data = begin
+    JSON.parse(card_output)["data"]
+  rescue StandardError
+    nil
+  end
+  return [] unless card_data
+
+  parts = []
+  parts << "## Card ##{card_number}: #{card_data["title"]}"
+  parts << "Status: #{card_data["status"]}" if card_data["status"]
+  tags = (card_data["tags"] || []).map { |t| t.is_a?(Hash) ? t["name"] : t }
+  parts << "Tags: #{tags.join(", ")}" unless tags.empty?
+  body = card_data.dig("body", "plain_text") || card_data["body"]
+  parts << "\n#{body}" if body && !body.to_s.strip.empty?
+  parts
+rescue StandardError => e
+  LOG.warn "Could not pre-fetch card ##{card_number}: #{e.message}"
+  nil
+end
+
+# Fetch recent comments for a card. Returns array of text parts.
+def fetch_card_comments(card_number, repo_path:, env:)
+  comments_output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: repo_path, env: env)
+  comments_data = JSON.parse(comments_output)["data"] || []
+  return [] if comments_data.empty?
+
+  parts = []
+  total = comments_data.size
+  comments_data = comments_data.last(PREFETCH_COMMENT_LIMIT)
+  parts << "\n## Comments#{" (last #{PREFETCH_COMMENT_LIMIT} of #{total})" if total > PREFETCH_COMMENT_LIMIT}"
+  comments_data.each do |c|
+    author = c.dig("creator", "name") || "Unknown"
+    body = c.dig("body", "plain_text") || ""
+    cid = c["id"]
+    next if body.strip.empty?
+
+    body = "#{body[0...COMMENT_BODY_TRUNCATE_LENGTH]}… [truncated]" if body.length > COMMENT_BODY_TRUNCATE_LENGTH
+    parts << "\n### #{author} (comment ID: #{cid})\n#{body}"
+  end
+  parts
+rescue StandardError => e
+  LOG.warn "Could not pre-fetch comments for card ##{card_number}: #{e.message}"
+  []
 end
 
 def scrub_invalid_attachments!(dir)
@@ -498,54 +507,24 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   chdir ||= resolved["repo_path"]
   model ||= resolved["agent_model"]
   effort ||= resolved["agent_effort"]
-
-  agent_cli = resolved["agent_cli"]
-  agent_cli_args = resolved["agent_cli_args"]
-  agent_model_flag = resolved["agent_model_flag"]
-  agent_effort_flag = resolved["agent_effort_flag"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
 
-  # Ensure .fizzy.yaml is present in worktrees
-  fizzy_yaml_dest = File.join(chdir, ".fizzy.yaml")
-  unless File.exist?(fizzy_yaml_dest)
-    fizzy_yaml_src = File.join(project_config["repo_path"], ".fizzy.yaml")
-    if File.exist?(fizzy_yaml_src)
-      FileUtils.cp(fizzy_yaml_src, fizzy_yaml_dest)
-      LOG.info "Copied .fizzy.yaml to #{chdir}"
-    end
-  end
-
-  # Scrub invalid attachments in background — doesn't need to block dispatch
+  ensure_fizzy_yaml!(chdir, project_config)
   Thread.new { scrub_invalid_attachments!(chdir) }
+
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
   log_file = File.join(chdir, "tmp/agent-#{log_name}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  prompt_dir = File.join(ZILLACORE_DIR, "tmp")
-  FileUtils.mkdir_p(prompt_dir)
-  prompt_file = File.join(prompt_dir, "prompt-#{log_name}-#{timestamp}.md")
-  File.write(prompt_file, prompt)
+  prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
+  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort)
+  spawn_env = agent_env_for(agent_name)
 
-  LOG.info "Running #{agent_cli} in #{chdir}, logging to #{log_file}"
+  LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
   LOG.info "Prompt written to #{prompt_file}"
-
-  cmd = [agent_cli]
-  cmd.push("--agent", agent_config_name) if agent_config_name
-  cmd.concat(agent_cli_args.split)
-  add_trust_tools!(cmd, agent_cli_args)
-  cmd.push(agent_model_flag, model) if agent_model_flag && !agent_model_flag.empty? && model
-  cmd.push(agent_effort_flag, effort) if agent_effort_flag && !agent_effort_flag.empty? && effort
-
   LOG.info "Command: #{cmd.join(" ")}"
+  LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 
-  spawn_env = {}
-  agent_env = agent_env_for(agent_name)
-  unless agent_env.empty?
-    spawn_env.merge!(agent_env)
-    LOG.info "Injecting #{agent_env.size} env var(s) for agent #{agent_name}: #{agent_env.keys.join(", ")}"
-  end
-
-  # Capture HEAD before spawning so we can detect if THIS session made commits
   head_before = nil
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
   if project_key_for_restart == "zillacore"
@@ -559,11 +538,10 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
               out: [log_file, "w"],
               err: %i[child out])
 
-  # Monitor the process in a background thread so we can sync the brain after completion.
   Thread.new do
     Process.wait(pid)
     handle_agent_completion(
-      pid: pid, agent_cli: agent_cli, agent_config_name: agent_config_name,
+      pid: pid, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
       agent_name: agent_name, log_file: log_file, log_name: log_name,
       prompt_file: prompt_file, chdir: chdir, source: source,
       source_context: source_context, project_config: project_config,
@@ -572,9 +550,42 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
     )
   end
 
-  LOG.info "#{agent_cli} started (pid: #{pid}, agent: #{agent_config_name || "default"}, model: #{model || "default"}), tail -f #{log_file}"
+  LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \
+           "model: #{model || "default"}), tail -f #{log_file}"
 
   [pid, log_file]
+end
+
+# Ensure .fizzy.yaml is present in the working directory (worktrees need a copy).
+def ensure_fizzy_yaml!(chdir, project_config)
+  fizzy_yaml_dest = File.join(chdir, ".fizzy.yaml")
+  return if File.exist?(fizzy_yaml_dest)
+
+  fizzy_yaml_src = File.join(project_config["repo_path"], ".fizzy.yaml")
+  return unless File.exist?(fizzy_yaml_src)
+
+  FileUtils.cp(fizzy_yaml_src, fizzy_yaml_dest)
+  LOG.info "Copied .fizzy.yaml to #{chdir}"
+end
+
+# Write agent prompt to a temp file, return path.
+def write_agent_prompt_file(prompt, log_name, timestamp)
+  prompt_dir = File.join(ZILLACORE_DIR, "tmp")
+  FileUtils.mkdir_p(prompt_dir)
+  prompt_file = File.join(prompt_dir, "prompt-#{log_name}-#{timestamp}.md")
+  File.write(prompt_file, prompt)
+  prompt_file
+end
+
+# Build the CLI command array for an agent invocation.
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil)
+  cmd = [resolved["agent_cli"]]
+  cmd.push("--agent", agent_config_name) if agent_config_name
+  cmd.concat(resolved["agent_cli_args"].split)
+  add_trust_tools!(cmd, resolved["agent_cli_args"])
+  cmd.push(resolved["agent_model_flag"], model) if resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty? && model
+  cmd.push(resolved["agent_effort_flag"], effort) if resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty? && effort
+  cmd
 end
 
 def handle_agent_completion(**ctx)

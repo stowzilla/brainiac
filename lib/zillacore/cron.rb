@@ -87,22 +87,14 @@ end
 def parse_time_of_day(time_str, date)
   # "9am" or "3pm"
   if time_str =~ /^(\d+)(am|pm)$/i
-    hour = Regexp.last_match(1).to_i
-    meridiem = Regexp.last_match(2).downcase
-    hour = 0 if hour == 12 && meridiem == "am"
-    hour = 12 if hour == 12 && meridiem == "pm"
-    hour += 12 if meridiem == "pm" && hour < 12
+    hour = convert_meridiem_hour(Regexp.last_match(1).to_i, Regexp.last_match(2).downcase)
     return Time.new(date.year, date.month, date.day, hour, 0, 0, date.utc_offset)
   end
 
   # "9:30am" or "3:45pm"
   if time_str =~ /^(\d+):(\d+)(am|pm)$/i
-    hour = Regexp.last_match(1).to_i
+    hour = convert_meridiem_hour(Regexp.last_match(1).to_i, Regexp.last_match(3).downcase)
     minute = Regexp.last_match(2).to_i
-    meridiem = Regexp.last_match(3).downcase
-    hour = 0 if hour == 12 && meridiem == "am"
-    hour = 12 if hour == 12 && meridiem == "pm"
-    hour += 12 if meridiem == "pm" && hour < 12
     return Time.new(date.year, date.month, date.day, hour, minute, 0, date.utc_offset)
   end
 
@@ -114,6 +106,13 @@ def parse_time_of_day(time_str, date)
   end
 
   nil
+end
+
+# Convert 12-hour format hour + meridiem to 24-hour format.
+def convert_meridiem_hour(hour, meridiem)
+  hour = 0 if hour == 12 && meridiem == "am"
+  hour += 12 if meridiem == "pm" && hour < 12
+  hour
 end
 
 # Check if current time matches cron expression
@@ -309,25 +308,7 @@ def execute_script_job(job, project)
   log_file = File.join(project["repo_path"], "tmp/cron-script-#{job[:id]}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  # Determine output destination
-  if job[:discord_channel_id]
-    draft_file = File.join(DISCORD_DRAFT_DIR, "cron-script-#{timestamp}-#{job[:id]}.md")
-    meta_file = "#{draft_file}.meta.json"
-
-    FileUtils.mkdir_p(File.dirname(draft_file))
-
-    script_agent_key = job[:agent]&.downcase&.gsub(/[^a-z0-9-]/, "-")
-    meta = {
-      channel_id: job[:discord_channel_id],
-      agent_key: script_agent_key,
-      agent_name: job[:agent] || "Script",
-      cron_job_id: job[:id],
-      forum_title: job[:forum_title],
-      forum_reply_to_latest: job[:forum_reply_to_latest],
-      created_at: Time.now.iso8601
-    }
-    File.write(meta_file, JSON.pretty_generate(meta))
-  end
+  draft_file = prepare_script_discord_draft(job, timestamp) if job[:discord_channel_id]
 
   LOG.info "[Cron] Running script #{script_path} for job #{job[:id]}, tail -f #{log_file}"
 
@@ -339,25 +320,47 @@ def execute_script_job(job, project)
   Thread.new do
     Process.wait(pid)
     LOG.info "[Cron] Script job #{job[:id]} finished (exit: #{$CHILD_STATUS.exitstatus})"
-
-    # Read script output
-    if File.exist?(log_file)
-      output = File.read(log_file).strip
-
-      if job[:discord_channel_id] && !output.empty?
-        # Write to draft file for Discord delivery
-        File.write(draft_file, output)
-        LOG.info "[Cron] Script output written to #{draft_file} (#{output.length} chars)"
-      elsif !output.empty?
-        LOG.info "[Cron] Script output: #{output[0..200]}..."
-      else
-        LOG.warn "[Cron] Script produced no output"
-      end
-    end
-
+    deliver_script_output(job, log_file, draft_file)
     update_cron_job_state(job)
   rescue StandardError => e
     LOG.error "[Cron] Script job #{job[:id]} failed: #{e.message}\n#{e.backtrace.first(3).join("\n")}"
+  end
+end
+
+# Prepare a Discord draft file and meta for a script job. Returns the draft file path.
+def prepare_script_discord_draft(job, timestamp)
+  draft_file = File.join(DISCORD_DRAFT_DIR, "cron-script-#{timestamp}-#{job[:id]}.md")
+  meta_file = "#{draft_file}.meta.json"
+
+  FileUtils.mkdir_p(File.dirname(draft_file))
+
+  script_agent_key = job[:agent]&.downcase&.gsub(/[^a-z0-9-]/, "-")
+  meta = {
+    channel_id: job[:discord_channel_id],
+    agent_key: script_agent_key,
+    agent_name: job[:agent] || "Script",
+    cron_job_id: job[:id],
+    forum_title: job[:forum_title],
+    forum_reply_to_latest: job[:forum_reply_to_latest],
+    created_at: Time.now.iso8601
+  }
+  File.write(meta_file, JSON.pretty_generate(meta))
+  draft_file
+end
+
+# Read script output and write to draft file or log.
+def deliver_script_output(job, log_file, draft_file)
+  return unless File.exist?(log_file)
+
+  output = File.read(log_file).strip
+
+  if job[:discord_channel_id] && draft_file && !output.empty?
+    File.write(draft_file, output)
+    LOG.info "[Cron] Script output written to #{draft_file} (#{output.length} chars)"
+  elsif !output.empty?
+    LOG.info "[Cron] Script output: #{output[0..200]}..."
+  else
+    LOG.warn "[Cron] Script produced no output"
   end
 end
 
@@ -533,25 +536,13 @@ def execute_cron_job(job)
   agent_name = job[:agent]
   agent_config_name = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
   prompt_data = build_cron_prompt(job, project)
-  response_file = prompt_data[:response_file]
-  meta_file = prompt_data[:meta_file]
-
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
+
   log_file = File.join(project["repo_path"], "tmp/agent-cron-#{job[:id]}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  prompt_dir = File.join(ZILLACORE_DIR, "tmp")
-  FileUtils.mkdir_p(prompt_dir)
-  prompt_file = File.join(prompt_dir, "prompt-cron-#{job[:id]}-#{timestamp}.md")
-  File.write(prompt_file, prompt_data[:full_prompt])
-
-  resolved = resolve_project_cli_config(project)
-  cmd = [resolved["agent_cli"]]
-  cmd.push("--agent", agent_config_name)
-  cmd.concat(resolved["agent_cli_args"].split)
-  add_trust_tools!(cmd, resolved["agent_cli_args"])
-  cmd.push(resolved["agent_model_flag"], job[:model]) if resolved["agent_model_flag"]&.length&.positive? && job[:model]
-  cmd.push(resolved["agent_effort_flag"], job[:effort]) if resolved["agent_effort_flag"]&.length&.positive? && job[:effort]
+  prompt_file = write_cron_prompt_file(job, prompt_data[:full_prompt], timestamp)
+  cmd = build_cron_agent_cmd(job, project)
 
   LOG.info "[Cron] Dispatching job #{job[:id]} with #{agent_name}, tail -f #{log_file}"
 
@@ -566,10 +557,32 @@ def execute_cron_job(job)
 
   Thread.new do
     Process.wait(pid)
-    handle_cron_completion(job, project, agent_name, agent_config_name, log_file, response_file, meta_file)
+    handle_cron_completion(job, project, agent_name, agent_config_name, log_file, prompt_data[:response_file], prompt_data[:meta_file])
   rescue StandardError => e
     LOG.error "[Cron] Job #{job[:id]} failed: #{e.message}\n#{e.backtrace.first(3).join("\n")}"
   end
+end
+
+# Write cron prompt to a temp file, return path.
+def write_cron_prompt_file(job, prompt_content, timestamp)
+  prompt_dir = File.join(ZILLACORE_DIR, "tmp")
+  FileUtils.mkdir_p(prompt_dir)
+  prompt_file = File.join(prompt_dir, "prompt-cron-#{job[:id]}-#{timestamp}.md")
+  File.write(prompt_file, prompt_content)
+  prompt_file
+end
+
+# Build the CLI command array for a cron agent invocation.
+def build_cron_agent_cmd(job, project)
+  agent_config_name = job[:agent].downcase.gsub(/[^a-z0-9-]/, "-")
+  resolved = resolve_project_cli_config(project)
+  cmd = [resolved["agent_cli"]]
+  cmd.push("--agent", agent_config_name)
+  cmd.concat(resolved["agent_cli_args"].split)
+  add_trust_tools!(cmd, resolved["agent_cli_args"])
+  cmd.push(resolved["agent_model_flag"], job[:model]) if resolved["agent_model_flag"]&.length&.positive? && job[:model]
+  cmd.push(resolved["agent_effort_flag"], job[:effort]) if resolved["agent_effort_flag"]&.length&.positive? && job[:effort]
+  cmd
 end
 
 # Cron loop — runs every minute, checks all jobs

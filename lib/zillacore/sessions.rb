@@ -102,9 +102,26 @@ end
 # Recursively collect all descendant processes of a given PID via /proc.
 # Returns array of hashes: { pid:, ppid:, cmd:, elapsed_seconds: }
 def child_processes_for(pid)
+  children_map = build_proc_children_map
   descendants = []
   queue = [pid]
-  # Build ppid→children map from /proc in one pass
+
+  while (current = queue.shift)
+    (children_map[current] || []).each do |child_pid|
+      queue << child_pid
+      cmdline = read_proc_cmdline(child_pid)
+      elapsed = read_proc_elapsed(child_pid)
+      descendants << { pid: child_pid, ppid: current, cmd: cmdline, elapsed_seconds: elapsed }
+    end
+  end
+  descendants
+rescue StandardError => e
+  LOG.warn "Failed to enumerate child processes for PID #{pid}: #{e.message}"
+  []
+end
+
+# Build a ppid→children map from /proc in one pass.
+def build_proc_children_map
   children_map = Hash.new { |h, k| h[k] = [] }
   Dir.glob("/proc/[0-9]*/stat").each do |stat_path|
     content = begin
@@ -112,57 +129,44 @@ def child_processes_for(pid)
     rescue StandardError
       next
     end
-    # Format: pid (comm) state ppid ...
-    # comm can contain spaces/parens, so find last ')' first
     close_paren = content.rindex(")")
     next unless close_paren
 
     prefix_pid = content[0...content.index("(")].strip.to_i
     fields_after = content[(close_paren + 2)..].split
-    ppid = fields_after[1].to_i # field index 1 after state
+    ppid = fields_after[1].to_i
     children_map[ppid] << prefix_pid
   end
-  # BFS from agent PID
-  while (current = queue.shift)
-    (children_map[current] || []).each do |child_pid|
-      queue << child_pid
-      # Read cmdline and start time
-      cmdline = begin
-        File.read("/proc/#{child_pid}/cmdline").tr("\0", " ").strip
-      rescue StandardError
-        "(unknown)"
-      end
-      # Elapsed from /proc/stat starttime (field 21 after pid/comm/state)
-      stat_content = begin
-        File.read("/proc/#{child_pid}/stat")
-      rescue StandardError
-        nil
-      end
-      elapsed = if stat_content
-                  cp = stat_content.rindex(")")
-                  starttime_ticks = begin
-                    stat_content[(cp + 2)..].split[19].to_i
-                  rescue StandardError
-                    0
-                  end
-                  clk_tck = 100 # sysconf(_SC_CLK_TCK), almost always 100 on Linux
-                  uptime = begin
-                    File.read("/proc/uptime").split[0].to_f
-                  rescue StandardError
-                    0
-                  end
-                  start_seconds = starttime_ticks.to_f / clk_tck
-                  (uptime - start_seconds).to_i.clamp(0, Float::INFINITY)
-                else
-                  0
-                end
-      descendants << { pid: child_pid, ppid: current, cmd: cmdline, elapsed_seconds: elapsed.to_i }
-    end
+  children_map
+end
+
+# Read command line for a given PID from /proc.
+def read_proc_cmdline(pid)
+  File.read("/proc/#{pid}/cmdline").tr("\0", " ").strip
+rescue StandardError
+  "(unknown)"
+end
+
+# Calculate elapsed seconds since process start from /proc/stat.
+def read_proc_elapsed(pid)
+  stat_content = File.read("/proc/#{pid}/stat")
+rescue StandardError
+  0
+else
+  cp = stat_content.rindex(")")
+  starttime_ticks = begin
+    stat_content[(cp + 2)..].split[19].to_i
+  rescue StandardError
+    0
   end
-  descendants
-rescue StandardError => e
-  LOG.warn "Failed to enumerate child processes for PID #{pid}: #{e.message}"
-  []
+  clk_tck = 100
+  uptime = begin
+    File.read("/proc/uptime").split[0].to_f
+  rescue StandardError
+    0
+  end
+  start_seconds = starttime_ticks.to_f / clk_tck
+  (uptime - start_seconds).to_i.clamp(0, Float::INFINITY).to_i
 end
 
 def register_session(card_key, pid, log_file: nil, message_id: nil, channel_id: nil, supersede_key: nil, draft_files: nil, agent_name: nil)
