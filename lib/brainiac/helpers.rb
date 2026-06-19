@@ -7,13 +7,8 @@ CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
 # --trust-all-tools alone doesn't bypass the non-interactive deny list in kiro-cli 1.29.8+.
 # Adding --trust-tools with explicit tool names ensures write/exec tools are approved.
+# This is now configured in the kiro provider's default_args instead of being hardcoded here.
 TRUSTED_TOOLS = "execute_bash,fs_write,fs_read,code,grep,glob,web_search,web_fetch,use_subagent,use_aws"
-
-def add_trust_tools!(cmd, agent_cli_args)
-  return if agent_cli_args.include?("--trust-tools")
-
-  cmd.push("--trust-tools", TRUSTED_TOOLS)
-end
 
 # Clean up all worktrees associated with a card: the primary worktree and any
 # cross-agent review worktrees (e.g. glados-fizzy-123-*, threepio-fizzy-123-*).
@@ -49,24 +44,86 @@ def cleanup_card_worktrees(card_number, repo_path:, primary_worktree: nil, prima
   LOG.info "Card ##{card_number}: cleaned up #{cleaned} worktree(s)" if cleaned.positive?
 end
 
+# Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
+# Returns a hash with normalized keys, or {} if not found.
+def load_cli_provider(provider_name)
+  return {} unless provider_name
+
+  provider_file = File.join(CLI_PROVIDERS_DIR, "#{provider_name}.json")
+  return {} unless File.exist?(provider_file)
+
+  raw = JSON.parse(File.read(provider_file))
+  config = {
+    "agent_cli" => raw["binary"],
+    "agent_cli_args" => raw["default_args"],
+    "agent_model_flag" => raw["model_flag"],
+    "agent_effort_flag" => raw["effort_flag"],
+    "allowed_models" => raw["models"],
+    "allowed_efforts" => raw["efforts"]
+  }
+  # agent_flag: how the agent identity is passed (default: "--agent").
+  # Set to null/false in provider JSON to suppress passing agent name entirely.
+  # We must preserve the key even when nil so merges don't lose the "no agent flag" intent.
+  config["agent_flag"] = raw.key?("agent_flag") ? raw["agent_flag"] : "--agent"
+  # prompt_mode: "stdin" (default) or "flag" — how the prompt is delivered.
+  config["prompt_mode"] = raw["prompt_mode"] || "stdin"
+  config["prompt_flag"] = raw["prompt_flag"] if raw["prompt_flag"]
+  # resume_flag: when set, follow-up dispatches use this flag to continue the
+  # most recent session in the working directory (e.g. "-c" or "--continue").
+  config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
+  # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
+  agent_flag_value = config["agent_flag"]
+  config.compact!
+  config["agent_flag"] = agent_flag_value if raw.key?("agent_flag")
+  config
+rescue JSON::ParserError => e
+  LOG.warn "Failed to parse CLI provider '#{provider_name}': #{e.message}"
+  {}
+end
+
 # Resolve CLI config for a project by merging provider defaults with project overrides.
-# Priority: project-level keys > provider file > DEFAULT_PROJECT
-def resolve_project_cli_config(project_config)
-  provider_config = {}
-  if (provider_name = project_config["cli_provider"])
-    provider_file = File.join(CLI_PROVIDERS_DIR, "#{provider_name}.json")
-    if File.exist?(provider_file)
-      raw = JSON.parse(File.read(provider_file))
-      provider_config = {
-        "agent_cli" => raw["binary"],
-        "agent_cli_args" => raw["default_args"],
-        "agent_model_flag" => raw["model_flag"],
-        "allowed_models" => raw["models"]
-      }
-    end
+# Priority: cli_provider_override > agent-level cli_provider > project-level cli_provider > DEFAULT_PROJECT
+def resolve_project_cli_config(project_config, cli_provider_override: nil, agent_name: nil)
+  # Determine which CLI provider to use (priority: override > agent > project)
+  provider_name = cli_provider_override
+  provider_name ||= agent_cli_provider_for(agent_name) if agent_name
+  provider_name ||= project_config["cli_provider"]
+
+  provider_config = load_cli_provider(provider_name)
+
+  DEFAULT_PROJECT.merge(provider_config).merge(project_config).tap do |resolved|
+    # If an override or agent-level provider was used, it should win over the
+    # project-level cli_provider's config. Re-apply the override provider on top.
+    resolved.merge!(provider_config) if provider_name && provider_name != project_config["cli_provider"]
+  end
+end
+
+# Get the cli_provider configured at the agent level in agents.json.
+def agent_cli_provider_for(agent_name)
+  return nil unless agent_name
+
+  key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+  entry = AGENT_REGISTRY[key]
+  return nil unless entry.is_a?(Hash)
+
+  entry["cli_provider"]
+end
+
+# Detect CLI provider override from inline [cli:X] tag or Fizzy card tags.
+# Returns the provider name (e.g. "grok") or nil.
+def detect_cli_provider(text: "", tags: [])
+  # Inline tag: [cli:grok]
+  if (match = text.match(/\[cli:(\w+)\]/i))
+    return match[1].downcase
   end
 
-  DEFAULT_PROJECT.merge(provider_config).merge(project_config)
+  # Fizzy card tags: cli-grok
+  tags.each do |tag|
+    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
+    return name.sub("cli-", "") if name.start_with?("cli-")
+  end
+
+  nil
 end
 
 # Copy gitignored files matching .worktreeinclude patterns from repo to worktree.
@@ -502,12 +559,16 @@ rescue StandardError => e
 end
 
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
-              source: nil, source_context: {}, skip_column_move: false)
-  resolved = resolve_project_cli_config(project_config)
+              source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false)
+  resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
   model ||= resolved["agent_model"]
   effort ||= resolved["agent_effort"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
+
+  # Auto-resume: if the provider supports session resume and we're in a worktree
+  # that has had a previous session, resume it. Only applies to follow-ups (not first dispatch).
+  should_resume = resume && resolved["resume_flag"]
 
   ensure_fizzy_yaml!(chdir, project_config)
   Thread.new { scrub_invalid_attachments!(chdir) }
@@ -517,12 +578,14 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   FileUtils.mkdir_p(File.dirname(log_file))
 
   prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
-  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort)
+  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort, prompt_file: prompt_file, resume: should_resume)
+  prompt_mode = resolved["prompt_mode"] || "stdin"
+
   spawn_env = agent_env_for(agent_name)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
   LOG.info "Prompt written to #{prompt_file}"
-  LOG.info "Command: #{cmd.join(" ")}"
+  LOG.info "Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
   LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 
   head_before = nil
@@ -534,7 +597,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   pid = spawn(spawn_env, *cmd,
               chdir: chdir,
-              in: prompt_file,
+              **(prompt_mode == "stdin" ? { in: prompt_file } : {}),
               out: [log_file, "w"],
               err: %i[child out])
 
@@ -578,13 +641,28 @@ def write_agent_prompt_file(prompt, log_name, timestamp)
 end
 
 # Build the CLI command array for an agent invocation.
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil)
+# When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
+# When resume is true and the provider has a resume_flag, adds it to continue the last session.
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false)
   cmd = [resolved["agent_cli"]]
-  cmd.push("--agent", agent_config_name) if agent_config_name
+  # agent_flag controls how the agent identity is passed. Defaults to "--agent".
+  # Provider configs can set it to a different flag or null to suppress entirely.
+  agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
+  cmd.push(agent_flag, agent_config_name) if agent_flag && agent_config_name
   cmd.concat(resolved["agent_cli_args"].split)
-  add_trust_tools!(cmd, resolved["agent_cli_args"])
-  cmd.push(resolved["agent_model_flag"], model) if resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty? && model
+  # Only pass --model if the model is a valid ID for this provider.
+  # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
+  if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
+    allowed = resolved["allowed_models"] || {}
+    # Pass the model if it's a mapped value (e.g. "claude-opus-4.6") or the key itself is mapped
+    is_known = allowed.value?(model) || allowed.key?(model)
+    cmd.push(resolved["agent_model_flag"], model) if is_known
+  end
   cmd.push(resolved["agent_effort_flag"], effort) if resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty? && effort
+  # Resume the most recent session in the working directory (for multi-turn CLIs like grok)
+  cmd.push(resolved["resume_flag"]) if resume && resolved["resume_flag"]
+  # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
+  cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
   cmd
 end
 

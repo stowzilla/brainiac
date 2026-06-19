@@ -134,6 +134,27 @@ def extract_topics(card_title, comment_body, project_key)
   topics.compact.uniq
 end
 
+def build_role_section(agent_name)
+  roles = agent_roles_for(agent_name)
+  return nil if roles.empty?
+
+  sections = roles.filter_map do |role_name|
+    content = load_role(role_name)
+    next unless content
+
+    "### #{role_name}\n\n#{content}"
+  end
+  return nil if sections.empty?
+
+  <<~ROLE
+    ## Role#{"s" if roles.size > 1} (#{roles.join(", ")})
+    The following defines your role and responsibilities for this session.
+    Follow these instructions for how you approach work.
+
+    #{sections.join("\n\n")}
+  ROLE
+end
+
 def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: nil, project_key: nil, comment_body: "", source: nil)
   Thread.new { brain_pull }
 
@@ -163,6 +184,10 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
   persona_result = persona_thread.value
 
   sections = []
+
+  # Role: CLI-agnostic agent role definition from ~/.brainiac/roles/
+  role_section = build_role_section(agent_name)
+  sections << role_section if role_section
 
   unless persona_result.empty?
     sections << <<~PERSONA

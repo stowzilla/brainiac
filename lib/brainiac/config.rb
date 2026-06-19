@@ -49,6 +49,10 @@ MEMORY_BASE_DIR      = File.join(BRAINIAC_DIR, "brain", "memory")
 MEMORY_FILE_TEMPLATE = "card-{{CARD_ID}}.md"
 KNOWLEDGE_COLLECTION = "brainiac-knowledge"
 
+# --- Roles ---
+
+ROLES_DIR = File.join(BRAINIAC_DIR, "roles")
+
 # --- Fizzy auth ---
 
 FIZZY_CONFIG_FILE = File.join(BRAINIAC_DIR, "fizzy.json")

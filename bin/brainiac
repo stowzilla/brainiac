@@ -1395,6 +1395,307 @@ when "provider"
     HELP
   end
 
+when "agent"
+  agent_cmd = ARGV.shift
+  agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
+
+  case agent_cmd
+  when "list", "ls"
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    if registry.empty?
+      puts "No agents in registry."
+    else
+      agents = registry.select { |_, e| e.is_a?(Hash) }.map do |key, entry|
+        display = entry["fizzy_name"] || key.capitalize
+        details = []
+        if entry["role"]
+          roles = Array(entry["role"])
+          details << roles.join(", ")
+        end
+        details << "cli:#{entry["cli_provider"]}" if entry["cli_provider"]
+        details << "env:#{entry["env"].size}" if entry["env"]&.any?
+        { key: key, display: display, local: entry["local"], details: details.join(" | ") }
+      end
+
+      local, remote = agents.partition { |a| a[:local] }
+
+      local.each do |a|
+        line = "  #{a[:display]} (#{a[:key]})"
+        line += "  #{a[:details]}" unless a[:details].empty?
+        puts line
+      end
+
+      unless remote.empty?
+        puts "" if local.any?
+        puts "  Remote:" if local.any?
+        remote.each do |a|
+          line = "  #{a[:display]} (#{a[:key]})"
+          line += "  #{a[:details]}" unless a[:details].empty?
+          puts line
+        end
+      end
+    end
+
+  when nil
+    puts <<~HELP
+      Usage: brainiac agent <name> <command> [args]
+             brainiac agent list
+
+      Commands:
+        list                              List all agents in the registry
+        <name> show                       Show agent configuration (tokens redacted)
+        <name> env <KEY> <VALUE>          Set an env var for an agent
+        <name> env                        List env vars for an agent
+        <name> env --delete <KEY>         Remove an env var from an agent
+
+      Examples:
+        brainiac agent galen env FIZZY_TOKEN fizzy_abc123
+        brainiac agent galen env DISCORD_BOT_TOKEN Bot_xyz789
+        brainiac agent galen env
+        brainiac agent galen env --delete DISCORD_BOT_TOKEN
+        brainiac agent galen show
+    HELP
+
+  else
+    # Pattern: brainiac agent <name> <subcommand> [args]
+    agent_key = agent_cmd.downcase.gsub(/[^a-z0-9-]/, "-")
+    sub = ARGV.shift
+
+    case sub
+    when "show", nil
+      registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+      entry = registry[agent_key]
+      unless entry
+        puts "Agent '#{agent_cmd}' not found in registry."
+        exit 1
+      end
+      # Redact tokens in output
+      display = entry.dup
+      if display["env"]
+        display["env"] = display["env"].transform_values { |v| v.length > 10 ? "#{v[0..6]}...#{v[-4..]}" : v }
+      end
+      puts JSON.pretty_generate(display)
+
+    when "env"
+      if ARGV[0] == "--delete"
+        ARGV.shift
+        var_name = ARGV.shift
+        unless var_name
+          puts "Usage: brainiac agent #{agent_cmd} env --delete <KEY>"
+          exit 1
+        end
+        registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+        unless registry.dig(agent_key, "env", var_name)
+          puts "#{var_name} not set for '#{agent_cmd}'."
+          exit 1
+        end
+        registry[agent_key]["env"].delete(var_name)
+        registry[agent_key].delete("env") if registry[agent_key]["env"].empty?
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Removed #{var_name} from #{agent_cmd}"
+
+      elsif ARGV.empty?
+        # List env vars
+        registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+        entry = registry[agent_key]
+        unless entry.is_a?(Hash) && entry["env"]&.any?
+          puts "No env vars configured for '#{agent_cmd}'."
+          exit 0
+        end
+        entry["env"].each do |k, v|
+          preview = v.length > 20 ? "#{v[0..16]}..." : v
+          puts "  #{k}=#{preview}"
+        end
+
+      else
+        var_name = ARGV.shift
+        var_value = ARGV.shift
+        unless var_name && var_value
+          puts "Usage: brainiac agent #{agent_cmd} env <KEY> <VALUE>"
+          exit 1
+        end
+        registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+        registry[agent_key] ||= {}
+        registry[agent_key]["env"] ||= {}
+        registry[agent_key]["env"][var_name] = var_value
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Set #{var_name} for #{agent_cmd}"
+      end
+
+    else
+      puts "Unknown subcommand '#{sub}' for agent '#{agent_cmd}'."
+      puts "Available: show, env"
+      exit 1
+    end
+  end
+
+when "role"
+  role_cmd = ARGV.shift
+  roles_dir = File.join(BRAINIAC_DIR, "roles")
+
+  case role_cmd
+  when "list", "ls"
+    unless Dir.exist?(roles_dir)
+      puts "No roles configured. Create markdown files in #{roles_dir}/"
+      exit 0
+    end
+    files = Dir.glob(File.join(roles_dir, "*.md"))
+    if files.empty?
+      puts "No roles configured. Create markdown files in #{roles_dir}/"
+    else
+      # Show which agents use each role
+      registry_file = File.join(BRAINIAC_DIR, "agents.json")
+      registry = File.exist?(registry_file) ? JSON.parse(File.read(registry_file)) : {}
+      agent_roles = {}
+      registry.each do |key, entry|
+        next unless entry.is_a?(Hash) && entry["role"]
+
+        roles = entry["role"].is_a?(Array) ? entry["role"] : [entry["role"]]
+        roles.each do |r|
+          agent_roles[r] ||= []
+          agent_roles[r] << (entry["fizzy_name"] || key.capitalize)
+        end
+      end
+
+      files.each do |f|
+        name = File.basename(f, ".md")
+        # Read first non-empty, non-heading line as description
+        desc = File.readlines(f).find { |l| !l.strip.empty? && !l.start_with?("#") && !l.start_with?("---") }&.strip || ""
+        agents = agent_roles[name]
+        agent_str = agents ? " (#{agents.join(", ")})" : ""
+        puts "#{name}#{agent_str} — #{desc[0..70]}"
+      end
+    end
+
+  when "show"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac role show <name>"
+      exit 1
+    end
+    file = File.join(roles_dir, "#{name}.md")
+    unless File.exist?(file)
+      puts "Role '#{name}' not found. Available: #{Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") }.join(", ")}"
+      exit 1
+    end
+    puts File.read(file)
+
+  when "assign"
+    agent_name = ARGV[0]
+    role_name = ARGV[1]
+    unless agent_name && role_name
+      puts "Usage: brainiac role assign <agent> <role>"
+      exit 1
+    end
+
+    file = File.join(roles_dir, "#{role_name}.md")
+    unless File.exist?(file)
+      puts "Role '#{role_name}' not found."
+      exit 1
+    end
+
+    registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(registry_file) ? JSON.parse(File.read(registry_file)) : {}
+    key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+    registry[key] ||= {}
+
+    # Normalize existing role field to array
+    existing = registry[key]["role"]
+    roles = case existing
+            when Array then existing
+            when String then [existing]
+            else []
+            end
+
+    if roles.include?(role_name)
+      puts "#{agent_name} already has role '#{role_name}'"
+    else
+      roles << role_name
+      registry[key]["role"] = roles.size == 1 ? roles.first : roles
+      File.write(registry_file, JSON.pretty_generate(registry))
+      puts "✓ Assigned role '#{role_name}' to #{agent_name}"
+    end
+
+  when "unassign", "remove-from"
+    agent_name = ARGV[0]
+    role_name = ARGV[1]
+    unless agent_name && role_name
+      puts "Usage: brainiac role unassign <agent> <role>"
+      exit 1
+    end
+
+    registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(registry_file) ? JSON.parse(File.read(registry_file)) : {}
+    key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+
+    unless registry[key]
+      puts "Agent '#{agent_name}' not found in registry."
+      exit 1
+    end
+
+    existing = registry[key]["role"]
+    roles = case existing
+            when Array then existing
+            when String then [existing]
+            else []
+            end
+
+    unless roles.include?(role_name)
+      puts "#{agent_name} doesn't have role '#{role_name}'"
+      exit 1
+    end
+
+    roles.delete(role_name)
+    if roles.empty?
+      registry[key].delete("role")
+    elsif roles.size == 1
+      registry[key]["role"] = roles.first
+    else
+      registry[key]["role"] = roles
+    end
+    File.write(registry_file, JSON.pretty_generate(registry))
+    puts "✓ Removed role '#{role_name}' from #{agent_name}"
+
+  when "create", "add"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac role create <name>"
+      exit 1
+    end
+    FileUtils.mkdir_p(roles_dir)
+    file = File.join(roles_dir, "#{name}.md")
+    if File.exist?(file)
+      puts "Role '#{name}' already exists. Edit #{file} directly."
+      exit 1
+    end
+    File.write(file, "# Role: #{name.split("-").map(&:capitalize).join(" ")}\n\nDescribe this role's responsibilities here.\n")
+    puts "Created #{file} — edit it to define the role."
+
+  else
+    puts <<~HELP
+      Usage: brainiac role <command>
+
+      Commands:
+        list                   List configured roles
+        show <name>            Show role definition
+        create <name>          Create a new role file
+        assign <agent> <role>    Assign a role to an agent (additive)
+        unassign <agent> <role>  Remove a role from an agent
+    HELP
+  end
+
+when "completions"
+  completion_file = File.join(__dir__, "brainiac-completion.bash")
+  if ARGV[0] == "--install"
+    target = File.expand_path("~/.brainiac/brainiac-completion.bash")
+    FileUtils.cp(completion_file, target)
+    puts "Installed to #{target}"
+    puts "Add to your ~/.bashrc:"
+    puts "  source #{target}"
+  else
+    puts File.read(completion_file)
+  end
+
 when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
@@ -1419,6 +1720,8 @@ when "help", "--help", "-h", nil
       brainiac discord <command>      Manage the Discord bot
       brainiac cron <command>         Manage scheduled agent tasks
       brainiac provider <command>     Manage CLI providers
+      brainiac role <command>         Manage agent roles
+      brainiac agent <command>        Manage agent registry (env, list, show)
       brainiac config                 Configure Brainiac CLI
       brainiac path                   Show Brainiac config directory
       brainiac version                Show version
@@ -1461,6 +1764,20 @@ when "help", "--help", "-h", nil
       provider list                    List configured CLI providers
       provider show <name>             Show provider configuration
       provider add <name>              Create a new provider config
+
+    Role Commands:
+      role list                        List configured roles and assignments
+      role show <name>                 Show role definition
+      role create <name>               Create a new role file
+      role assign <agent> <role>       Assign a role to an agent (additive)
+      role unassign <agent> <role>     Remove a role from an agent
+
+    Agent Commands:
+      agent list                         List all agents in the registry
+      agent <name> show                  Show agent configuration (tokens redacted)
+      agent <name> env <KEY> <VALUE>     Set an env var for an agent
+      agent <name> env                   List env vars for an agent
+      agent <name> env --delete <KEY>    Remove an env var from an agent
 
     Examples:
       # Start the server in the foreground (like rails server)

@@ -1,0 +1,15 @@
+{
+  "binary": "grok",
+  "default_args": "--always-approve",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "effort_flag": "--effort",
+  "prompt_mode": "flag",
+  "prompt_flag": "--prompt-file",
+  "resume_flag": "-c",
+  "models": {
+    "build": "grok-build",
+    "composer": "grok-composer-2.5-fast",
+    "auto": "grok-composer-2.5-fast"
+  }
+}

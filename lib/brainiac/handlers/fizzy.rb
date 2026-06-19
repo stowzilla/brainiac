@@ -143,6 +143,7 @@ def handle_card_assigned(payload)
   branch = "fizzy-#{card_number}-#{slugify(title)}"
   model = detect_model(project_config, tags: tags)
   effort = detect_effort(project_config, tags: tags)
+  cli_provider_override = detect_cli_provider(tags: tags)
 
   card_key = "card-#{card_number}"
   if session_active?(card_key)
@@ -274,7 +275,7 @@ def handle_card_assigned(payload)
            end
 
   pid, log_file = run_agent(prompt, project_config: project_config, chdir: worktree_path, log_name: "assigned-#{card_number}", model: model, effort: effort, agent_name: agent_name,
-                                    card_number: card_number, source: :fizzy, source_context: { card_number: card_number })
+                                    card_number: card_number, source: :fizzy, source_context: { card_number: card_number }, cli_provider: cli_provider_override)
   register_session(card_key, pid, log_file: log_file, supersede_key: card_key, agent_name: assigned_agent)
 
   # Move card to Right Now — agent is starting work
@@ -635,8 +636,13 @@ def handle_comment(payload)
     end
   end
 
+  card_tags = eventable.dig("card", "tags") || []
   model = detect_model(project_config, text: plain_text)
-  effort = detect_effort(project_config, tags: tags, text: effort_text_for_detection)
+  effort = detect_effort(project_config, tags: card_tags, text: effort_text_for_detection)
+  cli_provider_override = detect_cli_provider(text: plain_text, tags: card_tags)
+
+  # Strip [cli:X] tag from prompt content
+  plain_text = plain_text.sub(/\[cli:\w+\]/i, "").strip
 
   # Determine which agent should handle this comment.
   #
@@ -826,7 +832,7 @@ def handle_comment(payload)
     pid, log_file = run_agent(prompt, project_config: project_config, chdir: review_worktree_path,
                                       log_name: "review-#{agent_name.downcase}-#{card_number || card_internal_id}", model: model, effort: effort, agent_name: agent_name,
                                       card_number: card_number, comment_id: comment_id,
-                                      source: :fizzy, source_context: { card_number: card_number })
+                                      source: :fizzy, source_context: { card_number: card_number }, cli_provider: cli_provider_override)
     register_session(card_key, pid, log_file: log_file, supersede_key: card_key, agent_name: agent_name)
 
     return [200, { status: "cross_agent_review", agent: agent_name, card_agent: card_assigned_agent,
@@ -912,7 +918,7 @@ def handle_comment(payload)
             work_dir: work_dir, project_config: project_config, project_key: project_key,
             comment_vars: comment_vars, plain_text: plain_text, model: model,
             agent_name: agent_name, comment_id: comment_id, eventable: eventable,
-            deploy_intent: deploy_intent
+            deploy_intent: deploy_intent, cli_provider: cli_provider_override
           )
         end
 
@@ -936,7 +942,7 @@ def handle_comment(payload)
       work_dir: work_dir, project_config: project_config, project_key: project_key,
       comment_vars: comment_vars, plain_text: plain_text, model: model,
       agent_name: agent_name, comment_id: comment_id, eventable: eventable,
-      deploy_intent: deploy_intent
+      deploy_intent: deploy_intent, cli_provider: cli_provider_override
     )
     [200, result.to_json]
   else
@@ -1019,47 +1025,65 @@ def handle_comment(payload)
 
       # Detect planning mode
       card_tags = eventable.dig("card", "tags") || []
-      planning_info = detect_planning_mode(
-        text: plain_text,
-        tags: card_tags,
-        card_internal_id: card_internal_id,
-        card_number: card_number
-      )
 
-      prompt = if planning_info
-                 # Planning mode
-                 card_id = planning_info[:card_id]
-                 LOG.info "[Planning] Planning mode active for mention on card #{card_number || card_internal_id}"
+      # Check if we can resume the existing session (lean prompt) vs full prompt
+      resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider_override, agent_name: agent_name)
+      should_resume = resolved["resume_flag"]
 
-                 render_planning_prompt(PROMPT_MENTION,
-                                        comment_vars.merge(
-                                          "CARD_INTERNAL_ID" => card_internal_id,
-                                          "CARD_ID" => card_id,
-                                          "CARD_NUMBER" => card_number || "N/A",
-                                          "CARD_NUMBER_TEXT" => card_number ? " (##{card_number})" : "",
-                                          "BRANCH" => branch
-                                        ),
-                                        brain_context: build_brain_context(agent_name: agent_name, card_title: card_title, card_number: card_number, project_key: project_key,
-                                                                           comment_body: plain_text, source: :fizzy),
-                                        card_context: prefetch_card_context(card_number, repo_path: worktree_path, agent_name: agent_name),
-                                        agent_name: agent_name)
-               else
-                 render_prompt(PROMPT_MENTION,
-                               comment_vars.merge(
-                                 "CARD_INTERNAL_ID" => card_internal_id,
-                                 "CARD_ID" => card_number || card_internal_id,
-                                 "CARD_NUMBER" => card_number || "N/A",
-                                 "CARD_NUMBER_TEXT" => card_number ? " (##{card_number})" : "",
-                                 "BRANCH" => branch
-                               ),
-                               brain_context: build_brain_context(agent_name: agent_name, card_title: card_title, card_number: card_number, project_key: project_key,
-                                                                  comment_body: plain_text, source: :fizzy),
-                               card_context: prefetch_card_context(card_number, repo_path: worktree_path, agent_name: agent_name),
-                               agent_name: agent_name)
-               end
+      if should_resume
+        card_context = prefetch_card_context(card_number, repo_path: worktree_path, agent_name: agent_name)
+        prompt = render_resume_prompt(
+          comment_body: plain_text,
+          comment_creator: comment_vars["COMMENT_CREATOR"],
+          comment_id: comment_id,
+          card_number: card_number,
+          card_context: card_context,
+          agent_name: agent_name
+        )
+        LOG.info "[Resume] Using lean prompt for mention on card #{card_number || card_internal_id} (#{resolved["agent_cli"]})"
+      else
+        planning_info = detect_planning_mode(
+          text: plain_text,
+          tags: card_tags,
+          card_internal_id: card_internal_id,
+          card_number: card_number
+        )
+
+        prompt = if planning_info
+                   # Planning mode
+                   card_id = planning_info[:card_id]
+                   LOG.info "[Planning] Planning mode active for mention on card #{card_number || card_internal_id}"
+
+                   render_planning_prompt(PROMPT_MENTION,
+                                          comment_vars.merge(
+                                            "CARD_INTERNAL_ID" => card_internal_id,
+                                            "CARD_ID" => card_id,
+                                            "CARD_NUMBER" => card_number || "N/A",
+                                            "CARD_NUMBER_TEXT" => card_number ? " (##{card_number})" : "",
+                                            "BRANCH" => branch
+                                          ),
+                                          brain_context: build_brain_context(agent_name: agent_name, card_title: card_title, card_number: card_number, project_key: project_key,
+                                                                             comment_body: plain_text, source: :fizzy),
+                                          card_context: prefetch_card_context(card_number, repo_path: worktree_path, agent_name: agent_name),
+                                          agent_name: agent_name)
+                 else
+                   render_prompt(PROMPT_MENTION,
+                                 comment_vars.merge(
+                                   "CARD_INTERNAL_ID" => card_internal_id,
+                                   "CARD_ID" => card_number || card_internal_id,
+                                   "CARD_NUMBER" => card_number || "N/A",
+                                   "CARD_NUMBER_TEXT" => card_number ? " (##{card_number})" : "",
+                                   "BRANCH" => branch
+                                 ),
+                                 brain_context: build_brain_context(agent_name: agent_name, card_title: card_title, card_number: card_number, project_key: project_key,
+                                                                    comment_body: plain_text, source: :fizzy),
+                                 card_context: prefetch_card_context(card_number, repo_path: worktree_path, agent_name: agent_name),
+                                 agent_name: agent_name)
+                 end
+      end
 
       pid, log_file = run_agent(prompt, project_config: project_config, chdir: worktree_path, log_name: "mention-#{card_number || card_internal_id}", model: model, effort: effort, agent_name: agent_name, card_number: card_number, comment_id: comment_id,
-                                        source: :fizzy, source_context: { card_number: card_number })
+                                        source: :fizzy, source_context: { card_number: card_number }, cli_provider: cli_provider_override, resume: true)
       register_session(card_key, pid, log_file: log_file, supersede_key: card_key, agent_name: agent_name)
       return [200,
               { status: "responded", card_internal_id: card_internal_id, card_number: card_number, branch: branch, worktree: worktree_path,
@@ -1182,7 +1206,7 @@ def handle_comment(payload)
              end
 
     pid, log_file = run_agent(prompt, project_config: project_config, chdir: worktree_path, log_name: "mention-#{card_number || card_internal_id}", model: model, effort: effort, agent_name: agent_name, card_number: card_number, comment_id: comment_id,
-                                      source: :fizzy, source_context: { card_number: card_number })
+                                      source: :fizzy, source_context: { card_number: card_number }, cli_provider: cli_provider_override)
     register_session(card_key, pid, log_file: log_file, supersede_key: card_key, agent_name: agent_name)
     [200,
      { status: "responded", card_internal_id: card_internal_id, card_number: card_number, branch: branch, worktree: worktree_path,
@@ -1193,53 +1217,76 @@ end
 # Dispatch a follow-up comment to the agent. Extracted so it can be called
 # both inline (no active session) and from a queued background thread.
 def dispatch_followup_comment(card_key:, card_number:, card_internal_id:, work_dir:, project_config:, project_key:, comment_vars:, plain_text:,
-                              model:, agent_name:, comment_id:, eventable:, deploy_intent: nil)
+                              model:, agent_name:, comment_id:, eventable:, deploy_intent: nil, cli_provider: nil)
   card_tags = eventable.dig("card", "tags") || []
-  planning_info = detect_planning_mode(
-    text: plain_text,
-    tags: card_tags,
-    card_internal_id: card_internal_id,
-    card_number: card_number
-  )
+  effort = detect_effort(project_config, tags: card_tags, text: plain_text)
 
-  prompt = if planning_info
-             card_id = planning_info[:card_id]
-             LOG.info "[Planning] Planning mode active for card #{card_number || card_internal_id}"
+  # Determine if we should resume (worktree + provider supports it)
+  is_worktree = work_dir != project_config["repo_path"]
+  resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
+  should_resume = is_worktree && resolved["resume_flag"]
 
-             if work_dir == project_config["repo_path"]
-               render_planning_prompt(PROMPT_FOLLOWUP_NO_WORKTREE,
-                                      comment_vars.merge("CARD_INTERNAL_ID" => card_internal_id, "CARD_ID" => card_id),
-                                      brain_context: build_brain_context(agent_name: agent_name, project_key: project_key, comment_body: plain_text,
-                                                                         source: :fizzy),
-                                      card_context: prefetch_card_context(card_number, repo_path: project_config["repo_path"],
-                                                                                       agent_name: agent_name),
-                                      agent_name: agent_name)
+  if should_resume
+    # Lean prompt: only the new comment + fresh card context. The previous session
+    # already has role, persona, knowledge, core instructions, and card history.
+    card_context = prefetch_card_context(card_number, repo_path: work_dir, agent_name: agent_name)
+    prompt = render_resume_prompt(
+      comment_body: plain_text,
+      comment_creator: comment_vars["COMMENT_CREATOR"],
+      comment_id: comment_id,
+      card_number: card_number,
+      card_context: card_context,
+      agent_name: agent_name
+    )
+    LOG.info "[Resume] Using lean prompt for follow-up on card #{card_number || card_internal_id} (#{resolved["agent_cli"]})"
+  else
+    # Full prompt: no session to resume, build everything from scratch
+    planning_info = detect_planning_mode(
+      text: plain_text,
+      tags: card_tags,
+      card_internal_id: card_internal_id,
+      card_number: card_number
+    )
+
+    prompt = if planning_info
+               card_id = planning_info[:card_id]
+               LOG.info "[Planning] Planning mode active for card #{card_number || card_internal_id}"
+
+               if work_dir == project_config["repo_path"]
+                 render_planning_prompt(PROMPT_FOLLOWUP_NO_WORKTREE,
+                                        comment_vars.merge("CARD_INTERNAL_ID" => card_internal_id, "CARD_ID" => card_id),
+                                        brain_context: build_brain_context(agent_name: agent_name, project_key: project_key, comment_body: plain_text,
+                                                                           source: :fizzy),
+                                        card_context: prefetch_card_context(card_number, repo_path: project_config["repo_path"],
+                                                                                         agent_name: agent_name),
+                                        agent_name: agent_name)
+               else
+                 render_planning_prompt(PROMPT_FOLLOWUP_WORKTREE,
+                                        comment_vars.merge("CARD_NUMBER" => card_number, "CARD_ID" => card_id),
+                                        brain_context: build_brain_context(agent_name: agent_name, card_number: card_number, project_key: project_key, comment_body: plain_text,
+                                                                           source: :fizzy),
+                                        card_context: prefetch_card_context(card_number, repo_path: work_dir, agent_name: agent_name),
+                                        agent_name: agent_name)
+               end
+             elsif work_dir != project_config["repo_path"]
+               render_prompt(PROMPT_FOLLOWUP_WORKTREE,
+                             comment_vars.merge("CARD_NUMBER" => card_number, "CARD_ID" => card_number),
+                             brain_context: build_brain_context(agent_name: agent_name, card_number: card_number, project_key: project_key, comment_body: plain_text,
+                                                                source: :fizzy),
+                             card_context: prefetch_card_context(card_number, repo_path: work_dir, agent_name: agent_name),
+                             agent_name: agent_name)
              else
-               render_planning_prompt(PROMPT_FOLLOWUP_WORKTREE,
-                                      comment_vars.merge("CARD_NUMBER" => card_number, "CARD_ID" => card_id),
-                                      brain_context: build_brain_context(agent_name: agent_name, card_number: card_number, project_key: project_key, comment_body: plain_text,
-                                                                         source: :fizzy),
-                                      card_context: prefetch_card_context(card_number, repo_path: work_dir, agent_name: agent_name),
-                                      agent_name: agent_name)
+               render_prompt(PROMPT_FOLLOWUP_NO_WORKTREE,
+                             comment_vars.merge("CARD_INTERNAL_ID" => card_internal_id, "CARD_ID" => card_internal_id),
+                             brain_context: build_brain_context(agent_name: agent_name, project_key: project_key, comment_body: plain_text,
+                                                                source: :fizzy),
+                             card_context: prefetch_card_context(card_number, repo_path: project_config["repo_path"], agent_name: agent_name),
+                             agent_name: agent_name)
              end
-           elsif work_dir != project_config["repo_path"]
-             render_prompt(PROMPT_FOLLOWUP_WORKTREE,
-                           comment_vars.merge("CARD_NUMBER" => card_number, "CARD_ID" => card_number),
-                           brain_context: build_brain_context(agent_name: agent_name, card_number: card_number, project_key: project_key, comment_body: plain_text,
-                                                              source: :fizzy),
-                           card_context: prefetch_card_context(card_number, repo_path: work_dir, agent_name: agent_name),
-                           agent_name: agent_name)
-           else
-             render_prompt(PROMPT_FOLLOWUP_NO_WORKTREE,
-                           comment_vars.merge("CARD_INTERNAL_ID" => card_internal_id, "CARD_ID" => card_internal_id),
-                           brain_context: build_brain_context(agent_name: agent_name, project_key: project_key, comment_body: plain_text,
-                                                              source: :fizzy),
-                           card_context: prefetch_card_context(card_number, repo_path: project_config["repo_path"], agent_name: agent_name),
-                           agent_name: agent_name)
-           end
+  end
 
   pid, log_file = run_agent(prompt, project_config: project_config, chdir: work_dir, log_name: "followup-#{card_number || card_internal_id}", model: model, effort: effort, agent_name: agent_name, card_number: card_number, comment_id: comment_id,
-                                    source: :fizzy, source_context: { card_number: card_number, card_internal_id: card_internal_id, deploy_intent: deploy_intent })
+                                    source: :fizzy, source_context: { card_number: card_number, card_internal_id: card_internal_id, deploy_intent: deploy_intent }, cli_provider: cli_provider, resume: is_worktree)
   register_session(card_key, pid, log_file: log_file, supersede_key: card_key, agent_name: agent_name)
 
   # Move card to Right Now — agent is actively working again

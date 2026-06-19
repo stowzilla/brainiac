@@ -119,6 +119,40 @@ def fizzy_display_name(agent_name)
   entry["fizzy_name"] || agent_name
 end
 
+# Get the role name(s) configured for an agent in agents.json.
+# Returns an array of role names (may be empty).
+def agent_roles_for(agent_name)
+  return [] unless agent_name
+
+  key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+  entry = AGENT_REGISTRY[key]
+  return [] unless entry.is_a?(Hash)
+
+  roles = entry["role"]
+  case roles
+  when Array then roles
+  when String then [roles]
+  else []
+  end
+end
+
+# Load a role definition from ~/.brainiac/roles/<name>.md.
+# Returns the file content (markdown) or nil if not found.
+def load_role(role_name)
+  return nil unless role_name
+
+  role_file = File.join(ROLES_DIR, "#{role_name}.md")
+  return nil unless File.exist?(role_file)
+
+  content = File.read(role_file).strip
+  # Strip YAML front matter if present
+  content = content.sub(/\A---\n.*?\n---\n*/m, "").strip
+  content.empty? ? nil : content
+rescue StandardError => e
+  LOG.warn "Failed to load role '#{role_name}': #{e.message}"
+  nil
+end
+
 def agent_roster
   roster = {}
   all_agent_names.each { |name| roster[name.downcase] = fizzy_display_name(name) }
