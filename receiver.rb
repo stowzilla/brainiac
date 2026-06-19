@@ -433,6 +433,19 @@ get "/api/agents" do
   { default: AI_AGENT_NAME, agents: discover_kiro_agents, all_known: all_agent_names.to_a, roster: agent_roster }.to_json
 end
 
+get "/api/roles" do
+  content_type :json
+  roles = []
+  if Dir.exist?(ROLES_DIR)
+    Dir.glob(File.join(ROLES_DIR, "*.md")).each do |f|
+      name = File.basename(f, ".md")
+      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, e| e["fizzy_name"] || k.capitalize }
+      roles << { name: name, agents: agents }
+    end
+  end
+  { roles: roles, dir: ROLES_DIR }.to_json
+end
+
 get "/api/users" do
   content_type :json
   reload_user_registry!

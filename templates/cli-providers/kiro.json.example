@@ -1,0 +1,15 @@
+{
+  "binary": "kiro-cli",
+  "default_args": "chat --trust-all-tools --no-interactive --trust-tools execute_bash,fs_write,fs_read,code,grep,glob,web_search,web_fetch,use_subagent,use_aws",
+  "agent_flag": "--agent",
+  "model_flag": "--model",
+  "effort_flag": "--effort",
+  "prompt_mode": "stdin",
+  "resume_flag": "--resume",
+  "models": {
+    "opus": "claude-opus-4.6",
+    "sonnet": "claude-sonnet-4.6",
+    "haiku": "claude-haiku-4.5"
+  },
+  "efforts": ["low", "medium", "high", "xhigh", "max"]
+}

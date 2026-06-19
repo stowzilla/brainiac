@@ -4,7 +4,7 @@ The version lives in `lib/brainiac/version.rb` as a module constant (`Brainiac::
 
 ## When to bump
 
-Bump the version before pushing any fix or feature to origin. Include the bump in the same commit.
+Bump the version before pushing any fix or feature to origin. Include the bump in the same commit. Don't bump it if the current version hasn't been pushed to Rubygems yet.
 
 ## Which segment to bump
 

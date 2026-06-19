@@ -542,7 +542,9 @@ def execute_cron_job(job)
   FileUtils.mkdir_p(File.dirname(log_file))
 
   prompt_file = write_cron_prompt_file(job, prompt_data[:full_prompt], timestamp)
-  cmd = build_cron_agent_cmd(job, project)
+  resolved = resolve_project_cli_config(project, agent_name: agent_name)
+  cmd = build_cron_agent_cmd(job, project, prompt_file: prompt_file)
+  prompt_mode = resolved["prompt_mode"] || "stdin"
 
   LOG.info "[Cron] Dispatching job #{job[:id]} with #{agent_name}, tail -f #{log_file}"
 
@@ -551,7 +553,7 @@ def execute_cron_job(job)
 
   pid = spawn(spawn_env, *cmd,
               chdir: project["repo_path"],
-              in: prompt_file,
+              **(prompt_mode == "stdin" ? { in: prompt_file } : {}),
               out: [log_file, "w"],
               err: %i[child out])
 
@@ -573,15 +575,16 @@ def write_cron_prompt_file(job, prompt_content, timestamp)
 end
 
 # Build the CLI command array for a cron agent invocation.
-def build_cron_agent_cmd(job, project)
+def build_cron_agent_cmd(job, project, prompt_file: nil)
   agent_config_name = job[:agent].downcase.gsub(/[^a-z0-9-]/, "-")
-  resolved = resolve_project_cli_config(project)
+  resolved = resolve_project_cli_config(project, agent_name: job[:agent])
+  agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
   cmd = [resolved["agent_cli"]]
-  cmd.push("--agent", agent_config_name)
+  cmd.push(agent_flag, agent_config_name) if agent_flag
   cmd.concat(resolved["agent_cli_args"].split)
-  add_trust_tools!(cmd, resolved["agent_cli_args"])
   cmd.push(resolved["agent_model_flag"], job[:model]) if resolved["agent_model_flag"]&.length&.positive? && job[:model]
   cmd.push(resolved["agent_effort_flag"], job[:effort]) if resolved["agent_effort_flag"]&.length&.positive? && job[:effort]
+  cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
   cmd
 end
 
