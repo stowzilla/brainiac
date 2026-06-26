@@ -1550,6 +1550,12 @@ when "agent"
       end
     end
 
+    # Initialize brain (qmd collections) for local agents
+    if local
+      puts ""
+      brain_init(name)
+    end
+
   when "remove", "delete", "rm"
     name = ARGV.shift
     unless name
