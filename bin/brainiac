@@ -1725,10 +1725,12 @@ when "agent"
         end
         if value == "none"
           registry[agent_key].delete("role")
-        else
-          roles = value.split(",").map(&:strip)
-          registry[agent_key]["role"] = roles.size == 1 ? roles.first : roles
+          File.write(agent_registry_file, JSON.pretty_generate(registry))
+          puts "✓ Set role for #{agent_cmd}"
+          next
         end
+        roles = value.split(",").map(&:strip)
+        registry[agent_key]["role"] = roles.size == 1 ? roles.first : roles
         File.write(agent_registry_file, JSON.pretty_generate(registry))
         puts "✓ Set role for #{agent_cmd}"
 
