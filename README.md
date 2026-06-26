@@ -1,6 +1,6 @@
 # Brainiac
 
-A webhook receiver that listens for [Fizzy](https://fizzy.do), GitHub, Discord, and Zoho Mail events, then dispatches work to AI agent CLIs. Each agent has its own persona, brain, and voice — they collaborate on the same projects through @mentions.
+Brainiac is a multi-agent orchestration layer for developer workflows. It connects your tools (Fizzy, GitHub, Discord, Zoho) to a team of autonomous AI agents. By managing personas, shared knowledge, and collaborative workflows via @mentions, Brainiac allows you to deploy and manage a unified fleet of AI experts directly from your CLI.
 
 ## How It Works
 
