@@ -1447,10 +1447,13 @@ when "agent"
       puts "  --cli <provider>     Set CLI provider (default: kiro)"
       puts "  --persona <text>     Create a persona style file with this description"
       puts ""
+      puts "If no options are given and stdin is a terminal, interactive mode is used."
+      puts ""
       puts "Examples:"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
       puts "  brainiac agent create Jane --role general-engineer --cli grok"
       puts "  brainiac agent create Avon --persona \"Dry wit, sardonic, brilliant\""
+      puts "  brainiac agent create MyAgent   # interactive"
       exit 1
     end
 
@@ -1462,30 +1465,59 @@ when "agent"
       exit 1
     end
 
-    # Parse options
     local = false
     roles = []
     cli_provider = nil
     persona_text = nil
 
-    while ARGV.any?
-      case ARGV[0]
-      when "--local"
-        ARGV.shift
-        local = true
-      when "--role"
-        ARGV.shift
-        roles << ARGV.shift
-      when "--cli"
-        ARGV.shift
-        cli_provider = ARGV.shift
-      when "--persona"
-        ARGV.shift
-        persona_text = ARGV.shift
-      else
-        puts "Unknown option: #{ARGV[0]}"
-        exit 1
+    if ARGV.any?
+      # Flag mode
+      while ARGV.any?
+        case ARGV[0]
+        when "--local"
+          ARGV.shift
+          local = true
+        when "--role"
+          ARGV.shift
+          roles << ARGV.shift
+        when "--cli"
+          ARGV.shift
+          cli_provider = ARGV.shift
+        when "--persona"
+          ARGV.shift
+          persona_text = ARGV.shift
+        else
+          puts "Unknown option: #{ARGV[0]}"
+          exit 1
+        end
       end
+    elsif $stdin.tty?
+      # Interactive mode
+      puts "Creating agent '#{name}' (#{agent_key})"
+      puts ""
+
+      print "Local (dispatches on this machine)? [y/N]: "
+      local = $stdin.gets.chomp.downcase.start_with?("y")
+
+      # Show available CLI providers
+      providers_dir = File.join(BRAINIAC_DIR, "cli-providers")
+      available_providers = Dir.exist?(providers_dir) ? Dir.glob(File.join(providers_dir, "*.json")).map { |f| File.basename(f, ".json") } : []
+      hint = available_providers.any? ? " (#{available_providers.join(", ")})" : ""
+      print "CLI provider#{hint} [kiro]: "
+      input = $stdin.gets.chomp
+      cli_provider = input.empty? ? nil : input
+
+      # Show available roles
+      roles_dir = File.join(BRAINIAC_DIR, "roles")
+      available_roles = Dir.exist?(roles_dir) ? Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") } : []
+      hint = available_roles.any? ? " (#{available_roles.join(", ")})" : ""
+      print "Roles#{hint} (comma-separated) []: "
+      input = $stdin.gets.chomp
+      roles = input.empty? ? [] : input.split(",").map(&:strip)
+
+      print "Persona description (tone/style, or blank to skip) []: "
+      input = $stdin.gets.chomp
+      persona_text = input.empty? ? nil : input
     end
 
     entry = { "fizzy_name" => name }
@@ -1551,11 +1583,12 @@ when "agent"
         create <name> [options]           Add a new agent to the registry
         remove <name>                     Remove an agent from the registry
         <name> show                       Show agent configuration (tokens redacted)
+        <name> set <field> <value>        Update a config field (local, cli, role, persona, fizzy_name)
         <name> env <KEY> <VALUE>          Set an env var for an agent
         <name> env                        List env vars for an agent
         <name> env --delete <KEY>         Remove an env var from an agent
 
-      Create options:
+      Create options (or interactive if no flags given):
         --local              Mark agent as local (dispatches on this machine)
         --role <role>        Assign a role (repeatable)
         --cli <provider>     Set CLI provider (default: kiro)
@@ -1564,7 +1597,11 @@ when "agent"
       Examples:
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
+        brainiac agent create MyAgent             # interactive mode
         brainiac agent remove SecurityBot
+        brainiac agent galen set local true
+        brainiac agent galen set persona "Dry, sardonic"
+        brainiac agent galen set role code-reviewer,general-engineer
         brainiac agent galen env FIZZY_TOKEN fizzy_abc123
         brainiac agent galen show
     HELP
@@ -1635,9 +1672,96 @@ when "agent"
         puts "✓ Set #{var_name} for #{agent_cmd}"
       end
 
+    when "set"
+      field = ARGV.shift
+      value = ARGV.shift
+      unless field
+        puts "Usage: brainiac agent #{agent_cmd} set <field> <value>"
+        puts ""
+        puts "Fields:"
+        puts "  local <true|false>     Set local dispatch flag"
+        puts "  cli <provider>         Set CLI provider"
+        puts "  role <roles>           Set roles (comma-separated, or 'none' to clear)"
+        puts "  persona <text>         Set/update persona style file"
+        puts "  fizzy_name <name>      Set display name for Fizzy @mentions"
+        exit 1
+      end
+
+      registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+      unless registry[agent_key]
+        puts "Agent '#{agent_cmd}' not found in registry."
+        exit 1
+      end
+
+      case field
+      when "local"
+        if value == "true"
+          registry[agent_key]["local"] = true
+        else
+          registry[agent_key].delete("local")
+        end
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Set local=#{value} for #{agent_cmd}"
+
+      when "cli"
+        unless value
+          puts "Usage: brainiac agent #{agent_cmd} set cli <provider>"
+          exit 1
+        end
+        registry[agent_key]["cli_provider"] = value
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Set cli_provider=#{value} for #{agent_cmd}"
+
+      when "role"
+        unless value
+          puts "Usage: brainiac agent #{agent_cmd} set role <roles|none>"
+          exit 1
+        end
+        if value == "none"
+          registry[agent_key].delete("role")
+        else
+          roles = value.split(",").map(&:strip)
+          registry[agent_key]["role"] = roles.size == 1 ? roles.first : roles
+        end
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Set role for #{agent_cmd}"
+
+      when "persona"
+        unless value
+          puts "Usage: brainiac agent #{agent_cmd} set persona <text>"
+          exit 1
+        end
+        persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
+        FileUtils.mkdir_p(persona_dir)
+        persona_file = File.join(persona_dir, "style.md")
+        display = registry[agent_key]["fizzy_name"] || agent_cmd.capitalize
+        File.write(persona_file, <<~MD)
+          ---
+          name: #{agent_key}-style
+          description: Persona voice for #{display}.
+          ---
+          # #{display} — Persona
+          #{value}
+        MD
+        puts "✓ Wrote persona to #{persona_file}"
+
+      when "fizzy_name"
+        unless value
+          puts "Usage: brainiac agent #{agent_cmd} set fizzy_name <name>"
+          exit 1
+        end
+        registry[agent_key]["fizzy_name"] = value
+        File.write(agent_registry_file, JSON.pretty_generate(registry))
+        puts "✓ Set fizzy_name=#{value} for #{agent_cmd}"
+
+      else
+        puts "Unknown field '#{field}'. Available: local, cli, role, persona, fizzy_name"
+        exit 1
+      end
+
     else
       puts "Unknown subcommand '#{sub}' for agent '#{agent_cmd}'."
-      puts "Available: show, env"
+      puts "Available: show, env, set"
       exit 1
     end
   end
