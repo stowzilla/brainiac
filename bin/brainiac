@@ -1723,14 +1723,9 @@ when "agent"
           puts "Usage: brainiac agent #{agent_cmd} set role <roles|none>"
           exit 1
         end
-        if value == "none"
-          registry[agent_key].delete("role")
-          File.write(agent_registry_file, JSON.pretty_generate(registry))
-          puts "✓ Set role for #{agent_cmd}"
-          next
-        end
-        roles = value.split(",").map(&:strip)
-        registry[agent_key]["role"] = roles.size == 1 ? roles.first : roles
+        roles = value == "none" ? [] : value.split(",").map(&:strip)
+        resolved_role = roles.one? ? roles.first : roles
+        roles.empty? ? registry[agent_key].delete("role") : registry[agent_key]["role"] = resolved_role
         File.write(agent_registry_file, JSON.pretty_generate(registry))
         puts "✓ Set role for #{agent_cmd}"
 
