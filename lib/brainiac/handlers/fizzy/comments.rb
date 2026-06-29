@@ -350,7 +350,9 @@ def handle_cross_agent_mention(agent_name:, card_info:, card_internal_id:, comme
     branch_exists = card_branch && system("git", "rev-parse", "--verify", card_branch, chdir: repo_path, out: File::NULL, err: File::NULL)
     base_ref = branch_exists ? card_branch : "origin/#{get_default_branch(repo_path)}"
 
-    run_cmd("git", "branch", "-D", review_branch, chdir: repo_path) if system("git", "rev-parse", "--verify", review_branch, chdir: repo_path, out: File::NULL, err: File::NULL)
+    if system("git", "rev-parse", "--verify", review_branch, chdir: repo_path, out: File::NULL, err: File::NULL)
+      run_cmd("git", "branch", "-D", review_branch, chdir: repo_path)
+    end
 
     run_cmd("git", "worktree", "add", "-b", review_branch, review_worktree_path, base_ref, chdir: repo_path)
     trust_version_manager(review_worktree_path, chdir: review_worktree_path)

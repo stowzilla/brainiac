@@ -77,7 +77,8 @@ def run_menu(launcher, entries)
       io.read.strip
     end
   when "zenity"
-    IO.popen(["zenity", "--list", "--title", "Agent Sessions", "--column", "Session", "--width", "600", "--height", "400"], "r+", err: "/dev/null") do |io|
+    IO.popen(["zenity", "--list", "--title", "Agent Sessions", "--column", "Session", "--width", "600", "--height", "400"], "r+",
+             err: "/dev/null") do |io|
       entries.each { |e| io.puts e[:display] }
       io.close_write
       io.read.strip

@@ -592,7 +592,10 @@ end
 def handle_fizzy_post_session(fizzy_card, exit_status, signaled, agent_name, chdir, source, source_context, project_config, skip_column_move)
   return unless source == :fizzy && fizzy_card && exit_status&.zero? && !signaled
 
-  move_card_to_column(fizzy_card, "needs_review", project_config: project_config, agent_name: agent_name) unless skip_column_move || card_merged?(fizzy_card)
+  unless skip_column_move || card_merged?(fizzy_card)
+    move_card_to_column(fizzy_card, "needs_review", project_config: project_config,
+                                                    agent_name: agent_name)
+  end
 
   append_fizzy_comment_footer(fizzy_card, project_config: project_config, agent_name: agent_name)
 

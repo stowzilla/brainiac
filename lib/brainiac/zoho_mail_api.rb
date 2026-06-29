@@ -93,7 +93,10 @@ end
 # Prefers text/plain part; falls back to stripping HTML from text/html part.
 def extract_text_from_mime(mime)
   # Try to find text/plain part
-  return Regexp.last_match(1).gsub("\r\n", "\n").strip if mime =~ %r{Content-Type: text/plain[^\r\n]*\r?\n(?:Content-Transfer-Encoding:[^\r\n]*\r?\n)?(?:\r?\n)(.*?)(?:\r?\n------=_Part|\z)}mi
+  if mime =~ %r{Content-Type: text/plain[^\r\n]*\r?\n(?:Content-Transfer-Encoding:[^\r\n]*\r?\n)?(?:\r?\n)(.*?)(?:\r?\n------=_Part|\z)}mi
+    return Regexp.last_match(1).gsub("\r\n",
+                                     "\n").strip
+  end
 
   # Fallback: extract text/html part and strip tags
   if mime =~ %r{Content-Type: text/html[^\r\n]*\r?\n(?:Content-Transfer-Encoding:[^\r\n]*\r?\n)?(?:\r?\n)(.*?)(?:\r?\n------=_Part|\z)}mi

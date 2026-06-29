@@ -64,12 +64,23 @@ def start_brainiac_restart_monitor
 
         Thread.new do
           sleep 1
-          pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "sh", "-c", "sleep 3 && brainiac server --daemon",
-                      out: "/dev/null", err: "/dev/null")
+          # Restart from the same source directory as the current instance,
+          # not the gem install. This ensures code changes take effect immediately.
+          source_dir = File.expand_path("../../..", __dir__)
+          receiver_path = File.join(source_dir, "receiver.rb")
+          log_file = File.join(source_dir, "tmp", "brainiac-server.log")
+          FileUtils.mkdir_p(File.dirname(log_file))
+
+          pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "ruby", receiver_path,
+                      chdir: source_dir, out: [log_file, "a"], err: %i[child out])
           Process.detach(pid)
 
+          # Update PID file and server.root for the new instance
+          File.write(File.join(BRAINIAC_DIR, "brainiac-server.pid"), pid.to_s)
+          File.write(File.join(BRAINIAC_DIR, "server.root"), source_dir)
+
           sleep 1
-          LOG.info "[Brainiac] Stopping server, new instance will start in 3 seconds..."
+          LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
           Sinatra::Application.quit!
           sleep 0.5
           exit!
