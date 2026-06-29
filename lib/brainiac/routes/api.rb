@@ -207,7 +207,7 @@ get "/api/status" do
       }
     end
 
-    { sessions: sessions, count: sessions.size, recent: recent, version: BRAINIAC_VERSION }.to_json
+    { sessions: sessions, count: sessions.size, recent: recent, version: BRAINIAC_VERSION, server_root: File.expand_path("../../..", __dir__) }.to_json
   end
 end
 

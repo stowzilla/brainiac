@@ -17,7 +17,8 @@ WAYBAR_STYLE  = File.expand_path("~/.config/waybar/style.css")
 BRAINIAC_DIR  = File.expand_path("~/.brainiac")
 DEPLOYMENTS_CONFIG = File.join(BRAINIAC_DIR, "deployments.json")
 
-# Wrapper scripts go to ~/.brainiac/bin/ and resolve from server.root
+# Wrapper scripts go to ~/.brainiac/bin/ and resolve from /api/status (server_root field)
+# Falls back to ~/.brainiac/server.root file for cold-start scenarios
 WRAPPER_DIR = File.join(BRAINIAC_DIR, "bin")
 FileUtils.mkdir_p(WRAPPER_DIR)
 
@@ -37,16 +38,36 @@ end
 status_wrapper = File.join(WRAPPER_DIR, "waybar-status")
 File.write(status_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
-  root_file = File.expand_path("~/.brainiac/server.root")
-  if File.exist?(root_file)
-    server_root = File.read(root_file).strip
+  require "json"
+  require "net/http"
+  require "uri"
+
+  def resolve_server_root
+    # Primary: query the running server's /api/status endpoint
+    uri = URI("http://localhost:4567/api/status")
+    response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
+    if response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      root = data["server_root"]
+      return root if root && File.directory?(root)
+    end
+    # Fallback: read the file (cold-start or server returned no root)
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.read(root_file).strip if File.exist?(root_file)
+  rescue StandardError
+    # Fallback: read the file (server unreachable)
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.exist?(root_file) ? File.read(root_file).strip : nil
+  end
+
+  server_root = resolve_server_root
+  if server_root
     script = File.join(server_root, "monitor", "waybar", "status.rb")
     if File.exist?(script)
       load script
       exit
     end
   end
-  require "json"
   puts({ text: "⚠️", tooltip: "Brainiac server root not found", class: "error" }.to_json)
 SCRIPT
 File.chmod(0o755, status_wrapper)
@@ -55,9 +76,27 @@ File.chmod(0o755, status_wrapper)
 logs_wrapper = File.join(WRAPPER_DIR, "waybar-logs")
 File.write(logs_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
-  root_file = File.expand_path("~/.brainiac/server.root")
-  if File.exist?(root_file)
-    server_root = File.read(root_file).strip
+  require "json"
+  require "net/http"
+  require "uri"
+
+  def resolve_server_root
+    uri = URI("http://localhost:4567/api/status")
+    response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
+    if response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      root = data["server_root"]
+      return root if root && File.directory?(root)
+    end
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.read(root_file).strip if File.exist?(root_file)
+  rescue StandardError
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.exist?(root_file) ? File.read(root_file).strip : nil
+  end
+
+  server_root = resolve_server_root
+  if server_root
     script = File.join(server_root, "monitor", "waybar", "view_logs.rb")
     exec("ruby", script) if File.exist?(script)
   end
@@ -69,16 +108,33 @@ File.chmod(0o755, logs_wrapper)
 deploy_wrapper = File.join(WRAPPER_DIR, "waybar-deploy-env")
 File.write(deploy_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
-  root_file = File.expand_path("~/.brainiac/server.root")
-  if File.exist?(root_file)
-    server_root = File.read(root_file).strip
+  require "json"
+  require "net/http"
+  require "uri"
+
+  def resolve_server_root
+    uri = URI("http://localhost:4567/api/status")
+    response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
+    if response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      root = data["server_root"]
+      return root if root && File.directory?(root)
+    end
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.read(root_file).strip if File.exist?(root_file)
+  rescue StandardError
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.exist?(root_file) ? File.read(root_file).strip : nil
+  end
+
+  server_root = resolve_server_root
+  if server_root
     script = File.join(server_root, "monitor", "waybar", "deploy_env.rb")
     if File.exist?(script)
       load script
       exit
     end
   end
-  require "json"
   puts({ text: "", tooltip: "Brainiac server root not found", class: "error" }.to_json)
 SCRIPT
 File.chmod(0o755, deploy_wrapper)
