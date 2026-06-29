@@ -9,7 +9,7 @@ _brainiac() {
   local brainiac_dir="${BRAINIAC_DIR:-$HOME/.brainiac}"
 
   # Top-level commands
-  local commands="server stop restart logs status register unregister list show brain discord cron provider role agent config path version help setup projects card-map"
+  local commands="server stop restart logs status register unregister list show brain discord cron provider role agent config path version help setup projects card-map handler"
 
   # Helper: list agent keys from registry
   _brainiac_agents() {

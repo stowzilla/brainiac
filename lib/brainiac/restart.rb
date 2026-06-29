@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+# Brainiac self-restart logic.
+#
+# When an agent works on brainiac itself (modifies code), a restart is queued.
+# A background thread checks every 30s and only restarts when no other agents
+# are running, preventing mid-session kills.
+#
+# This is NOT Discord-specific — it was previously in the Discord handler
+# because Discord agents trigger restarts most often, but any source can queue one.
+
+BRAINIAC_RESTART_STATE = { queued: false, triggered_by: nil }
+BRAINIAC_RESTART_MUTEX = Mutex.new
+
+def queue_brainiac_restart(agent_name)
+  BRAINIAC_RESTART_MUTEX.synchronize do
+    unless BRAINIAC_RESTART_STATE[:queued]
+      BRAINIAC_RESTART_STATE[:queued] = true
+      BRAINIAC_RESTART_STATE[:triggered_by] = agent_name
+      LOG.info "[Brainiac] #{agent_name} queued a restart — will execute when all agents finish"
+    end
+  end
+end
+
+# Send a Discord notification about brainiac restart/startup using any available bot token.
+def send_restart_notification(message)
+  channel_id = DISCORD_CONFIG["notification_channel_id"]
+  return unless channel_id
+
+  tokens = discord_bot_tokens
+  triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
+  token = tokens[triggered_by&.downcase] || tokens.values.first
+  return unless token
+
+  send_discord_message(channel_id, message, token: token)
+rescue StandardError => e
+  LOG.warn "[Brainiac] Failed to send restart notification: #{e.message}"
+end
+
+def any_agents_running?
+  ACTIVE_SESSIONS_MUTEX.synchronize do
+    ACTIVE_SESSIONS.any? do |_key, info|
+      Process.kill(0, info[:pid])
+      true
+    rescue Errno::ESRCH, Errno::EPERM
+      false
+    end
+  end
+end
+
+def start_brainiac_restart_monitor
+  Thread.new do
+    LOG.info "[Brainiac] Restart monitor started, checking every 30s"
+    loop do
+      sleep 30
+      restart_needed = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:queued] }
+
+      if restart_needed && !any_agents_running?
+        triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
+        LOG.info "[Brainiac] All agents finished, executing restart..."
+        BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:queued] = false }
+
+        send_restart_notification("🔄 Restarting brainiac (triggered by #{triggered_by || "unknown"})...")
+
+        Thread.new do
+          sleep 1
+          pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "sh", "-c", "sleep 3 && brainiac server --daemon",
+                      out: "/dev/null", err: "/dev/null")
+          Process.detach(pid)
+
+          sleep 1
+          LOG.info "[Brainiac] Stopping server, new instance will start in 3 seconds..."
+          Sinatra::Application.quit!
+          sleep 0.5
+          exit!
+        end
+      elsif restart_needed
+        active_count = ACTIVE_SESSIONS_MUTEX.synchronize { ACTIVE_SESSIONS.size }
+        LOG.info "[Brainiac] Restart queued but #{active_count} agent(s) still running, waiting..."
+      end
+    end
+  end
+end

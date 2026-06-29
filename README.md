@@ -211,7 +211,7 @@ kiro-cli agent create    # Interactive
 
 The `webhook_secret` verifies incoming GitHub webhook requests. Generate one with `ruby -rsecurerandom -e 'puts SecureRandom.hex(20)'`.
 
-**Legacy:** `GITHUB_WEBHOOK_SECRET` env var works as fallback.
+`GITHUB_WEBHOOK_SECRET` env var works as fallback.
 
 #### 4. Fizzy (`~/.brainiac/fizzy.json`)
 
@@ -246,10 +246,16 @@ When a human is @mentioned on a card assigned to an agent, the agent will skip t
 
 #### 5. Environment Variables
 
-Most config lives in JSON files now. The only env var you might want:
+Most config lives in JSON files now. The default agent is set in `brainiac.json`:
+
+```json
+{ "default_agent": "Galen" }
+```
+
+Or via environment variable (takes precedence):
 
 ```bash
-export AI_AGENT_NAME="Galen"  # Defaults to Galen (Linux) or Kaylee (macOS)
+export AI_AGENT_NAME="Galen"
 ```
 
 #### 6. Register Projects
@@ -362,8 +368,6 @@ The `local` flag controls which agents pick up card assignments on this machine.
 
 Agents without an `env` block (like Kaylee above on a Linux box) still appear in the agent roster so local agents spell @mentions correctly.
 
-A legacy format with top-level `fizzy_token` / `discord_bot_token` keys is auto-migrated into the `env` hash at load time. A legacy `~/.brainiac/agent_tokens.json` format (flat `{ "galen": "token" }`) is supported as a fallback and auto-migrated.
-
 The registry reloads on every webhook and via `POST /api/reload`.
 
 ### Step 3: Seed Agent Persona and Knowledge
@@ -413,7 +417,7 @@ Agents also update knowledge themselves during sessions (when they learn somethi
 ### Step 4: Initialize Each Agent's Brain
 
 ```bash
-brainiac brain init              # Default agent (Galen on Linux, Kaylee on macOS)
+brainiac brain init              # Default agent (from brainiac.json or AI_AGENT_NAME)
 brainiac brain init SecurityBot  # Additional agent
 brainiac brain list              # Verify all agents
 ```

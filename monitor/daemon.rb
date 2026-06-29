@@ -2,32 +2,13 @@
 # frozen_string_literal: true
 
 # Brainiac Monitor Daemon
-# Polls /api/status and exposes agent state via Unix socket for waybar
-# No longer triggers config updates - waybar module polls this socket directly
+# Polls /api/status and exposes agent state via Unix socket for waybar/xbar.
+# Modules (waybar/status.rb, xbar/plugin.rb) read from this socket.
 
-require "json"
-require "net/http"
-require "socket"
+require "fileutils"
+require_relative "shared"
 
-SOCKET_PATH = "/tmp/brainiac-monitor.sock"
-API_URL = "http://localhost:4567/api/status"
 POLL_INTERVAL = 2 # seconds
-CONFIG_PATH = File.expand_path("~/.brainiac/waybar.json")
-
-# Load agent configuration from JSON
-def load_agent_config
-  config = JSON.parse(File.read(CONFIG_PATH))
-  agents = {}
-  config["agents"].each do |agent|
-    agents[agent["name"]] = { color: agent["color"], emoji: agent["emoji"] }
-  end
-  agents
-rescue StandardError => e
-  warn "Failed to load waybar.json: #{e.message}"
-  {}
-end
-
-AGENTS = load_agent_config.freeze
 
 @state = { sessions: [], count: 0, recent: [], last_update: nil }
 
@@ -67,12 +48,10 @@ def start_server
   server = UNIXServer.new(SOCKET_PATH)
   File.chmod(0o666, SOCKET_PATH)
 
-  # Write PID file
   File.write("/tmp/brainiac-daemon.pid", Process.pid)
 
   puts "Monitor daemon started, socket: #{SOCKET_PATH}"
 
-  # Start polling thread
   poller = Thread.new do
     loop do
       update_state
@@ -80,10 +59,8 @@ def start_server
     end
   end
 
-  # Initial state fetch
   update_state
 
-  # Accept client connections
   loop do
     client = server.accept
     Thread.new { handle_client(client) }

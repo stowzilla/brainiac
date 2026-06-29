@@ -86,27 +86,33 @@ end
 
 # Match an email against configured rules. Returns the first matching rule or nil.
 # If no rules match, returns a fallback rule (if configured) so nothing is missed.
+def zoho_rule_matches?(rule, email)
+  return false if rule["enabled"] == false
+
+  %w[from_contains to_contains subject_contains].each do |field|
+    pattern = rule[field]
+    next if pattern.nil? || pattern.empty?
+
+    email_field = case field
+                  when "from_contains" then email["fromAddress"]
+                  when "to_contains" then email["toAddress"]
+                  when "subject_contains" then email["subject"]
+                  end
+    return false unless email_field.to_s.downcase.include?(pattern.downcase)
+  end
+
+  if rule["body_contains"] && !rule["body_contains"].empty?
+    body = "#{email["summary"]}#{email["html"]}"
+    return false unless body.downcase.include?(rule["body_contains"].downcase)
+  end
+
+  !zoho_email_excluded?(email, rule["exclude_words"])
+end
+
 def match_zoho_rule(email)
   rules = ZOHO_CONFIG["rules"] || []
-  rules.each do |rule|
-    next if rule["enabled"] == false
-
-    matches = true
-    if rule["from_contains"] && !rule["from_contains"].empty? && !email["fromAddress"].to_s.downcase.include?(rule["from_contains"].downcase)
-      matches = false
-    end
-    matches = false if rule["to_contains"] && !rule["to_contains"].empty? && !email["toAddress"].to_s.downcase.include?(rule["to_contains"].downcase)
-    if rule["subject_contains"] && !rule["subject_contains"].empty? && !email["subject"].to_s.downcase.include?(rule["subject_contains"].downcase)
-      matches = false
-    end
-    if rule["body_contains"] && !rule["body_contains"].empty?
-      body = email["summary"].to_s + email["html"].to_s
-      matches = false unless body.downcase.include?(rule["body_contains"].downcase)
-    end
-    matches = false if matches && zoho_email_excluded?(email, rule["exclude_words"])
-
-    return rule if matches
-  end
+  matched = rules.find { |rule| zoho_rule_matches?(rule, email) }
+  return matched if matched
 
   # Fallback: post unmatched emails so nothing slips through
   fallback = zoho_fallback_rule
@@ -126,6 +132,23 @@ def zoho_fallback_rule
     "notify_as" => fallback["notify_as"] }
 end
 
+# Extract body text from email payload for notification display.
+def extract_zoho_body_text(email, rule)
+  body_text = email["summary"].to_s.strip
+  if body_text.empty?
+    raw_html = (email["html"] || email["content"] || email["body"] || "").to_s
+    body_text = raw_html.gsub(/<[^>]+>/, " ").gsub(/&nbsp;/i, " ").gsub(/\s+/, " ").strip
+  end
+
+  body_text = fetch_zoho_email_content(email["messageId"]).to_s if body_text.empty? && rule["show_body"] && email["messageId"]
+
+  return nil if body_text.empty?
+
+  max_len = rule["show_body"] ? 1800 : 500
+  body_text = "#{body_text[0..max_len]}..." if body_text.length > max_len
+  body_text
+end
+
 # Format a Discord notification for a matched email.
 def format_zoho_notification(email, rule)
   label = rule["label"] || "Zoho Mail"
@@ -135,23 +158,8 @@ def format_zoho_notification(email, rule)
   parts << "**From:** #{email["fromAddress"]}" if email["fromAddress"]
   parts << "**To:** #{email["toAddress"]}" if email["toAddress"]
 
-  # Include body content — try webhook payload first, then fetch via API
-  body_text = email["summary"].to_s.strip
-  if body_text.empty?
-    raw_html = (email["html"] || email["content"] || email["body"] || "").to_s
-    body_text = raw_html.gsub(/<[^>]+>/, " ").gsub(/&nbsp;/i, " ").gsub(/\s+/, " ").strip
-  end
-
-  # If still empty and show_body requested, fetch via Zoho Mail API
-  body_text = fetch_zoho_email_content(email["messageId"]).to_s if body_text.empty? && rule["show_body"] && email["messageId"]
-
-  if !body_text.empty? && rule["show_body"]
-    body_text = "#{body_text[0..1800]}..." if body_text.length > 1800
-    parts << "```\n#{body_text}\n```"
-  elsif !body_text.empty?
-    body_text = "#{body_text[0..500]}..." if body_text.length > 500
-    parts << "```\n#{body_text}\n```"
-  end
+  body_text = extract_zoho_body_text(email, rule)
+  parts << "```\n#{body_text}\n```" if body_text
 
   parts.join("\n")
 end
@@ -226,7 +234,7 @@ ZOHO_TRIAGE_PROMPT = <<~PROMPT
     "title": "Brief descriptive title for the card",
     "description": "HTML description with relevant details from the email",
     "project_tag": "project-tag-name or null",
-    "assign_to": "Galen|Avon|Sheogorath"
+    "assign_to": "agent-name from the assignment rules above"
   }
   ```
 
@@ -274,15 +282,13 @@ def dispatch_zoho_triage(email, rule)
   agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
   project_config = default_project_config
 
-  resolved = project_config ? resolve_project_cli_config(project_config) : {}
-  agent_cli = resolved["agent_cli"] || "kiro-cli"
-  agent_cli_args = resolved["agent_cli_args"] || "chat --trust-all-tools --no-interactive"
-  resolved["agent_model_flag"] || "--model"
+  resolved = resolve_project_cli_config(project_config || DEFAULT_PROJECT)
+  agent_cli = resolved["agent_cli"]
+  agent_cli_args = resolved["agent_cli_args"]
 
   cmd = [agent_cli]
   cmd.push("--agent", agent_key)
   cmd.concat(agent_cli_args.split)
-  add_trust_tools!(cmd, agent_cli_args)
 
   spawn_env = {}
   agent_env = agent_env_for(agent_name)
@@ -460,16 +466,13 @@ end
 
 # Assign a card to the appropriate agent
 def assign_zoho_triage_card(card_number, agent_name, spawn_env)
-  # Map agent names to Fizzy user IDs
-  agent_user_ids = {
-    "Galen" => "03fja52opiykf0mua7aeqv8uk",
-    "Avon" => "03fnwe6kl4g2t8xw0djbfkv96",
-    "Sheogorath" => "03fnwjyt6gighy98ld46u2hni"
-  }
+  # Resolve agent name to Fizzy user ID from fizzy.json authorized_users
+  users = FIZZY_CONFIG["authorized_users"] || []
+  user = users.find { |u| u["name"]&.downcase == agent_name.downcase }
+  user_id = user&.dig("id")
 
-  user_id = agent_user_ids[agent_name]
   unless user_id
-    LOG.warn "[Zoho:Triage] Unknown agent for assignment: #{agent_name}"
+    LOG.warn "[Zoho:Triage] Unknown agent for assignment: #{agent_name} (not found in fizzy.json authorized_users)"
     return
   end
 

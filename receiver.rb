@@ -19,10 +19,34 @@ require_relative "lib/brainiac/prompts"
 require_relative "lib/brainiac/planning"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/cron"
-require_relative "lib/brainiac/handlers/fizzy"
-require_relative "lib/brainiac/handlers/github"
-require_relative "lib/brainiac/card_index"
-require_relative "lib/brainiac/deployments"
+require_relative "lib/brainiac/restart"
+require_relative "lib/brainiac/handlers/shared/config_store"
+require_relative "lib/brainiac/handlers/shared/worktrees"
+require_relative "lib/brainiac/handlers/shared/inline_tags"
+
+# --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
+
+if handler_enabled?("fizzy")
+  require_relative "lib/brainiac/handlers/fizzy"
+  require_relative "lib/brainiac/handlers/fizzy/card_index"
+  require_relative "lib/brainiac/handlers/fizzy/deployments"
+  LOG.info "[Handlers] Fizzy handler enabled"
+end
+
+if handler_enabled?("github")
+  require_relative "lib/brainiac/handlers/github"
+  LOG.info "[Handlers] GitHub handler enabled"
+end
+
+if DISCORD_ENABLED && handler_enabled?("discord")
+  require_relative "lib/brainiac/handlers/discord"
+  LOG.info "[Handlers] Discord handler enabled"
+end
+
+if DISCORD_ENABLED && handler_enabled?("zoho")
+  require_relative "lib/brainiac/handlers/zoho"
+  LOG.info "[Handlers] Zoho handler enabled"
+end
 
 # Reload hook registry — custom handlers register callbacks here
 module ReloadHooks
@@ -45,14 +69,14 @@ end
 CUSTOM_HANDLERS_DIR = File.join(BRAINIAC_DIR, "handlers")
 if Dir.exist?(CUSTOM_HANDLERS_DIR)
   Dir.glob(File.join(CUSTOM_HANDLERS_DIR, "*.rb")).each do |handler|
-    LOG.info "[Handlers] Loading custom handler: #{File.basename(handler)}"
+    handler_name = File.basename(handler, ".rb")
+    unless handler_enabled?(handler_name)
+      LOG.info "[Handlers] Skipping custom handler (disabled): #{handler_name}"
+      next
+    end
+    LOG.info "[Handlers] Loading custom handler: #{handler_name}"
     require handler
   end
-end
-
-if DISCORD_ENABLED
-  require_relative "lib/brainiac/handlers/discord"
-  require_relative "lib/brainiac/handlers/zoho"
 end
 
 # --- Sinatra config ---
@@ -422,7 +446,7 @@ post "/api/reload" do
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
   reload_github_config!(force: true)
-  reload_deployments_config!(force: true)
+  reload_deployments_config!(force: true) if defined?(DEPLOYMENTS_CONFIG)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
     users: USER_REGISTRY["users"].size }.to_json
@@ -519,6 +543,8 @@ end
 
 get "/api/card-index" do
   content_type :json
+  halt 404, { error: "Card index not enabled (fizzy handler disabled)" }.to_json unless defined?(CARD_INDEX)
+
   query = params["q"]
   if query && !query.empty?
     similar = CARD_INDEX.find_similar_cards(query)
@@ -874,60 +900,62 @@ get "/api/gif" do
   end
 end
 
-# --- Deployment environment tracking ---
+# --- Deployment environment tracking (requires fizzy handler) ---
 
-get "/api/deployments" do
-  content_type :json
-  reload_deployments_config!
-  reload_deployment_state!
-  { deployments: deployment_status }.to_json
-end
-
-post "/api/deployments/:env" do
-  content_type :json
-  env_key = params["env"]
-  request.body.rewind
-  payload = JSON.parse(request.body.read)
-
-  result = deploy_to_environment(env_key, worktree_path: payload["worktree"], deployed_by: payload["deployed_by"])
-  if result[:error]
-    halt 404, result.to_json
-  else
-    { status: "deployed", env: env_key, deployment: result }.to_json
+if defined?(DEPLOYMENTS_CONFIG)
+  get "/api/deployments" do
+    content_type :json
+    reload_deployments_config!
+    reload_deployment_state!
+    { deployments: deployment_status }.to_json
   end
-rescue JSON::ParserError
-  halt 400, { error: "Invalid JSON" }.to_json
-end
 
-delete "/api/deployments/:env" do
-  content_type :json
-  env_key = params["env"]
-  state = load_deployment_state
-  if state.key?(env_key)
-    state[env_key] = { "status" => "available", "cleared_at" => Time.now.iso8601, "last_card" => state[env_key]["card_number"] }
-    save_deployment_state(state)
-    DEPLOYMENT_STATE.replace(state)
-    LOG.info "[Deploy] Manually cleared #{env_key}"
-    { status: "cleared", env: env_key }.to_json
-  else
-    halt 404, { error: "Unknown environment: #{env_key}" }.to_json
-  end
-end
+  post "/api/deployments/:env" do
+    content_type :json
+    env_key = params["env"]
+    request.body.rewind
+    payload = JSON.parse(request.body.read)
 
-post "/api/deployments/:env/deploying" do
-  content_type :json
-  env_key = params["env"]
-  config = DEPLOYMENTS_CONFIG["environments"] || {}
-  halt 404, { error: "Unknown environment: #{env_key}" }.to_json unless config.key?(env_key)
-  request.body.rewind
-  payload = begin
-    JSON.parse(request.body.read)
-  rescue StandardError
-    {}
+    result = deploy_to_environment(env_key, worktree_path: payload["worktree"], deployed_by: payload["deployed_by"])
+    if result[:error]
+      halt 404, result.to_json
+    else
+      { status: "deployed", env: env_key, deployment: result }.to_json
+    end
+  rescue JSON::ParserError
+    halt 400, { error: "Invalid JSON" }.to_json
   end
-  mark_deploying(env_key, worktree_path: payload["worktree"] || "")
-  LOG.info "[Deploy] #{env_key} marked deploying via API"
-  { status: "deploying", env: env_key }.to_json
+
+  delete "/api/deployments/:env" do
+    content_type :json
+    env_key = params["env"]
+    state = load_deployment_state
+    if state.key?(env_key)
+      state[env_key] = { "status" => "available", "cleared_at" => Time.now.iso8601, "last_card" => state[env_key]["card_number"] }
+      save_deployment_state(state)
+      DEPLOYMENT_STATE.replace(state)
+      LOG.info "[Deploy] Manually cleared #{env_key}"
+      { status: "cleared", env: env_key }.to_json
+    else
+      halt 404, { error: "Unknown environment: #{env_key}" }.to_json
+    end
+  end
+
+  post "/api/deployments/:env/deploying" do
+    content_type :json
+    env_key = params["env"]
+    config = DEPLOYMENTS_CONFIG["environments"] || {}
+    halt 404, { error: "Unknown environment: #{env_key}" }.to_json unless config.key?(env_key)
+    request.body.rewind
+    payload = begin
+      JSON.parse(request.body.read)
+    rescue StandardError
+      {}
+    end
+    mark_deploying(env_key, worktree_path: payload["worktree"] || "")
+    LOG.info "[Deploy] #{env_key} marked deploying via API"
+    { status: "deploying", env: env_key }.to_json
+  end
 end
 
 LOG.info "[Cron] Starting cron thread..."
@@ -944,8 +972,10 @@ CURATOR_THREAD = Thread.new do
   end
 end
 
-LOG.info "[CardIndex] Starting background backfill..."
-CARD_INDEX.backfill
+if defined?(CARD_INDEX)
+  LOG.info "[CardIndex] Starting background backfill..."
+  CARD_INDEX.backfill
+end
 
 LOG.info "[Monitor] Starting daemon..."
 daemon_path = File.join(__dir__, "monitor", "daemon.rb")

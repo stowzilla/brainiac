@@ -5,11 +5,6 @@
 require "English"
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
-# --trust-all-tools alone doesn't bypass the non-interactive deny list in kiro-cli 1.29.8+.
-# Adding --trust-tools with explicit tool names ensures write/exec tools are approved.
-# This is now configured in the kiro provider's default_args instead of being hardcoded here.
-TRUSTED_TOOLS = "execute_bash,fs_write,fs_read,code,grep,glob,web_search,web_fetch,use_subagent,use_aws"
-
 # Clean up all worktrees associated with a card: the primary worktree and any
 # cross-agent review worktrees (e.g. glados-fizzy-123-*, threepio-fizzy-123-*).
 # Safe: skips worktrees with uncommitted changes.
@@ -702,9 +697,7 @@ end
 def handle_fizzy_post_session(fizzy_card, exit_status, signaled, agent_name, chdir, source, source_context, project_config, skip_column_move)
   return unless source == :fizzy && fizzy_card && exit_status&.zero? && !signaled
 
-  unless skip_column_move || card_merged?(fizzy_card)
-    move_card_to_column(fizzy_card, "needs_review", project_config: project_config, agent_name: agent_name)
-  end
+  move_card_to_column(fizzy_card, "needs_review", project_config: project_config, agent_name: agent_name) unless skip_column_move || card_merged?(fizzy_card)
 
   append_fizzy_comment_footer(fizzy_card, project_config: project_config, agent_name: agent_name)
 
@@ -841,4 +834,33 @@ def notify_unauthorized(action, creator_name, card_info)
   msg = "Unauthorized: #{creator_name} triggered #{action} on #{card_info}"
   LOG.warn msg
   system("#{NOTIFICATION_COMMAND} '#{msg}'") if NOTIFICATION_COMMAND
+end
+
+# --- Git helpers (used by Fizzy, Discord, and GitHub handlers) ---
+
+def get_default_branch(repo_path)
+  default_branch = run_cmd("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: repo_path).strip
+  begin
+    run_cmd("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", chdir: repo_path).strip.sub("origin/", "")
+  rescue StandardError
+    default_branch
+  end
+end
+
+# Debounced repo git fetch — avoids fetching the same repo multiple times within a short window.
+# Uses fetch instead of checkout+pull so the main repo's working tree is never touched —
+# worktrees branch from origin/<default> directly, avoiding conflicts with local changes.
+REPO_LAST_FETCH = {}
+REPO_FETCH_DEBOUNCE = 300 # 5 minutes
+
+def debounced_repo_fetch(repo_path)
+  last = REPO_LAST_FETCH[repo_path]
+  if last && (Time.now - last) < REPO_FETCH_DEBOUNCE
+    LOG.info "Skipping git fetch for #{repo_path} — fetched #{(Time.now - last).to_i}s ago"
+    return
+  end
+
+  run_cmd("git", "fetch", "origin", chdir: repo_path)
+
+  REPO_LAST_FETCH[repo_path] = Time.now
 end

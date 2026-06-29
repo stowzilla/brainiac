@@ -16,19 +16,46 @@ BRAINIAC_VERSION = Brainiac::VERSION
 # --- Environment & paths ---
 
 FIZZY_WEBHOOK_SECRET = ENV.fetch("FIZZY_WEBHOOK_SECRET", nil)
-AI_AGENT_NAME = ENV.fetch("AI_AGENT_NAME") do
-  case RbConfig::CONFIG["host_os"]
-  when /darwin/i then "Kaylee"
-  else "Galen"
-  end
-end
 
 BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
 PROJECTS_FILE = File.join(BRAINIAC_DIR, "projects.json")
 KIRO_AGENTS_DIR = File.join(Dir.home, ".kiro", "agents")
 CARD_MAP_FILE   = File.join(BRAINIAC_DIR, "card_map.json")
-AGENT_TOKENS_FILE = File.join(BRAINIAC_DIR, "agent_tokens.json")
 AGENT_REGISTRY_FILE = File.join(BRAINIAC_DIR, "agents.json")
+
+# --- Master config (handler toggles, global settings) ---
+
+BRAINIAC_CONFIG_FILE = File.join(BRAINIAC_DIR, "brainiac.json")
+
+def load_brainiac_config
+  return {} unless File.exist?(BRAINIAC_CONFIG_FILE)
+
+  JSON.parse(File.read(BRAINIAC_CONFIG_FILE))
+rescue JSON::ParserError => e
+  LOG.error "Failed to parse brainiac.json: #{e.message}" if defined?(LOG)
+  {}
+end
+
+BRAINIAC_CONFIG = load_brainiac_config
+
+# --- Default agent name ---
+# Priority: AI_AGENT_NAME env var → brainiac.json "default_agent" → error.
+AI_AGENT_NAME = ENV.fetch("AI_AGENT_NAME", nil) || BRAINIAC_CONFIG["default_agent"] || begin
+  raise <<~MSG
+    No default agent configured. Set one of:
+      1. Environment variable: export AI_AGENT_NAME="YourAgent"
+      2. In ~/.brainiac/brainiac.json: { "default_agent": "YourAgent" }
+  MSG
+end
+
+# Check whether a handler is enabled. Defaults to true when brainiac.json
+# doesn't exist or doesn't list the handler (backwards compatible — all on).
+def handler_enabled?(name)
+  handlers = BRAINIAC_CONFIG["handlers"]
+  return true unless handlers # No config = everything enabled
+
+  handlers.fetch(name.to_s, true)
+end
 
 LOG_LEVEL = ENV.fetch("LOG_LEVEL", "info").downcase
 LOG = Logger.new($stdout)
@@ -84,7 +111,7 @@ end
 GITHUB_CONFIG = load_github_config
 
 def github_webhook_secret
-  # Fallback to env var for backwards compatibility
+  # Fallback to env var
   GITHUB_CONFIG["webhook_secret"] || ENV.fetch("GITHUB_WEBHOOK_SECRET", nil)
 end
 
@@ -187,8 +214,11 @@ DEFAULT_PROJECT = {
   "repo_path" => ENV.fetch("REPO_PATH", Dir.pwd),
   "fizzy_tags" => [],
   "github_repo" => ENV.fetch("GITHUB_REPO", nil),
+  # CLI defaults below are overridden by ~/.brainiac/cli-providers/*.json when a
+  # cli_provider is configured on the project or agent. These only apply as a
+  # last-resort fallback when no provider config exists.
   "agent_cli" => ENV.fetch("AGENT_CLI", "kiro-cli"),
-  "agent_cli_args" => ENV.fetch("AGENT_CLI_ARGS", "chat --trust-all-tools --no-interactive"),
+  "agent_cli_args" => ENV.fetch("AGENT_CLI_ARGS", "chat --no-interactive"),
   "agent_model_flag" => ENV["AGENT_MODEL_FLAG"] || "--model",
   "agent_model" => ENV.fetch("AGENT_MODEL", nil),
   "agent_effort_flag" => ENV["AGENT_EFFORT_FLAG"] || "--effort",
@@ -208,8 +238,7 @@ DEFAULT_PROJECT = {
 }.freeze
 
 # --- Discord (optional) ---
-# Discord is enabled when any agent in the registry has a discord_bot_token,
-# OR when the legacy DISCORD_BOT_TOKEN env var is set.
+# Discord is enabled when any agent in the registry has a discord_bot_token
 # Requires the websocket-client-simple gem.
 
 DISCORD_ENABLED = begin
