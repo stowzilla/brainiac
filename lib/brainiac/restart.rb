@@ -75,9 +75,8 @@ def start_brainiac_restart_monitor
                       chdir: source_dir, out: [log_file, "a"], err: %i[child out])
           Process.detach(pid)
 
-          # Update PID file and server.root for the new instance
+          # Update PID file for the new instance
           File.write(File.join(BRAINIAC_DIR, "brainiac-server.pid"), pid.to_s)
-          File.write(File.join(BRAINIAC_DIR, "server.root"), source_dir)
 
           sleep 1
           LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
