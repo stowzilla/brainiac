@@ -23,7 +23,7 @@ BRAINIAC_DIR = File.expand_path("~/.brainiac")
 # Load agent configuration from ~/.brainiac/waybar.json.
 # Returns { "galen" => { emoji: "🤖", color: "blue" }, ... }
 def load_agent_config
-  config = JSON.parse(File.read(CONFIG_PATH))
+  config = JSON.parse(File.read(CONFIG_PATH, encoding: "utf-8"))
   agents = {}
   (config["agents"] || []).each do |agent|
     agents[agent["name"].downcase] = { emoji: agent["emoji"], color: agent["color"] }
@@ -37,7 +37,7 @@ end
 def load_monitor_config
   return {} unless File.exist?(CONFIG_PATH)
 
-  JSON.parse(File.read(CONFIG_PATH))
+  JSON.parse(File.read(CONFIG_PATH, encoding: "utf-8"))
 rescue StandardError
   {}
 end
