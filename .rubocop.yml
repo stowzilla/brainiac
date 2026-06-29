@@ -15,6 +15,7 @@ Metrics/BlockLength:
   Exclude:
     - "receiver.rb"
     - "lib/brainiac/handlers/**/*"
+    - "lib/brainiac/routes/**/*"
     - "lib/user_registry.rb"
     - "test/**/*"
     - "*.gemspec"

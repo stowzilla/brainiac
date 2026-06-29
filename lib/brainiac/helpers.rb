@@ -5,40 +5,6 @@
 require "English"
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
-# Clean up all worktrees associated with a card: the primary worktree and any
-# cross-agent review worktrees (e.g. glados-fizzy-123-*, threepio-fizzy-123-*).
-# Safe: skips worktrees with uncommitted changes.
-def cleanup_card_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
-  return unless card_number
-
-  repo_dir = File.dirname(repo_path)
-  repo_base = File.basename(repo_path)
-  cleaned = 0
-
-  # Collect all worktree dirs for this card: primary + cross-agent review
-  candidates = Dir.glob(File.join(repo_dir, "#{repo_base}--*fizzy-#{card_number}-*")).select { |d| File.directory?(d) }
-  candidates << primary_worktree if primary_worktree && File.directory?(primary_worktree) && !candidates.include?(primary_worktree)
-
-  candidates.uniq.each do |wt_path|
-    status_output, = Open3.capture3("git", "status", "--porcelain", chdir: wt_path)
-    if status_output.strip.empty?
-      branch_name = File.basename(wt_path).sub("#{repo_base}--", "")
-      begin
-        run_cmd("git", "worktree", "remove", wt_path, "--force", chdir: repo_path)
-        run_cmd("git", "branch", "-D", branch_name, chdir: repo_path)
-        cleaned += 1
-        LOG.info "Cleaned up worktree #{wt_path} (branch: #{branch_name})"
-      rescue StandardError => e
-        LOG.warn "Failed to clean up worktree #{wt_path}: #{e.message}"
-      end
-    else
-      LOG.warn "Worktree #{wt_path} has uncommitted changes — skipping cleanup"
-    end
-  end
-
-  LOG.info "Card ##{card_number}: cleaned up #{cleaned} worktree(s)" if cleaned.positive?
-end
-
 # Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
 # Returns a hash with normalized keys, or {} if not found.
 def load_cli_provider(provider_name)
@@ -119,64 +85,6 @@ def detect_cli_provider(text: "", tags: [])
   end
 
   nil
-end
-
-# Copy gitignored files matching .worktreeinclude patterns from repo to worktree.
-# Symlink directories matching .worktreelink patterns instead of copying.
-# Both files use .gitignore syntax. Only gitignored files/dirs are processed.
-def apply_worktree_includes(repo_path, worktree_path)
-  copied = 0
-  linked = 0
-
-  [".worktreeinclude", ".worktreelink"].each do |filename|
-    config_file = File.join(repo_path, filename)
-    next unless File.exist?(config_file)
-
-    symlink_mode = filename == ".worktreelink"
-    patterns = File.readlines(config_file).map(&:strip).reject { |l| l.empty? || l.start_with?("#") }
-    next if patterns.empty?
-
-    patterns.each do |pattern|
-      Dir.glob(pattern, File::FNM_DOTMATCH, base: repo_path).each do |match|
-        src = File.join(repo_path, match)
-        dest = File.join(worktree_path, match)
-        next if File.exist?(dest) || File.symlink?(dest)
-
-        # Only process gitignored files/dirs
-        _, _, st = Open3.capture3("git", "check-ignore", "-q", match, chdir: repo_path)
-        next unless st.success?
-
-        FileUtils.mkdir_p(File.dirname(dest))
-
-        if symlink_mode && File.directory?(src)
-          FileUtils.ln_s(src, dest)
-          linked += 1
-          LOG.info "Symlinked #{match} from main repo"
-        elsif File.file?(src)
-          FileUtils.cp(src, dest)
-          copied += 1
-        end
-      end
-    end
-  end
-
-  LOG.info "Worktree include: copied #{copied} file(s), symlinked #{linked} dir(s) for #{worktree_path}" if copied.positive? || linked.positive?
-end
-
-# Run a project-level hook script from .brainiac/<hook_name> if it exists.
-# Passes REPO_PATH (and optionally WORKTREE_PATH) as environment variables.
-def run_project_hook(repo_path, hook_name, extra_env: {})
-  hook = File.join(repo_path, ".brainiac", hook_name)
-  return unless File.exist?(hook)
-
-  env = { "REPO_PATH" => repo_path }.merge(extra_env)
-  LOG.info "Running .brainiac/#{hook_name} hook for #{repo_path}"
-  output, status = Open3.capture2e(env, "bash", hook, chdir: repo_path)
-  if status.success?
-    LOG.info ".brainiac/#{hook_name} completed successfully"
-  else
-    LOG.warn ".brainiac/#{hook_name} failed (exit #{status.exitstatus}): #{output.strip}"
-  end
 end
 
 def default_project_key
@@ -285,19 +193,6 @@ def run_cmd(*cmd, chdir:, env: {})
   raise "Command failed (#{cmd.first}): #{stderr}" unless status.success?
 
   stdout
-end
-
-# Trust the version manager config in a directory (supports mise and asdf)
-def trust_version_manager(path, chdir:)
-  if system("which mise >/dev/null 2>&1")
-    run_cmd("mise", "trust", path, chdir: chdir)
-  elsif system("which asdf >/dev/null 2>&1")
-    LOG.info "asdf detected — no explicit trust needed for #{path}"
-  else
-    LOG.info "No version manager (mise/asdf) found — skipping trust for #{path}"
-  end
-rescue StandardError => e
-  LOG.warn "Could not trust version manager in #{path}: #{e.message}"
 end
 
 # Cards that have been merged to main — skip Needs Review moves for these.
@@ -740,16 +635,6 @@ def handle_plan_finalization(prompt_file, agent_name, project_config)
   end
 end
 
-# Capture git HEAD and working tree status for a directory.
-# Returns [head_sha, status_porcelain] or [nil, nil] on failure.
-def capture_git_state(chdir)
-  head, = Open3.capture2("git", "rev-parse", "HEAD", chdir: chdir)
-  status, = Open3.capture2("git", "status", "--porcelain", chdir: chdir)
-  [head.strip, status.strip]
-rescue StandardError
-  [nil, nil]
-end
-
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
   return unless project_key_for_restart == "brainiac" && head_before
 
@@ -834,33 +719,4 @@ def notify_unauthorized(action, creator_name, card_info)
   msg = "Unauthorized: #{creator_name} triggered #{action} on #{card_info}"
   LOG.warn msg
   system("#{NOTIFICATION_COMMAND} '#{msg}'") if NOTIFICATION_COMMAND
-end
-
-# --- Git helpers (used by Fizzy, Discord, and GitHub handlers) ---
-
-def get_default_branch(repo_path)
-  default_branch = run_cmd("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: repo_path).strip
-  begin
-    run_cmd("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", chdir: repo_path).strip.sub("origin/", "")
-  rescue StandardError
-    default_branch
-  end
-end
-
-# Debounced repo git fetch — avoids fetching the same repo multiple times within a short window.
-# Uses fetch instead of checkout+pull so the main repo's working tree is never touched —
-# worktrees branch from origin/<default> directly, avoiding conflicts with local changes.
-REPO_LAST_FETCH = {}
-REPO_FETCH_DEBOUNCE = 300 # 5 minutes
-
-def debounced_repo_fetch(repo_path)
-  last = REPO_LAST_FETCH[repo_path]
-  if last && (Time.now - last) < REPO_FETCH_DEBOUNCE
-    LOG.info "Skipping git fetch for #{repo_path} — fetched #{(Time.now - last).to_i}s ago"
-    return
-  end
-
-  run_cmd("git", "fetch", "origin", chdir: repo_path)
-
-  REPO_LAST_FETCH[repo_path] = Time.now
 end
