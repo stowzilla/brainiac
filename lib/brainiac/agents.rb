@@ -21,22 +21,25 @@
 # mention detection, display names, tokens, and cross-agent interactions —
 # they just won't pick up card assignments on this machine.
 def load_agent_registry
-  if File.exist?(AGENT_REGISTRY_FILE)
-    raw_registry = JSON.parse(File.read(AGENT_REGISTRY_FILE))
-    LOG.info "Loaded agent registry (#{raw_registry.size} agents) from #{AGENT_REGISTRY_FILE}"
-
-    # Normalize keys: convert to lowercase, replace non-alphanumeric with hyphens
-    registry = {}
-    raw_registry.each do |key, entry|
-      normalized_key = key.downcase.gsub(/[^a-z0-9-]/, "-")
-      LOG.warn "Duplicate agent key after normalization: '#{key}' → '#{normalized_key}' (already exists)" if registry.key?(normalized_key) && registry[normalized_key] != entry
-      registry[normalized_key] = entry
-    end
-
-    registry
+  unless File.exist?(AGENT_REGISTRY_FILE)
+    LOG.info "No agent registry found at #{AGENT_REGISTRY_FILE}"
+    return {}
   end
 
-  {}
+  raw_registry = JSON.parse(File.read(AGENT_REGISTRY_FILE))
+  LOG.info "Loaded agent registry (#{raw_registry.size} agents) from #{AGENT_REGISTRY_FILE}"
+
+  # Normalize keys: convert to lowercase, replace non-alphanumeric with hyphens
+  registry = {}
+  raw_registry.each do |key, entry|
+    normalized_key = key.downcase.gsub(/[^a-z0-9-]/, "-")
+    if registry.key?(normalized_key) && registry[normalized_key] != entry
+      LOG.warn "Duplicate agent key after normalization: '#{key}' → '#{normalized_key}' (already exists)"
+    end
+    registry[normalized_key] = entry
+  end
+
+  registry
 rescue JSON::ParserError => e
   LOG.error "Failed to parse agent registry: #{e.message}"
   {}
