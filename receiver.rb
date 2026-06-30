@@ -20,8 +20,15 @@ require_relative "lib/brainiac/planning"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/cron"
 require_relative "lib/brainiac/restart"
+require_relative "lib/brainiac/plugins"
 require_relative "lib/brainiac/handlers/shared/git"
 require_relative "lib/brainiac/handlers/shared/inline_tags"
+
+# Namespace for gem-based plugins (brainiac-whatsapp, brainiac-slack, etc.)
+module Brainiac
+  module Plugins
+  end
+end
 
 # --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
 
