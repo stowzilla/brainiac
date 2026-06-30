@@ -48,6 +48,34 @@ def any_agents_running?
   end
 end
 
+def execute_restart
+  triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
+  LOG.info "[Brainiac] All agents finished, executing restart..."
+  BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:queued] = false }
+
+  send_restart_notification("🔄 Restarting brainiac (triggered by #{triggered_by || "unknown"})...")
+
+  Thread.new do
+    sleep 1
+    source_dir = File.expand_path("../../..", __dir__)
+    receiver_path = File.join(source_dir, "receiver.rb")
+    log_file = File.join(source_dir, "tmp", "brainiac-server.log")
+    FileUtils.mkdir_p(File.dirname(log_file))
+
+    pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "ruby", receiver_path,
+                chdir: source_dir, out: [log_file, "a"], err: %i[child out])
+    Process.detach(pid)
+
+    File.write(File.join(BRAINIAC_DIR, "brainiac-server.pid"), pid.to_s)
+
+    sleep 1
+    LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
+    Sinatra::Application.quit!
+    sleep 0.5
+    exit!
+  end
+end
+
 def start_brainiac_restart_monitor
   Thread.new do
     LOG.info "[Brainiac] Restart monitor started, checking every 30s"
@@ -56,34 +84,7 @@ def start_brainiac_restart_monitor
       restart_needed = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:queued] }
 
       if restart_needed && !any_agents_running?
-        triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
-        LOG.info "[Brainiac] All agents finished, executing restart..."
-        BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:queued] = false }
-
-        send_restart_notification("🔄 Restarting brainiac (triggered by #{triggered_by || "unknown"})...")
-
-        Thread.new do
-          sleep 1
-          # Restart from the same source directory as the current instance,
-          # not the gem install. This ensures code changes take effect immediately.
-          source_dir = File.expand_path("../../..", __dir__)
-          receiver_path = File.join(source_dir, "receiver.rb")
-          log_file = File.join(source_dir, "tmp", "brainiac-server.log")
-          FileUtils.mkdir_p(File.dirname(log_file))
-
-          pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "ruby", receiver_path,
-                      chdir: source_dir, out: [log_file, "a"], err: %i[child out])
-          Process.detach(pid)
-
-          # Update PID file for the new instance
-          File.write(File.join(BRAINIAC_DIR, "brainiac-server.pid"), pid.to_s)
-
-          sleep 1
-          LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
-          Sinatra::Application.quit!
-          sleep 0.5
-          exit!
-        end
+        execute_restart
       elsif restart_needed
         active_count = ACTIVE_SESSIONS_MUTEX.synchronize { ACTIVE_SESSIONS.size }
         LOG.info "[Brainiac] Restart queued but #{active_count} agent(s) still running, waiting..."

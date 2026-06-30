@@ -30,8 +30,10 @@ def handle_click(env_key, deployment)
   if deployment["last_deploy_status"] == "failed" && deployment["last_deploy_log"]
     log = deployment["last_deploy_log"]
     if File.exist?(log.to_s)
-      spawn("alacritty", "--class", "brainiac-deploy", "-e", "bash", "-c",
-            "echo '=== Deploy failure: #{deployment["label"] || env_key} ===' && echo && cat #{Shellwords.escape(log)} && echo && echo 'Press Enter to close...' && read",
+      label = deployment["label"] || env_key
+      cmd = "echo '=== Deploy failure: #{label} ===' && echo && " \
+            "cat #{Shellwords.escape(log)} && echo && echo 'Press Enter to close...' && read"
+      spawn("alacritty", "--class", "brainiac-deploy", "-e", "bash", "-c", cmd,
             %i[out err] => "/dev/null")
       resize_deploy_terminal
       return

@@ -47,50 +47,53 @@ def handle_deploy_comment(eventable, env_key, card_internal_id)
   mark_deploying(env_key, worktree_path: worktree)
 
   Thread.new do
-    run_cmd("fizzy", "reaction", "create", "--card", card_number.to_s,
-            "--comment", comment_id.to_s, "--content", "🚀",
-            chdir: worktree, env: default_fizzy_env)
-
-    deploy_env = {}
-    aws_profile = DEPLOYMENTS_CONFIG.dig("environments", env_key, "aws_profile")
-    deploy_env["AWS_PROFILE"] = aws_profile if aws_profile
-
-    stdout, stderr, status = Open3.capture3(deploy_env, "./scripts/deploy.sh", env_key, chdir: worktree)
-
-    if !status.success? && terraform_lock_error?(stdout, stderr)
-      LOG.info "[Deploy] Terraform lock file mismatch for card ##{card_number} — retrying with init -upgrade"
-      infra_dir = File.join(worktree, "infrastructure", env_key)
-      lock_file = File.join(infra_dir, ".terraform.lock.hcl")
-      FileUtils.rm_f(lock_file)
-      Open3.capture3(deploy_env, "terraform", "init", "-upgrade", chdir: infra_dir) if File.directory?(infra_dir)
-      stdout, stderr, status = Open3.capture3(deploy_env, "./scripts/deploy.sh", env_key, chdir: worktree)
-    end
-
-    if status.success?
-      LOG.info "[Deploy] Successfully deployed card ##{card_number} to #{env_key}"
-      run_cmd("fizzy", "reaction", "create", "--card", card_number.to_s,
-              "--comment", comment_id.to_s, "--content", "✅",
-              chdir: worktree, env: default_fizzy_env)
-      deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "fizzy-comment")
-    else
-      LOG.error "[Deploy] Failed deploying card ##{card_number} to #{env_key}: #{stderr}"
-      run_cmd("fizzy", "reaction", "create", "--card", card_number.to_s,
-              "--comment", comment_id.to_s, "--content", "❌",
-              chdir: worktree, env: default_fizzy_env)
-      record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
-    end
+    react_to_deploy(card_number, comment_id, worktree, "🚀")
+    run_deploy(env_key, card_number, comment_id, worktree)
   rescue StandardError => e
     LOG.error "[Deploy] Error deploying card ##{card_number} to #{env_key}: #{e.message}"
-    begin
-      run_cmd("fizzy", "reaction", "create", "--card", card_number.to_s,
-              "--comment", comment_id.to_s, "--content", "❌",
-              chdir: worktree, env: default_fizzy_env)
-    rescue StandardError => inner
-      LOG.warn "[Deploy] Could not add failure reaction: #{inner.message}"
-    end
+    react_to_deploy(card_number, comment_id, worktree, "❌")
   end
 
   [200, { status: "deploying", card: card_number, env: env_key }.to_json]
+end
+
+def react_to_deploy(card_number, comment_id, worktree, emoji)
+  run_cmd("fizzy", "reaction", "create", "--card", card_number.to_s,
+          "--comment", comment_id.to_s, "--content", emoji,
+          chdir: worktree, env: default_fizzy_env)
+rescue StandardError => e
+  LOG.warn "[Deploy] Could not add reaction #{emoji}: #{e.message}"
+end
+
+def run_deploy(env_key, card_number, comment_id, worktree)
+  deploy_env = {}
+  aws_profile = DEPLOYMENTS_CONFIG.dig("environments", env_key, "aws_profile")
+  deploy_env["AWS_PROFILE"] = aws_profile if aws_profile
+
+  stdout, stderr, status = Open3.capture3(deploy_env, "./scripts/deploy.sh", env_key, chdir: worktree)
+
+  if !status.success? && terraform_lock_error?(stdout, stderr)
+    stdout, stderr, status = retry_deploy_with_init(deploy_env, env_key, card_number, worktree)
+  end
+
+  if status.success?
+    LOG.info "[Deploy] Successfully deployed card ##{card_number} to #{env_key}"
+    react_to_deploy(card_number, comment_id, worktree, "✅")
+    deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "fizzy-comment")
+  else
+    LOG.error "[Deploy] Failed deploying card ##{card_number} to #{env_key}: #{stderr}"
+    react_to_deploy(card_number, comment_id, worktree, "❌")
+    record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
+  end
+end
+
+def retry_deploy_with_init(deploy_env, env_key, card_number, worktree)
+  LOG.info "[Deploy] Terraform lock file mismatch for card ##{card_number} — retrying with init -upgrade"
+  infra_dir = File.join(worktree, "infrastructure", env_key)
+  lock_file = File.join(infra_dir, ".terraform.lock.hcl")
+  FileUtils.rm_f(lock_file)
+  Open3.capture3(deploy_env, "terraform", "init", "-upgrade", chdir: infra_dir) if File.directory?(infra_dir)
+  Open3.capture3(deploy_env, "./scripts/deploy.sh", env_key, chdir: worktree)
 end
 
 # Clone a remote branch locally for deploy when the worktree doesn't exist on this machine.

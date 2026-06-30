@@ -121,25 +121,28 @@ def handle_thinking_stream(agent_key, agent_name, channel_id, message_id, bot_to
     thread_id = thread_response["id"]
     LOG.info "[Discord:#{agent_name}] Thread created: #{thread_id}"
 
-    thinking_content = strip_ansi(File.read(log_file))
+    stream_thinking_to_thread(log_file, thread_id, bot_token)
+  end
+end
 
-    # Split into 1900-char chunks (leave room for code blocks)
-    chunks = []
-    current_chunk = ""
-    thinking_content.lines.each do |line|
-      if current_chunk.length + line.length > 1900
-        chunks << current_chunk
-        current_chunk = line
-      else
-        current_chunk += line
-      end
-    end
-    chunks << current_chunk unless current_chunk.empty?
+def stream_thinking_to_thread(log_file, thread_id, bot_token)
+  thinking_content = strip_ansi(File.read(log_file))
 
-    chunks.each do |chunk|
-      send_discord_message(thread_id, "```\n#{chunk}\n```", token: bot_token)
-      sleep 0.5
+  chunks = []
+  current_chunk = ""
+  thinking_content.lines.each do |line|
+    if current_chunk.length + line.length > 1900
+      chunks << current_chunk
+      current_chunk = line
+    else
+      current_chunk += line
     end
+  end
+  chunks << current_chunk unless current_chunk.empty?
+
+  chunks.each do |chunk|
+    send_discord_message(thread_id, "```\n#{chunk}\n```", token: bot_token)
+    sleep 0.5
   end
 end
 

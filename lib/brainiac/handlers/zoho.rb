@@ -263,32 +263,15 @@ def dispatch_zoho_triage(email, rule)
   response_file = File.join(ZOHO_TRIAGE_DIR, "triage-#{timestamp}.json")
   log_file = File.join(ZOHO_TRIAGE_DIR, "triage-#{timestamp}.log")
 
-  body = (email["summary"] || email["html"] || "").to_s.gsub(/\s+/, " ").strip
-  body = body[0..2000] if body.length > 2000
-
-  prompt = ZOHO_TRIAGE_PROMPT
-           .gsub("{{FROM}}", email["fromAddress"].to_s)
-           .gsub("{{TO}}", email["toAddress"].to_s)
-           .gsub("{{SUBJECT}}", email["subject"].to_s)
-           .gsub("{{BODY}}", body)
-           .gsub("{{PROJECT_TAGS}}", zoho_triage_project_tags)
-           .gsub("{{AGENT_ASSIGNMENT}}", zoho_triage_agent_assignment)
-
-  prompt += "\n\nWrite your JSON response to: #{response_file}\n"
-
-  prompt_file = File.join(ZOHO_TRIAGE_DIR, "triage-prompt-#{timestamp}.md")
-  File.write(prompt_file, prompt)
+  prompt_file = write_zoho_triage_prompt(email, response_file, timestamp)
 
   agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
   project_config = default_project_config
-
   resolved = resolve_project_cli_config(project_config || DEFAULT_PROJECT)
-  agent_cli = resolved["agent_cli"]
-  agent_cli_args = resolved["agent_cli_args"]
 
-  cmd = [agent_cli]
+  cmd = [resolved["agent_cli"]]
   cmd.push("--agent", agent_key)
-  cmd.concat(agent_cli_args.split)
+  cmd.concat(resolved["agent_cli_args"].split)
 
   spawn_env = {}
   agent_env = agent_env_for(agent_name)
@@ -300,12 +283,32 @@ def dispatch_zoho_triage(email, rule)
   LOG.info "[Zoho:Triage] Command: #{cmd.join(" ")}"
 
   pid = spawn(spawn_env, *cmd,
-              chdir: work_dir,
-              in: prompt_file,
-              out: [log_file, "w"],
-              err: %i[child out])
+              chdir: work_dir, in: prompt_file,
+              out: [log_file, "w"], err: %i[child out])
 
-  # Monitor in background — process the triage decision when agent finishes
+  monitor_zoho_triage(pid, response_file, log_file, prompt_file, email, rule)
+  pid
+end
+
+def write_zoho_triage_prompt(email, response_file, timestamp)
+  body = (email["summary"] || email["html"] || "").to_s.gsub(/\s+/, " ").strip
+  body = body[0..2000] if body.length > 2000
+
+  prompt = ZOHO_TRIAGE_PROMPT
+           .gsub("{{FROM}}", email["fromAddress"].to_s)
+           .gsub("{{TO}}", email["toAddress"].to_s)
+           .gsub("{{SUBJECT}}", email["subject"].to_s)
+           .gsub("{{BODY}}", body)
+           .gsub("{{PROJECT_TAGS}}", zoho_triage_project_tags)
+           .gsub("{{AGENT_ASSIGNMENT}}", zoho_triage_agent_assignment)
+  prompt += "\n\nWrite your JSON response to: #{response_file}\n"
+
+  prompt_file = File.join(ZOHO_TRIAGE_DIR, "triage-prompt-#{timestamp}.md")
+  File.write(prompt_file, prompt)
+  prompt_file
+end
+
+def monitor_zoho_triage(pid, response_file, log_file, prompt_file, email, rule)
   Thread.new do
     Process.wait(pid)
     exit_status = $CHILD_STATUS
@@ -319,14 +322,11 @@ def dispatch_zoho_triage(email, rule)
       notify_zoho_match(email, rule)
     end
 
-    # Cleanup prompt file after a delay
     Thread.new do
       sleep 300
       FileUtils.rm_f(prompt_file)
     end
   end
-
-  pid
 end
 
 # Read the triage response — try the response file first, then extract from log

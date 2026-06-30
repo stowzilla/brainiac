@@ -5,6 +5,85 @@
 # These are read-only (mostly) endpoints for inspecting system state:
 # projects, agents, users, brain, skills, sessions, logs, etc.
 
+# --- Session Helpers ---
+
+def reap_dead_sessions
+  ACTIVE_SESSIONS.delete_if do |card_key, info|
+    Process.kill(0, info[:pid])
+    false
+  rescue Errno::ESRCH, Errno::EPERM
+    archive_session(card_key, info)
+    true
+  end
+end
+
+def format_active_sessions
+  ACTIVE_SESSIONS.map do |card_key, info|
+    agent_name = resolve_session_agent_name(card_key, info)
+    {
+      card_key: card_key, agent: agent_name, pid: info[:pid],
+      started_at: info[:started_at].iso8601,
+      elapsed_seconds: (Time.now - info[:started_at]).to_i,
+      log_file: info[:log_file], alive: true,
+      children: child_processes_for(info[:pid])
+    }
+  end
+end
+
+def resolve_session_agent_name(card_key, info)
+  return info[:agent_name] if info[:agent_name]
+
+  parts = card_key.split("-")
+  agent_key = if parts[0] == "discord" && parts.size >= 4
+                parts[1]
+              else
+                "Unknown"
+              end
+  fizzy_display_name(agent_key)
+end
+
+def format_recent_sessions
+  RECENT_SESSIONS.map do |s|
+    {
+      card_key: s[:card_key], agent: s[:agent_name] || "Unknown",
+      log_file: s[:log_file], started_at: s[:started_at]&.iso8601,
+      finished_at: s[:finished_at]&.iso8601
+    }
+  end
+end
+
+def kill_child_process(target_pid)
+  Process.kill("TERM", target_pid)
+  Thread.new do
+    sleep 3
+    begin
+      Process.kill(0, target_pid)
+      Process.kill("KILL", target_pid)
+    rescue Errno::ESRCH, Errno::EPERM # rubocop:disable Lint/SuppressedException
+    end
+  end
+  LOG.info "Killed child process #{target_pid} (SIGTERM)"
+  { killed: target_pid }.to_json
+rescue Errno::ESRCH
+  halt 404, { error: "process not found" }.to_json
+rescue Errno::EPERM
+  halt 403, { error: "permission denied" }.to_json
+end
+
+def search_giphy(query, api_key)
+  uri = URI("https://api.giphy.com/v1/gifs/search")
+  uri.query = URI.encode_www_form(api_key: api_key, q: query, limit: 5, rating: "pg-13")
+  response = Net::HTTP.get_response(uri)
+
+  if response.code.to_i == 200
+    results = JSON.parse(response.body)["data"] || []
+    results.map { |g| { url: g.dig("images", "original", "url") || g["url"], title: g["title"] } }
+  else
+    LOG.warn "[GIF] Giphy API returned #{response.code}: #{response.body[0..200]}"
+    nil
+  end
+end
+
 # --- Projects ---
 
 get "/api/projects" do
@@ -164,50 +243,13 @@ end
 get "/api/status" do
   content_type :json
   ACTIVE_SESSIONS_MUTEX.synchronize do
-    ACTIVE_SESSIONS.delete_if do |card_key, info|
-      Process.kill(0, info[:pid])
-      false
-    rescue Errno::ESRCH, Errno::EPERM
-      archive_session(card_key, info)
-      true
-    end
+    reap_dead_sessions
 
-    sessions = ACTIVE_SESSIONS.map do |card_key, info|
-      agent_name = if info[:agent_name]
-                     info[:agent_name]
-                   else
-                     parts = card_key.split("-")
-                     agent_key = if parts[0] == "discord" && parts.size >= 4
-                                   parts[1]
-                                 else
-                                   "Unknown"
-                                 end
-                     fizzy_display_name(agent_key)
-                   end
+    sessions = format_active_sessions
+    recent = format_recent_sessions
 
-      {
-        card_key: card_key,
-        agent: agent_name,
-        pid: info[:pid],
-        started_at: info[:started_at].iso8601,
-        elapsed_seconds: (Time.now - info[:started_at]).to_i,
-        log_file: info[:log_file],
-        alive: true,
-        children: child_processes_for(info[:pid])
-      }
-    end
-
-    recent = RECENT_SESSIONS.map do |s|
-      {
-        card_key: s[:card_key],
-        agent: s[:agent_name] || "Unknown",
-        log_file: s[:log_file],
-        started_at: s[:started_at]&.iso8601,
-        finished_at: s[:finished_at]&.iso8601
-      }
-    end
-
-    { sessions: sessions, count: sessions.size, recent: recent, version: BRAINIAC_VERSION, server_root: File.expand_path("../../..", __dir__) }.to_json
+    { sessions: sessions, count: sessions.size, recent: recent, version: BRAINIAC_VERSION,
+      server_root: File.expand_path("../../..", __dir__) }.to_json
   end
 end
 
@@ -235,23 +277,7 @@ post "/api/sessions/kill-process/:pid" do
   end
   halt 403, { error: "pid is not a child of any active agent session" }.to_json unless valid
 
-  begin
-    Process.kill("TERM", target_pid)
-    Thread.new do
-      sleep 3
-      begin
-        Process.kill(0, target_pid)
-        Process.kill("KILL", target_pid)
-      rescue Errno::ESRCH, Errno::EPERM # rubocop:disable Lint/SuppressedException
-      end
-    end
-    LOG.info "Killed child process #{target_pid} (SIGTERM)"
-    { killed: target_pid }.to_json
-  rescue Errno::ESRCH
-    halt 404, { error: "process not found" }.to_json
-  rescue Errno::EPERM
-    halt 403, { error: "permission denied" }.to_json
-  end
+  kill_child_process(target_pid)
 end
 
 # --- Logs ---
@@ -283,23 +309,13 @@ get "/api/gif" do
   api_key = DISCORD_CONFIG["giphy_api_key"]
   halt 503, { error: "No giphy_api_key configured in discord.json" }.to_json unless api_key
 
-  begin
-    uri = URI("https://api.giphy.com/v1/gifs/search")
-    uri.query = URI.encode_www_form(api_key: api_key, q: query, limit: 5, rating: "pg-13")
-    response = Net::HTTP.get_response(uri)
+  gifs = search_giphy(query, api_key)
+  halt 502, { error: "Giphy API error" }.to_json unless gifs
 
-    if response.code.to_i == 200
-      results = JSON.parse(response.body)["data"] || []
-      gifs = results.map { |g| { url: g.dig("images", "original", "url") || g["url"], title: g["title"] } }
-      { query: query, results: gifs }.to_json
-    else
-      LOG.warn "[GIF] Giphy API returned #{response.code}: #{response.body[0..200]}"
-      halt 502, { error: "Giphy API error: #{response.code}" }.to_json
-    end
-  rescue StandardError => e
-    LOG.error "[GIF] Search failed: #{e.message}"
-    halt 500, { error: e.message }.to_json
-  end
+  { query: query, results: gifs }.to_json
+rescue StandardError => e
+  LOG.error "[GIF] Search failed: #{e.message}"
+  halt 500, { error: e.message }.to_json
 end
 
 # --- Cron ---

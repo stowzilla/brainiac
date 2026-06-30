@@ -18,55 +18,57 @@ def handle_card_published(payload)
   local_humans = FIZZY_CONFIG.fetch("authorized_users", []).select { |u| u["human"] && u["local"] }
   if local_humans.empty?
     LOG.info "[CardIndex] No local humans configured — skipping dedup, indexing only"
-    CARD_INDEX.index_card(number: card_number, title: title, creator_name: creator_name, creator_id: creator_id, tags: tags) if card_number
-    CARD_INDEX.save
-    CARD_INDEX.schedule_qmd_reindex
-    return [200, { status: "indexed", card: card_number }.to_json]
+    return index_card_only(card_number, title, creator_name, creator_id, tags)
   end
-  is_local_creator = local_humans.any? { |u| u["id"] == creator_id }
 
-  unless is_local_creator
+  unless local_humans.any? { |u| u["id"] == creator_id }
     LOG.info "[CardIndex] Ignoring card ##{card_number} — creator '#{creator_name}' is not a local human"
-    CARD_INDEX.index_card(number: card_number, title: title, creator_name: creator_name, creator_id: creator_id, tags: tags) if card_number
-    CARD_INDEX.save
-    CARD_INDEX.schedule_qmd_reindex
-    return [200, { status: "indexed", card: card_number }.to_json]
+    return index_card_only(card_number, title, creator_name, creator_id, tags)
   end
 
   # Check for duplicates before indexing
   similar = CARD_INDEX.find_similar_cards(title, exclude_number: card_number, tags: tags) if card_number
-
-  # Index the new card
-  CARD_INDEX.index_card(number: card_number, title: title, creator_name: creator_name, creator_id: creator_id, tags: tags) if card_number
-  CARD_INDEX.save
-  CARD_INDEX.schedule_qmd_reindex
+  index_card_only(card_number, title, creator_name, creator_id, tags, skip_response: true)
 
   if similar&.any?
-    best = similar.first
-    LOG.info "[CardIndex] Potential duplicate: ##{card_number} '#{title}' ≈ ##{best[:number]} '#{best[:title]}' (score: #{best[:score].round(2)})"
-
-    project_result = identify_project_by_tags(tags)
-    if project_result
-      _project_key, project_config = project_result
-      repo_path = project_config["repo_path"]
-
-      Thread.new do
-        method_label = { trigram: "📝", semantic: "🧠", both: "📝🧠" }
-        dupes = similar.map do |s|
-          icon = method_label[s[:method]] || "📝"
-          "##{s[:number]} \"#{s[:title]}\" (#{(s[:score] * 100).round}% #{icon})"
-        end.join("\n- ")
-        body = "⚠️ **Possible duplicate detected:**\n- #{dupes}\n\n_📝 = text similarity, 🧠 = semantic similarity_"
-        run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", body, chdir: repo_path, env: default_fizzy_env)
-        LOG.info "[CardIndex] Posted duplicate warning on card ##{card_number}"
-      rescue StandardError => e
-        LOG.warn "[CardIndex] Failed to post duplicate warning: #{e.message}"
-      end
-    end
-
-    [200, { status: "duplicate_detected", card: card_number, similar: similar.map { |s| { number: s[:number], score: s[:score].round(2) } } }.to_json]
+    post_duplicate_warning(card_number, title, tags, similar)
+    [200, { status: "duplicate_detected", card: card_number,
+            similar: similar.map { |s| { number: s[:number], score: s[:score].round(2) } } }.to_json]
   else
     LOG.info "[CardIndex] Card ##{card_number} '#{title}' indexed, no duplicates found"
     [200, { status: "indexed", card: card_number }.to_json]
+  end
+end
+
+def index_card_only(card_number, title, creator_name, creator_id, tags, skip_response: false)
+  CARD_INDEX.index_card(number: card_number, title: title, creator_name: creator_name, creator_id: creator_id, tags: tags) if card_number
+  CARD_INDEX.save
+  CARD_INDEX.schedule_qmd_reindex
+  [200, { status: "indexed", card: card_number }.to_json] unless skip_response
+end
+
+def post_duplicate_warning(card_number, title, tags, similar)
+  best = similar.first
+  LOG.info "[CardIndex] Potential duplicate: ##{card_number} '#{title}' ≈ " \
+           "##{best[:number]} '#{best[:title]}' (score: #{best[:score].round(2)})"
+
+  project_result = identify_project_by_tags(tags)
+  return unless project_result
+
+  _project_key, project_config = project_result
+  repo_path = project_config["repo_path"]
+
+  Thread.new do
+    method_label = { trigram: "📝", semantic: "🧠", both: "📝🧠" }
+    dupes = similar.map do |s|
+      icon = method_label[s[:method]] || "📝"
+      "##{s[:number]} \"#{s[:title]}\" (#{(s[:score] * 100).round}% #{icon})"
+    end.join("\n- ")
+    body = "⚠️ **Possible duplicate detected:**\n- #{dupes}\n\n_📝 = text similarity, 🧠 = semantic similarity_"
+    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", body,
+            chdir: repo_path, env: default_fizzy_env)
+    LOG.info "[CardIndex] Posted duplicate warning on card ##{card_number}"
+  rescue StandardError => e
+    LOG.warn "[CardIndex] Failed to post duplicate warning: #{e.message}"
   end
 end

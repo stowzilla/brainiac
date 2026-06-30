@@ -22,8 +22,6 @@ DISCORD_SHARED_THREADS_MUTEX = Mutex.new
 def deliver_discord_draft(response_file, meta_file)
   return false unless File.exist?(meta_file)
 
-  # Simple file-based lock to prevent the monitoring thread and poller
-  # from delivering the same draft simultaneously.
   lock_file = "#{meta_file}.lock"
   begin
     File.open(lock_file, File::CREAT | File::EXCL | File::WRONLY) {} # rubocop:disable Lint/EmptyBlock
@@ -32,50 +30,56 @@ def deliver_discord_draft(response_file, meta_file)
   end
 
   meta = JSON.parse(File.read(meta_file))
-  channel_id = meta["channel_id"]
-  message_id = meta["message_id"]
-  agent_key = meta["agent_key"]
-  agent_name = meta["agent_name"]
-  is_dm = meta["is_dm"]
-  is_thread = meta["is_thread"]
-  clean_content = meta["clean_content"] || ""
-
-  bot_token = DISCORD_BOTS_MUTEX.synchronize { DISCORD_BOTS.dig(agent_key, :token) }
-  bot_token ||= (AGENT_REGISTRY.dig(agent_key, "env") || {})["DISCORD_BOT_TOKEN"]
+  bot_token = resolve_bot_token(meta["agent_key"], meta["agent_name"])
 
   unless bot_token
-    LOG.warn "[Discord:#{agent_name}] No bot token found for #{agent_key}, cannot deliver draft"
     FileUtils.rm_f(lock_file)
     return false
   end
 
-  if File.exist?(response_file)
-    response = File.read(response_file).strip
-    if response.empty?
-      add_discord_reaction(channel_id, message_id, "😶", token: bot_token) if message_id
-      send_discord_message(channel_id, "_#{agent_name} had nothing to say._", token: bot_token)
-    elsif is_dm || is_thread || message_id.nil?
-      deliver_to_dm_or_forum(response, channel_id, message_id, agent_name, meta, bot_token)
-    else
-      deliver_to_channel_thread(response, channel_id, message_id, agent_key, agent_name, clean_content, bot_token)
-    end
-  else
+  unless File.exist?(response_file)
     FileUtils.rm_f(lock_file)
     return false
   end
 
-  # Move both files to posted/
-  basename = File.basename(response_file)
-  meta_basename = File.basename(meta_file)
-  FileUtils.mv(response_file, File.join(DISCORD_POSTED_DIR, basename)) if File.exist?(response_file)
-  FileUtils.mv(meta_file, File.join(DISCORD_POSTED_DIR, meta_basename))
-  FileUtils.rm_f(lock_file)
-  LOG.info "[Discord:#{agent_name}] Draft delivered and moved to posted/"
+  deliver_response_content(response_file, meta, bot_token)
+  archive_delivered_draft(response_file, meta_file, lock_file, meta["agent_name"])
   true
 rescue StandardError => e
   LOG.error "[Discord] Failed to deliver draft #{meta_file}: #{e.message}"
   File.delete(lock_file) if lock_file && File.exist?(lock_file)
   false
+end
+
+def resolve_bot_token(agent_key, agent_name)
+  token = DISCORD_BOTS_MUTEX.synchronize { DISCORD_BOTS.dig(agent_key, :token) }
+  token ||= (AGENT_REGISTRY.dig(agent_key, "env") || {})["DISCORD_BOT_TOKEN"]
+  LOG.warn "[Discord:#{agent_name}] No bot token found for #{agent_key}, cannot deliver draft" unless token
+  token
+end
+
+def deliver_response_content(response_file, meta, bot_token)
+  channel_id = meta["channel_id"]
+  message_id = meta["message_id"]
+  agent_key = meta["agent_key"]
+  agent_name = meta["agent_name"]
+  response = File.read(response_file).strip
+
+  if response.empty?
+    add_discord_reaction(channel_id, message_id, "😶", token: bot_token) if message_id
+    send_discord_message(channel_id, "_#{agent_name} had nothing to say._", token: bot_token)
+  elsif meta["is_dm"] || meta["is_thread"] || message_id.nil?
+    deliver_to_dm_or_forum(response, channel_id, message_id, agent_name, meta, bot_token)
+  else
+    deliver_to_channel_thread(response, channel_id, message_id, agent_key, agent_name, meta["clean_content"] || "", bot_token)
+  end
+end
+
+def archive_delivered_draft(response_file, meta_file, lock_file, agent_name)
+  FileUtils.mv(response_file, File.join(DISCORD_POSTED_DIR, File.basename(response_file))) if File.exist?(response_file)
+  FileUtils.mv(meta_file, File.join(DISCORD_POSTED_DIR, File.basename(meta_file)))
+  FileUtils.rm_f(lock_file)
+  LOG.info "[Discord:#{agent_name}] Draft delivered and moved to posted/"
 end
 
 # --- Delivery to DMs, threads, and forum channels ---
