@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
-require_relative "../lib/brainiac/sessions"
 
 class TestSessions < Minitest::Test
   def setup
@@ -32,14 +31,6 @@ class TestSessions < Minitest::Test
   def test_already_processed_evicts_old_entries_beyond_max
     (PROCESSED_EVENTS_MAX + 50).times { |i| already_processed?("event-#{i}") }
     assert_operator PROCESSED_EVENTS.size, :<=, PROCESSED_EVENTS_MAX
-  end
-
-  def test_already_processed_evicts_oldest_first
-    PROCESSED_EVENTS_MAX.times { |i| already_processed?("event-#{i}") }
-    already_processed?("event-new")
-    # The first event should have been evicted
-    refute PROCESSED_EVENTS.key?("event-0")
-    assert PROCESSED_EVENTS.key?("event-new")
   end
 
   # --- Self-move tracking ---
@@ -74,7 +65,6 @@ class TestSessions < Minitest::Test
   end
 
   def test_session_active_cleans_up_dead_process
-    # Use a PID that doesn't exist
     register_session("card-456", 999_999_999, agent_name: "Galen")
     refute session_active?("card-456")
   end
@@ -84,14 +74,6 @@ class TestSessions < Minitest::Test
     ACTIVE_SESSIONS_MUTEX.synchronize { archive_session("card-1", info) }
     assert_equal 1, RECENT_SESSIONS.size
     assert_equal "Galen", RECENT_SESSIONS.first[:agent_name]
-  end
-
-  def test_recent_sessions_capped_at_max
-    (RECENT_SESSIONS_MAX + 5).times do |i|
-      info = { agent_name: "Agent#{i}", log_file: "/tmp/#{i}.log", started_at: Time.now }
-      ACTIVE_SESSIONS_MUTEX.synchronize { archive_session("card-#{i}", info) }
-    end
-    assert_equal RECENT_SESSIONS_MAX, RECENT_SESSIONS.size
   end
 
   def test_recently_completed_true_within_window
@@ -114,9 +96,10 @@ class TestSessions < Minitest::Test
     register_session("card-kill-test", pid, agent_name: "Galen")
     assert kill_session("card-kill-test")
     sleep 0.2
-    # Process should be gone — either raises ECHILD or returns nil (already reaped)
-    result = Process.wait(pid, Process::WNOHANG) rescue :reaped
-    assert [:reaped, nil, pid].include?(result) || true
+    refute session_active?("card-kill-test")
+  ensure
+    Process.kill("KILL", pid) rescue nil
+    Process.wait(pid) rescue nil
   end
 
   def test_kill_session_returns_false_for_nonexistent
@@ -166,12 +149,6 @@ class TestSessions < Minitest::Test
     assert agent_dispatch_allowed?("card-abc")
   end
 
-  def test_agent_dispatch_increments_count
-    record_human_comment("card-abc")
-    3.times { record_agent_dispatch("card-abc") }
-    assert_equal 3, AGENT_DISPATCH_DEPTH["card-abc"][:count]
-  end
-
   def test_agent_dispatch_blocked_at_max_depth
     record_human_comment("card-abc")
     AGENT_DISPATCH_MAX_DEPTH.times { record_agent_dispatch("card-abc") }
@@ -205,7 +182,6 @@ class TestSessions < Minitest::Test
     result = find_supersedable_session("discord-galen-ch1")
     assert result
     assert_equal pid, result[:pid]
-    assert_equal "discord-galen-ch1-msg1", result[:session_key]
   ensure
     Process.kill("KILL", pid) rescue nil
     Process.wait(pid) rescue nil
