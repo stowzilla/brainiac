@@ -980,6 +980,15 @@ You can also install a specific version:
 brainiac install whatsapp --version 0.2.0
 ```
 
+For development or private gems, point to a local directory:
+
+```bash
+brainiac install fizzy --path ~/Code/brainiac-fizzy
+brainiac install my-internal-tool --path /opt/brainiac-plugins/my-internal-tool
+```
+
+Local plugins don't run `gem install` — they add the local `lib/` directory to the load path at server startup. Changes to the source take effect on the next `brainiac restart`.
+
 ### Managing Plugins
 
 ```bash
@@ -1001,10 +1010,13 @@ Installed plugins are tracked in `~/.brainiac/plugins.json`:
 ```json
 {
   "plugins": [
-    { "name": "whatsapp", "gem": "brainiac-whatsapp", "installed_at": "2026-06-30T14:00:00-04:00" }
+    { "name": "whatsapp", "gem": "brainiac-whatsapp", "installed_at": "2026-06-30T14:00:00-04:00" },
+    { "name": "fizzy", "gem": "brainiac-fizzy", "path": "/home/you/Code/brainiac-fizzy", "installed_at": "2026-06-30T16:00:00-04:00" }
   ]
 }
 ```
+
+Plugins with a `"path"` field are loaded from the local filesystem (their `lib/` directory is added to `$LOAD_PATH`). Plugins without a path are loaded via RubyGems as normal.
 
 At server startup, `load_plugins!` iterates this list, requires each gem, and calls `.register(app)`.
 
@@ -1118,7 +1130,8 @@ brainiac brain list                      # List everything
 ### Plugins
 
 ```bash
-brainiac install <name>                  # Install a plugin gem (e.g., whatsapp)
+brainiac install <name>                  # Install a plugin gem from RubyGems
+brainiac install <name> --path <dir>     # Register a local plugin (dev/private)
 brainiac install <name> --version 0.2.0  # Install specific version
 brainiac uninstall <name>                # Remove plugin from config
 brainiac plugins                         # List installed plugins

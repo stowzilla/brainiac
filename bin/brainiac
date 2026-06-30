@@ -2147,13 +2147,18 @@ when "completions"
 when "install"
   name = ARGV.shift
   unless name
-    puts "Usage: brainiac install <plugin-name>"
+    puts "Usage: brainiac install <plugin-name> [options]"
     puts ""
     puts "Installs a Brainiac plugin gem (brainiac-<name>) and registers it."
     puts ""
+    puts "Options:"
+    puts "  --path <dir>       Use a local gem directory (for development/private gems)"
+    puts "  --version <ver>    Install a specific version from RubyGems"
+    puts ""
     puts "Examples:"
-    puts "  brainiac install whatsapp     # installs brainiac-whatsapp gem"
-    puts "  brainiac install slack         # installs brainiac-slack gem"
+    puts "  brainiac install whatsapp                          # from RubyGems"
+    puts "  brainiac install fizzy --path ~/Code/brainiac-fizzy  # local dev"
+    puts "  brainiac install slack --version 0.2.0             # specific version"
     puts ""
     puts "After installing, restart the server: brainiac restart"
     exit 1
@@ -2162,11 +2167,20 @@ when "install"
   # Strip "brainiac-" prefix if user includes it
   name = name.sub(/^brainiac-/, "")
   version = nil
+  local_path = nil
 
-  # Check for --version flag
-  if ARGV[0] == "--version" || ARGV[0] == "-v"
-    ARGV.shift
-    version = ARGV.shift
+  # Parse flags
+  while ARGV.any?
+    case ARGV[0]
+    when "--version", "-v"
+      ARGV.shift
+      version = ARGV.shift
+    when "--path", "-p"
+      ARGV.shift
+      local_path = File.expand_path(ARGV.shift || "")
+    else
+      break
+    end
   end
 
   plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
@@ -2184,34 +2198,69 @@ when "install"
   end
 
   gem_name = "brainiac-#{name}"
-  puts "Installing #{gem_name}..."
 
-  install_cmd = "gem install #{gem_name}"
-  install_cmd += " --version '#{version}'" if version
+  if local_path
+    # Local path mode — validate the directory exists and has the expected entry file
+    unless Dir.exist?(local_path)
+      puts "Error: Path does not exist: #{local_path}"
+      exit 1
+    end
 
-  system(install_cmd)
-  unless $?.success?
+    entry_file = File.join(local_path, "lib", "brainiac-#{name}.rb")
+    unless File.exist?(entry_file)
+      puts "Error: Expected entry file not found: #{entry_file}"
+      puts "  Plugin gems must have lib/brainiac-<name>.rb"
+      exit 1
+    end
+
+    puts "Registering #{gem_name} from local path: #{local_path}"
+
+    # Register in plugins.json with path
+    plugins_config["plugins"] ||= []
+    entry = { "name" => name, "gem" => gem_name, "path" => local_path, "installed_at" => Time.now.iso8601 }
+    plugins_config["plugins"] << entry
+
+    ensure_brainiac_dir
+    File.write(plugins_file, JSON.pretty_generate(plugins_config))
+
+    # Enable the handler
+    update_handler_config(name, true)
+
     puts ""
-    puts "Failed to install #{gem_name}."
-    puts "  Check that the gem exists: https://rubygems.org/gems/#{gem_name}"
-    exit 1
+    puts "✓ Registered plugin '#{name}' from #{local_path}"
+    puts "  Restart the server to activate: brainiac restart"
+    puts "  Note: Changes to the source take effect on next server restart."
+  else
+    # RubyGems mode — install the gem
+    puts "Installing #{gem_name}..."
+
+    install_cmd = "gem install #{gem_name}"
+    install_cmd += " --version '#{version}'" if version
+
+    system(install_cmd)
+    unless $?.success?
+      puts ""
+      puts "Failed to install #{gem_name}."
+      puts "  Check that the gem exists: https://rubygems.org/gems/#{gem_name}"
+      exit 1
+    end
+
+    # Register in plugins.json
+    plugins_config["plugins"] ||= []
+    entry = { "name" => name, "gem" => gem_name, "installed_at" => Time.now.iso8601 }
+    entry["version"] = version if version
+    plugins_config["plugins"] << entry
+
+    ensure_brainiac_dir
+    File.write(plugins_file, JSON.pretty_generate(plugins_config))
+
+    # Enable the handler
+    update_handler_config(name, true)
+
+    puts ""
+    puts "✓ Installed plugin '#{name}' (#{gem_name})"
+    puts "  Restart the server to activate: brainiac restart"
   end
-
-  # Register in plugins.json
-  plugins_config["plugins"] ||= []
-  entry = { "name" => name, "gem" => gem_name, "installed_at" => Time.now.iso8601 }
-  entry["version"] = version if version
-  plugins_config["plugins"] << entry
-
-  ensure_brainiac_dir
-  File.write(plugins_file, JSON.pretty_generate(plugins_config))
-
-  # Enable the handler
-  update_handler_config(name, true)
-
-  puts ""
-  puts "✓ Installed plugin '#{name}' (#{gem_name})"
-  puts "  Restart the server to activate: brainiac restart"
 
 when "uninstall"
   name = ARGV.shift
@@ -2269,6 +2318,7 @@ when "plugins"
       puts ""
       puts "Install plugins with: brainiac install <name>"
       puts "  Example: brainiac install whatsapp"
+      puts "  Example: brainiac install fizzy --path ~/Code/brainiac-fizzy"
     else
       puts "Installed plugins:"
       plugins.each do |p|
@@ -2277,25 +2327,32 @@ when "plugins"
         gem_name = entry["gem"] || "brainiac-#{name}"
         version = entry["version"] || "latest"
         installed_at = entry["installed_at"] ? " (#{entry["installed_at"][0..9]})" : ""
+        local_path = entry["path"]
 
-        # Check if gem is actually loadable
-        loadable = begin
-          Gem::Specification.find_by_name(gem_name)
-          "✓"
-        rescue Gem::MissingSpecError
-          "✗ (gem not found)"
+        if local_path
+          # Local plugin — check path exists
+          exists = Dir.exist?(local_path) ? "✓" : "✗ (path missing)"
+          puts "  #{exists} #{name} → #{local_path}#{installed_at}"
+        else
+          # Gem plugin — check gem is loadable
+          loadable = begin
+            Gem::Specification.find_by_name(gem_name)
+            "✓"
+          rescue Gem::MissingSpecError
+            "✗ (gem not found)"
+          end
+          puts "  #{loadable} #{name} (#{gem_name} #{version})#{installed_at}"
         end
-
-        puts "  #{loadable} #{name} (#{gem_name} #{version})#{installed_at}"
       end
     end
   else
     puts "Usage: brainiac plugins [list]"
     puts ""
     puts "Managing plugins:"
-    puts "  brainiac install <name>       Install a plugin"
-    puts "  brainiac uninstall <name>     Remove a plugin"
-    puts "  brainiac plugins              List installed plugins"
+    puts "  brainiac install <name>                    Install from RubyGems"
+    puts "  brainiac install <name> --path <dir>       Register a local plugin"
+    puts "  brainiac uninstall <name>                  Remove a plugin"
+    puts "  brainiac plugins                           List installed plugins"
   end
 
 when "version", "--version", "-v"
