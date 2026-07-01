@@ -32,12 +32,25 @@ def installed_plugins
   (PLUGINS_CONFIG["plugins"] || []).map { |p| p.is_a?(Hash) ? p["name"] : p.to_s }
 end
 
+# Returns the full plugin entry (Hash) for a given name, or nil.
+def plugin_entry(name)
+  (PLUGINS_CONFIG["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
+end
+
 # Load all installed plugin gems and call their register hooks.
 # Called once during server startup, after core handlers are loaded.
 def load_plugins!(app)
   installed_plugins.each do |name|
     gem_name = "brainiac-#{name}"
+    entry = plugin_entry(name)
     begin
+      # If plugin has a local path, add its lib/ to load path before requiring
+      if entry.is_a?(Hash) && entry["path"]
+        lib_path = File.join(entry["path"], "lib")
+        $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+        LOG.info "[Plugins] Loading #{gem_name} from local path: #{entry["path"]}"
+      end
+
       require gem_name
       plugin_module = resolve_plugin_module(name)
       if plugin_module.respond_to?(:register)
@@ -48,7 +61,12 @@ def load_plugins!(app)
       end
     rescue LoadError => e
       LOG.error "[Plugins] Could not load #{gem_name}: #{e.message}"
-      LOG.error "[Plugins]   Is the gem installed? Run: gem install #{gem_name}"
+      if entry.is_a?(Hash) && entry["path"]
+        LOG.error "[Plugins]   Local path: #{entry["path"]}"
+        LOG.error "[Plugins]   Check that #{File.join(entry["path"], "lib", gem_name + ".rb")} exists"
+      else
+        LOG.error "[Plugins]   Is the gem installed? Run: gem install #{gem_name}"
+      end
     rescue StandardError => e
       LOG.error "[Plugins] Error registering #{gem_name}: #{e.message}"
       LOG.error "[Plugins]   #{e.backtrace.first(3).join("\n  ")}"
