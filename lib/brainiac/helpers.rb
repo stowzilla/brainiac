@@ -332,33 +332,23 @@ rescue StandardError => e
 end
 
 # Notify the originating channel that an agent crashed.
-# source: :fizzy, :github, :discord
+# source: :github, :discord, or plugin-registered sources
 # source_context: hash with channel-specific info needed to post the notification
 def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_context:, project_config:)
   agent_display = agent_name || "Agent"
   snippet = extract_crash_snippet(log_file)
   snippet_block = snippet ? "\n```\n#{snippet[-1500..]}\n```" : ""
 
+  # Try plugin-registered crash handlers first
+  handled = Brainiac.emit(:agent_crashed,
+                          exit_status: exit_status, log_file: log_file, agent_name: agent_display,
+                          source: source, source_context: source_context, project_config: project_config,
+                          snippet: snippet)
+
+  # If a plugin handled it for this source, we're done
+  return if handled.any? { |r| r == source }
+
   case source
-  when :fizzy
-    card_number = source_context[:card_number]
-    return unless card_number
-
-    repo_path = project_config&.dig("repo_path") || Dir.pwd
-    body = "<p>💥 <strong>#{agent_display} crashed</strong> (exit code #{exit_status})</p>" \
-           "<p>Log: <code>#{log_file}</code></p>"
-    if snippet
-      escaped = snippet[-1500..].gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
-      body += "<pre>#{escaped}</pre>"
-    end
-    begin
-      run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", body,
-              chdir: repo_path, env: fizzy_env_for(agent_display))
-      LOG.info "[CrashNotify] Posted crash comment on Fizzy card ##{card_number}"
-    rescue StandardError => e
-      LOG.error "[CrashNotify] Failed to post Fizzy crash comment: #{e.message}"
-    end
-
   when :github
     pr_number = source_context[:pr_number]
     repo_name = source_context[:repo_name]
@@ -386,8 +376,6 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
 rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
 end
-
-# Append an italic PR/branch footer to the agent's most recent Fizzy comment.
 def append_fizzy_comment_footer(card_number, project_config:, agent_name: nil)
   repo_path = project_config["repo_path"]
   project_config["github_repo"]
@@ -460,8 +448,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   # that has had a previous session, resume it. Only applies to follow-ups (not first dispatch).
   should_resume = resume && resolved["resume_flag"]
 
-  ensure_fizzy_yaml!(chdir, project_config)
-  Thread.new { scrub_invalid_attachments!(chdir) }
+  # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
+  Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)
 
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
   log_file = File.join(chdir, "tmp/agent-#{log_name}-#{timestamp}.log")
@@ -566,10 +554,18 @@ def handle_agent_completion(**ctx)
     )
   end
 
-  fizzy_card = ctx[:card_number] || ctx[:source_context][:card_number]
-  handle_fizzy_post_session(fizzy_card, agent_exit_status, agent_signaled, ctx[:agent_name], ctx[:chdir], ctx[:source], ctx[:source_context],
-                            ctx[:project_config], ctx[:skip_column_move])
-  handle_plan_finalization(ctx[:prompt_file], ctx[:agent_name], ctx[:project_config])
+  # Emit lifecycle hook — plugins handle post-session actions (e.g., fizzy moves card, appends footer)
+  Brainiac.emit(:agent_completed,
+                card_number: ctx[:card_number] || ctx[:source_context]&.dig(:card_number),
+                exit_status: agent_exit_status,
+                signaled: agent_signaled,
+                agent_name: ctx[:agent_name],
+                chdir: ctx[:chdir],
+                source: ctx[:source],
+                source_context: ctx[:source_context],
+                project_config: ctx[:project_config],
+                skip_column_move: ctx[:skip_column_move],
+                prompt_file: ctx[:prompt_file])
 
   qmd_out, qmd_status = Open3.capture2e("qmd", "update")
   if qmd_status.success?
@@ -610,34 +606,6 @@ def handle_fizzy_post_session(fizzy_card, exit_status, signaled, agent_name, chd
   )
 end
 
-def handle_plan_finalization(prompt_file, agent_name, project_config)
-  return unless File.exist?(prompt_file)
-
-  prompt_content = File.read(prompt_file)
-  card_id_match = prompt_content.match(/CARD_ID.*?(\d+|discord-[\w-]+)/)
-  return unless card_id_match
-
-  card_id = card_id_match[1]
-  plan_file = File.join(PLANS_DIR, "card-#{card_id}-plan.md")
-  return unless File.exist?(plan_file)
-
-  LOG.info "[Planning] Plan file detected for card #{card_id}, finalizing..."
-  card_num = card_id.match?(/^\d+$/) ? card_id.to_i : nil
-  project_key = PROJECTS.find { |_k, v| v == project_config }&.first
-
-  result = finalize_plan(
-    card_id: card_id, card_number: card_num,
-    agent_name: agent_name || AI_AGENT_NAME,
-    project_key: project_key, repo_path: project_config["repo_path"]
-  )
-
-  if result[:success]
-    LOG.info "[Planning] Plan finalized: #{result[:tasks].size} tasks created"
-  else
-    LOG.error "[Planning] Failed to finalize plan: #{result[:error]}"
-  end
-end
-
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
   return unless project_key_for_restart == "brainiac" && head_before
 
@@ -649,17 +617,6 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
   end
 end
 
-def authorized?(payload)
-  creator_id = payload.dig("creator", "id")
-  AUTHORIZED_USER_IDS.include?(creator_id)
-end
-
-def human_mentioned?(user_id)
-  return false unless FIZZY_CONFIG["authorized_users"]
-
-  user = FIZZY_CONFIG["authorized_users"].find { |u| u["id"] == user_id }
-  user && user["human"]
-end
 
 def detect_model(project_config, tags: [], text: "")
   resolved = resolve_project_cli_config(project_config)

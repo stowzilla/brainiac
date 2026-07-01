@@ -32,12 +32,6 @@ end
 
 # --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
 
-if handler_enabled?("fizzy")
-  require_relative "lib/brainiac/handlers/fizzy"
-  require_relative "lib/brainiac/handlers/fizzy/card_index"
-  require_relative "lib/brainiac/handlers/fizzy/deployments"
-  LOG.info "[Handlers] Fizzy handler enabled"
-end
 
 if handler_enabled?("github")
   require_relative "lib/brainiac/handlers/github"
@@ -147,88 +141,6 @@ before "/api/*" do
 end
 
 # --- Fizzy webhook routes ---
-
-post "/fizzy/?:board_key?" do
-  content_type :json
-  request.body.rewind
-  payload_body = request.body.read
-  board_key = params["board_key"]
-
-  verify_signature!(request, payload_body, board_key: board_key)
-
-  payload = JSON.parse(payload_body)
-
-  event_id = payload["id"]
-  action = payload["action"]
-
-  LOG.info "[Fizzy] Received event #{event_id}: action=#{action}"
-
-  if already_processed?(event_id)
-    LOG.info "Skipping duplicate event #{event_id}"
-    halt 200, { status: "duplicate" }.to_json
-  end
-
-  reload_projects!
-  reload_agent_registry!
-  reload_github_config!
-
-  case action
-  when "card_assigned"
-    status_code, body = handle_card_assigned(payload)
-    LOG.info "[Fizzy] #{action} response: #{status_code} - #{body}"
-    halt status_code, body
-  when "comment_created"
-    status_code, body = handle_comment(payload)
-    LOG.info "[Fizzy] comment_created response: #{status_code} - #{body}"
-    halt status_code, body
-  when "card_published", "card_triaged"
-    eventable = payload["eventable"] || {}
-    card_number = eventable["number"]&.to_s
-
-    # card_triaged never dispatches agents — only card_assigned and @mentions do that.
-    # Guards remain as defense-in-depth for any future column-based routing.
-    if action == "card_triaged" && card_number
-      if self_move_recent?(card_number)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — self-move echo"
-        halt 200, { status: "ignored", reason: "self_move" }.to_json
-      end
-
-      if card_merged?(card_number)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — card already merged"
-        halt 200, { status: "ignored", reason: "card_merged" }.to_json
-      end
-
-      card_key = "card-#{card_number}"
-      if recently_completed?(card_key)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — recently completed"
-        halt 200, { status: "ignored", reason: "recently_completed" }.to_json
-      end
-    end
-
-    # Only card_published does duplicate detection — card_triaged skips agent dispatch entirely
-    if action == "card_published"
-      assignees = eventable["assignees"] || []
-      if assignees.any? { |a| local_agent_names.include?(a["name"]) }
-        status_code, body = handle_card_assigned(payload)
-        LOG.info "[Fizzy] #{action} (with assignee) response: #{status_code} - #{body}"
-        halt status_code, body
-      end
-    end
-
-    status_code, body = handle_card_published(payload)
-    LOG.info "[Fizzy] #{action} response: #{status_code} - #{body}"
-    halt status_code, body
-  else
-    LOG.info "[Fizzy] Ignoring unknown action: #{action}"
-    halt 200, { status: "ignored", action: action }.to_json
-  end
-rescue JSON::ParserError => e
-  LOG.error "Invalid JSON: #{e.message}"
-  halt 400, { error: "Invalid JSON" }.to_json
-rescue StandardError => e
-  LOG.error "Unhandled error: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
-  halt 500, { error: e.message }.to_json
-end
 
 post "/github" do
   content_type :json
