@@ -804,13 +804,20 @@ def handle_completed_session(exit_status:, agent_name:, agent_config_name:, chan
                              project_config:, head_before:, status_before:)
   LOG.info "[Discord:#{agent_name}] Agent finished for message #{message_id} (exit: #{exit_status.exitstatus})"
 
-  if exit_status.exitstatus && exit_status.exitstatus != 0
+  # Only report a crash if the agent didn't produce a response. If the response file exists,
+  # the agent completed its primary task — the crash happened during post-task reflection
+  # (e.g. kiro-cli hitting "Tool approval required" after an API error in the reflection phase).
+  if exit_status.exitstatus && exit_status.exitstatus != 0 && !File.exist?(response_file)
     notify_agent_crash(
       exit_status: exit_status.exitstatus, log_file: log_file,
       agent_name: agent_name, source: :discord,
       source_context: { channel_id: channel_id, message_id: message_id, bot_token: bot_token },
       project_config: project_config
     )
+  elsif exit_status.exitstatus && exit_status.exitstatus != 0
+    LOG.warn "[Discord:#{agent_name}] Agent exited with code #{exit_status.exitstatus} but response file exists — " \
+             "likely crashed during post-task reflection. Suppressing crash notification."
+    log_post_task_crash_diagnostics(log_file, agent_name)
   end
 
   extract_response_from_log(response_file, meta_file, log_file, exit_status, agent_name, agent_config_name, message_id)
@@ -894,4 +901,33 @@ def extract_response_from_log(response_file, meta_file, log_file, exit_status, a
       LOG.info "[Discord:#{agent_name}] Extracted response from log (#{clean_output.length} chars)"
     end
   end
+end
+
+# Diagnostic logging for when an agent exits non-zero but already wrote its response.
+# Extracts the last tool call, the error messages, and context from the log tail.
+def log_post_task_crash_diagnostics(log_file, agent_name)
+  return unless log_file && File.exist?(log_file)
+
+  content = File.read(log_file)
+  lines = content.lines.map { |l| l.gsub(/\e\[[0-9;]*[a-zA-Z]/, "").rstrip }
+
+  # Find the last tool call that succeeded
+  last_tool_idx = lines.rindex { |l| l.include?("using tool:") }
+  last_tool = last_tool_idx ? lines[last_tool_idx].strip : "unknown"
+
+  # Find error lines
+  error_lines = lines.grep(/^error:|Tool approval required|Failed to receive/i)
+
+  # Count total tool calls
+  tool_count = lines.count { |l| l.include?("using tool:") }
+
+  # Log size as a proxy for conversation length
+  log_size_kb = (File.size(log_file) / 1024.0).round(1)
+
+  LOG.warn "[Discord:#{agent_name}] Post-task crash diagnostics:"
+  LOG.warn "[Discord:#{agent_name}]   Log size: #{log_size_kb}KB, tool calls: #{tool_count}"
+  LOG.warn "[Discord:#{agent_name}]   Last successful tool: #{last_tool[0..120]}"
+  error_lines.each { |l| LOG.warn "[Discord:#{agent_name}]   Error: #{l.strip[0..200]}" }
+rescue StandardError => e
+  LOG.warn "[Discord:#{agent_name}] Could not read crash diagnostics: #{e.message}"
 end
