@@ -218,7 +218,7 @@ DEFAULT_PROJECT = {
   # cli_provider is configured on the project or agent. These only apply as a
   # last-resort fallback when no provider config exists.
   "agent_cli" => ENV.fetch("AGENT_CLI", "kiro-cli"),
-  "agent_cli_args" => ENV.fetch("AGENT_CLI_ARGS", "chat --no-interactive"),
+  "agent_cli_args" => ENV.fetch("AGENT_CLI_ARGS", "chat --trust-all-tools --no-interactive"),
   "agent_model_flag" => ENV["AGENT_MODEL_FLAG"] || "--model",
   "agent_model" => ENV.fetch("AGENT_MODEL", nil),
   "agent_effort_flag" => ENV["AGENT_EFFORT_FLAG"] || "--effort",
