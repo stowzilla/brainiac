@@ -1842,11 +1842,11 @@ when "agent"
       puts JSON.pretty_generate(display)
 
     when "env"
-      if ARGV[0] == "--delete"
+      if ARGV[0] == "--delete" || ARGV[0] == "unset" || ARGV[0] == "delete" || ARGV[0] == "rm"
         ARGV.shift
         var_name = ARGV.shift
         unless var_name
-          puts "Usage: brainiac agent #{agent_cmd} env --delete <KEY>"
+          puts "Usage: brainiac agent #{agent_cmd} env unset <KEY>"
           exit 1
         end
         registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
