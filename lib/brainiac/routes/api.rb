@@ -214,7 +214,7 @@ end
 
 get "/api/card-index" do
   content_type :json
-  halt 404, { error: "Card index not enabled (fizzy handler disabled)" }.to_json unless defined?(CARD_INDEX)
+  halt 404, { error: "Card index not available (fizzy plugin not installed)" }.to_json unless defined?(CARD_INDEX)
 
   query = params["q"]
   if query && !query.empty?

@@ -404,42 +404,32 @@ def create_zoho_triage_card(decision, email, channel_id, token)
   tags = ["support"]
   tags << decision["project_tag"] if decision["project_tag"]
 
-  # Resolve tag IDs
-  tag_ids = resolve_zoho_triage_tags(tags)
+  # Emit hook — work item plugin handles card creation (Fizzy, Linear, etc.)
+  results = Brainiac.emit(:create_work_item,
+                          board_id: board_id,
+                          title: title,
+                          description: description,
+                          tags: tags,
+                          assign_to: decision["assign_to"])
 
-  # Create the card
-  cmd = ["fizzy", "card", "create", "--board", board_id, "--title", title, "--description", description]
-  cmd.push("--tag-ids", tag_ids.join(",")) unless tag_ids.empty?
+  card_info = results.compact.first
+  if card_info
+    card_number = card_info[:number]
+    card_url = card_info[:url]
+    LOG.info "[Zoho:Triage] Created card ##{card_number}: #{title}"
 
-  # Use the triage agent's env for fizzy token
-  agent_name = "Threepio"
-  agent_env = agent_env_for(agent_name)
-  spawn_env = agent_env.empty? ? {} : agent_env
-
-  output, status = Open3.capture2e(spawn_env, *cmd)
-  unless status.success?
-    LOG.error "[Zoho:Triage] Failed to create card: #{output}"
-    notify_zoho_match(email, { "label" => "Support Email (card creation failed)", "emoji" => "❌" }.merge(rule_defaults(nil)))
-    return
-  end
-
-  # Parse card number from response
-  card_data = JSON.parse(output)
-  card_number = card_data.dig("data", "number")
-  card_url = card_data.dig("data", "url")
-  LOG.info "[Zoho:Triage] Created card ##{card_number}: #{title}"
-
-  # Assign to the appropriate agent
-  assign_zoho_triage_card(card_number, decision["assign_to"], spawn_env) if card_number && decision["assign_to"]
-
-  # Notify Discord
-  if channel_id && token
-    msg = "🎫 **Support Card Created: [##{card_number}](#{card_url})**\n"
-    msg += "**Title:** #{title}\n"
-    msg += "**Assigned to:** #{decision["assign_to"] || "unassigned"}\n"
-    msg += "**Tags:** #{tags.join(", ")}\n"
-    msg += "**From:** #{email["fromAddress"]}"
-    send_discord_message(channel_id, msg, token: token)
+    # Notify Discord
+    if channel_id && token
+      msg = "🎫 **Support Card Created: [##{card_number}](#{card_url})**\n"
+      msg += "**Title:** #{title}\n"
+      msg += "**Assigned to:** #{decision["assign_to"] || "unassigned"}\n"
+      msg += "**Tags:** #{tags.join(", ")}\n"
+      msg += "**From:** #{email["fromAddress"]}"
+      send_discord_message(channel_id, msg, token: token)
+    end
+  else
+    LOG.warn "[Zoho:Triage] No work item plugin handled card creation"
+    notify_zoho_match(email, { "label" => "Support Email (no card plugin)", "emoji" => "⚠️" }.merge(rule_defaults(nil)))
   end
 rescue StandardError => e
   LOG.error "[Zoho:Triage] Error creating card: #{e.message}\n#{e.backtrace.first(3).join("\n")}"
@@ -447,44 +437,3 @@ rescue StandardError => e
 end
 
 # Resolve tag names to IDs by querying Fizzy
-def resolve_zoho_triage_tags(tag_names)
-  agent_env = agent_env_for("Threepio")
-  spawn_env = agent_env.empty? ? {} : agent_env
-
-  output, status = Open3.capture2e(spawn_env, "fizzy", "tag", "list", "--all")
-  return [] unless status.success?
-
-  all_tags = JSON.parse(output)["data"] || []
-  tag_names.filter_map do |name|
-    tag = all_tags.find { |t| t["title"].downcase == name.downcase }
-    tag&.dig("id")
-  end
-rescue StandardError => e
-  LOG.warn "[Zoho:Triage] Failed to resolve tags: #{e.message}"
-  []
-end
-
-# Assign a card to the appropriate agent
-def assign_zoho_triage_card(card_number, agent_name, spawn_env)
-  # Resolve agent name to Fizzy user ID from fizzy.json authorized_users
-  users = FIZZY_CONFIG["authorized_users"] || []
-  user = users.find { |u| u["name"]&.downcase == agent_name.downcase }
-  user_id = user&.dig("id")
-
-  unless user_id
-    LOG.warn "[Zoho:Triage] Unknown agent for assignment: #{agent_name} (not found in fizzy.json authorized_users)"
-    return
-  end
-
-  output, status = Open3.capture2e(spawn_env, "fizzy", "card", "assign", card_number.to_s, "--user", user_id)
-  if status.success?
-    LOG.info "[Zoho:Triage] Assigned card ##{card_number} to #{agent_name}"
-  else
-    LOG.warn "[Zoho:Triage] Failed to assign card ##{card_number}: #{output}"
-  end
-end
-
-def rule_defaults(rule)
-  { "discord_channel_id" => rule&.dig("discord_channel_id") || ZOHO_CONFIG["default_discord_channel_id"],
-    "notify_as" => rule&.dig("notify_as") || ZOHO_CONFIG["notify_as"] }
-end

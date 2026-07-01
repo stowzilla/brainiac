@@ -5,10 +5,6 @@
 # Fallback column ID for backwards compatibility when no board config exists
 DEFAULT_UAT_COLUMN_ID = "03fsmglsr6az06ppyotawsti8"
 
-def uat_column_id(project_config)
-  bk = board_key_for_project(project_config)
-  (bk && board_column_id(bk, "uat")) || DEFAULT_UAT_COLUMN_ID
-end
 
 # Find a Fizzy card by matching the PR's head branch to a branch in the card map.
 def find_card_by_branch(branch)
@@ -57,15 +53,6 @@ rescue StandardError => e
 end
 
 # Check if a PR link is already present in the card's comments.
-def pr_link_already_commented?(card_number, pr_url, chdir:, env: default_fizzy_env)
-  output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: chdir, env: env)
-  data = JSON.parse(output)
-  comments = data["data"] || []
-  comments.any? { |c| (c.dig("body", "plain_text") || "").include?(pr_url) }
-rescue StandardError => e
-  LOG.warn "Could not check existing comments for card ##{card_number}: #{e.message}"
-  false
-end
 
 def handle_github_pr_merged(payload)
   pr = payload["pull_request"]
@@ -113,39 +100,23 @@ rescue StandardError => e
 end
 
 def process_merged_pr(card_info, card_number, branch, pull_request, pr_url, pr_title, project_key, project_config, repo_path)
-  card_agent = card_info["agent"]
-  card_fizzy_env = fizzy_env_for(card_agent)
-
-  unless pr_link_already_commented?(card_number, pr_url, chdir: repo_path, env: card_fizzy_env)
-    comment_body = "<p>PR merged into main: <a href=\"#{pr_url}\">#{pr_title}</a></p><p>Branch: <code>#{branch}</code></p>"
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", comment_body, chdir: repo_path, env: card_fizzy_env)
-  end
-
   mark_card_merged(card_number)
-  run_cmd("fizzy", "card", "column", card_number.to_s, "--column", uat_column_id(project_config), chdir: repo_path, env: card_fizzy_env)
-  record_self_move(card_number)
   cleanup_card_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
-  clear_deployment_for_card(card_number)
 
-  agent_name = card_agent || agent_name_for(project_config)
-  card_title = card_info["title"] || pr_title
-  dispatch_uat_agent(card_number, card_title, pull_request["number"].to_s, agent_name, project_key, project_config, repo_path)
+  # Emit hook — plugins handle their own post-merge actions
+  # (e.g., Fizzy plugin posts PR link comment, moves card to UAT, dispatches UAT agent)
+  Brainiac.emit(:pr_merged,
+                card_number: card_number,
+                card_info: card_info,
+                branch: branch,
+                pull_request: pull_request,
+                pr_url: pr_url,
+                pr_title: pr_title,
+                project_key: project_key,
+                project_config: project_config,
+                repo_path: repo_path)
 end
 
-def dispatch_uat_agent(card_number, card_title, pr_number, agent_name, project_key, project_config, repo_path)
-  prompt = render_prompt(PROMPT_GITHUB_UAT,
-                         { "CARD_NUMBER" => card_number, "CARD_TITLE" => card_title, "PR_NUMBER" => pr_number },
-                         brain_context: build_brain_context(agent_name: agent_name, card_number: card_number,
-                                                            card_title: card_title, project_key: project_key),
-                         agent_name: agent_name, channel: :fizzy,
-                         board_key: board_key_for_project(project_config))
-
-  pid, log_file = run_agent(prompt, project_config: project_config, chdir: repo_path,
-                                    log_name: "uat-#{card_number}", agent_name: agent_name,
-                                    source: :fizzy, source_context: { card_number: card_number }, skip_column_move: true)
-  register_session("card-#{card_number}", pid, log_file: log_file, agent_name: agent_name)
-  LOG.info "Dispatched #{agent_name} for UAT testing steps on card ##{card_number}"
-end
 
 def handle_github_issue_comment(payload)
   comment = payload["comment"]
@@ -265,54 +236,18 @@ rescue StandardError => e
 end
 
 def close_uat_cards_after_deploy(project_key, project_config)
-  repo_path = project_config["repo_path"]
-  output = run_cmd("fizzy", "card", "list", "--column", uat_column_id(project_config), "--all",
-                   chdir: repo_path, env: default_fizzy_env)
-  card_list = JSON.parse(output)["data"] || []
+  # Emit hook — work item plugins handle closing cards after production deploy
+  results = Brainiac.emit(:production_deployed, project_key: project_key, project_config: project_config)
+  closed_cards = results.flatten.compact
 
-  if card_list.empty?
-    LOG.info "No cards in UAT column — nothing to close"
-    return [200, { status: "processed", action: "no_uat_cards", project: project_key }.to_json]
+  if closed_cards.any?
+    send_deploy_notification(project_key, closed_cards)
+    LOG.info "Prod deploy complete — closed #{closed_cards.size} cards"
+  else
+    LOG.info "Prod deploy processed — no cards closed (plugin may not be installed)"
   end
 
-  closed_cards = close_and_cleanup_uat_cards(card_list, repo_path)
-  send_deploy_notification(project_key, closed_cards) if closed_cards.any?
-
-  LOG.info "Prod deploy complete — closed #{closed_cards.size} UAT cards: #{closed_cards.map { |c| c[:number] }.join(", ")}"
-  [200, { status: "processed", action: "prod_deploy_closed_uat",
-          closed_cards: closed_cards.map { |c| c[:number] }, project: project_key }.to_json]
-end
-
-def close_and_cleanup_uat_cards(card_list, repo_path)
-  closed_cards = []
-  map = load_card_map
-
-  card_list.each do |card|
-    card_number = card["number"]
-    next unless card_number
-
-    map_entry = map.values.find { |info| info["number"] == card_number }
-    agent_name = map_entry["agent"] if map_entry
-    env = agent_name ? fizzy_env_for(agent_name) : default_fizzy_env
-
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s,
-            "--body", "<p>✅ Deployed to production. Closing card.</p>", chdir: repo_path, env: env)
-    run_cmd("fizzy", "card", "close", card_number.to_s, chdir: repo_path, env: env)
-
-    cleanup_card_worktrees(card_number, repo_path: repo_path,
-                                        primary_worktree: map_entry&.dig("worktree"), primary_branch: map_entry&.dig("branch"))
-
-    if map_entry
-      internal_id = map.key(map_entry)
-      map.delete(internal_id)
-    end
-
-    closed_cards << { number: card_number, url: card["url"], title: card["title"] }
-    LOG.info "Closed UAT card ##{card_number} after prod deploy (agent: #{agent_name || "default"})"
-  end
-
-  save_card_map(map) if closed_cards.any?
-  closed_cards
+  [200, { status: "processed", action: "prod_deploy", closed_cards: closed_cards.map { |c| c[:number] }, project: project_key }.to_json]
 end
 
 def send_deploy_notification(project_key, closed_cards)
@@ -417,13 +352,9 @@ def dispatch_pr_review(card_number, card_key, card_info, pr_number, review, revi
   end
 
   agent_name = agent_name_for(project_config)
-  Thread.new do
-    status_comment = "<p>🔄 Code review received from @#{reviewer}. Updates in progress...</p>"
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", status_comment,
-            chdir: repo_path, env: fizzy_env_for(agent_name))
-  rescue StandardError => e
-    LOG.warn "Could not post status update to card ##{card_number}: #{e.message}"
-  end
+  # Notify work item system that a review was received (plugin posts status comment)
+  Brainiac.emit(:pr_review_received, card_number: card_number, reviewer: reviewer,
+                                      agent_name: agent_name, project_config: project_config, repo_path: repo_path)
 
   review_context = build_review_context(reviewer, review, pr_number, repo_name)
   worktree = card_info["worktree"]

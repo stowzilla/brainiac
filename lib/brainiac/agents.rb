@@ -185,17 +185,6 @@ def detect_mentioned_agent(text)
   nil
 end
 
-def detect_mentioned_user_ids(text)
-  return [] unless FIZZY_CONFIG["authorized_users"]
-
-  mentioned_ids = []
-  FIZZY_CONFIG["authorized_users"].each do |user|
-    name = user["name"]
-    mentioned_ids << user["id"] if text.downcase.include?("@#{name.downcase}")
-  end
-  mentioned_ids
-end
-
 def comment_from_agent?(name)
   return false unless name
 
