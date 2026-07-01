@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require "English"
 require "json"
 require "optparse"
 require "fileutils"
@@ -47,6 +48,21 @@ end
 def save_config(config)
   ensure_brainiac_dir
   File.write(CONFIG_FILE, JSON.pretty_generate(config))
+end
+
+# Resolve the default agent name: env var → brainiac.json → nil.
+def default_agent_name
+  return ENV["AI_AGENT_NAME"] if ENV["AI_AGENT_NAME"] && !ENV["AI_AGENT_NAME"].empty?
+
+  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  if File.exist?(brainiac_config_path)
+    config = JSON.parse(File.read(brainiac_config_path))
+    return config["default_agent"] if config["default_agent"]
+  end
+
+  nil
+rescue JSON::ParserError
+  nil
 end
 
 def find_server_pid
@@ -187,6 +203,23 @@ def stop_server
   end
 end
 
+def update_handler_config(name, enabled)
+  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  config = if File.exist?(brainiac_config_path)
+             JSON.parse(File.read(brainiac_config_path))
+           else
+             {}
+           end
+
+  config["handlers"] ||= {}
+  config["handlers"][name] = enabled
+  File.write(brainiac_config_path, JSON.pretty_generate(config))
+
+  action = enabled ? "enabled" : "disabled"
+  puts "✓ Handler '#{name}' #{action}"
+  puts "  Restart the server for changes to take effect: brainiac restart"
+end
+
 def start_server(daemon: false)
   # Resolve the real path of the brainiac script (follows symlinks)
   receiver_path = File.join(BRAINIAC_ROOT, "receiver.rb")
@@ -310,10 +343,19 @@ def register_project(options)
   agent_model = $stdin.gets.chomp
   agent_model = "auto" if agent_model.empty?
 
-  default_agent_name = ENV.fetch("AI_AGENT_NAME", "Galen")
-  print "Agent name [#{default_agent_name}]: "
-  agent_name = $stdin.gets.chomp
-  agent_name = default_agent_name if agent_name.empty?
+  agent_default = default_agent_name
+  if agent_default
+    print "Agent name [#{agent_default}]: "
+    agent_name = $stdin.gets.chomp
+    agent_name = agent_default if agent_name.empty?
+  else
+    print "Agent name: "
+    agent_name = $stdin.gets.chomp
+    if agent_name.empty?
+      puts "Error: No default agent configured. Provide a name or run 'brainiac agent default <name>' first."
+      exit 1
+    end
+  end
 
   # Build project config
   project_config = {
@@ -524,7 +566,7 @@ def brain_search(query, scope: :knowledge, agent_name: nil)
 
   collection = case scope
                when :persona
-                 agent_name ||= ENV.fetch("AI_AGENT_NAME", "Galen")
+                 agent_name ||= default_agent_name || "agent"
                  persona_collection_for(agent_name)
                else
                  KNOWLEDGE_COLLECTION
@@ -611,6 +653,52 @@ when "setup"
     puts "✓ Copied #{copied} example config(s) to ~/.brainiac/ (existing files preserved)"
   end
 
+  # Copy CLI provider examples
+  providers_dir = File.join(BRAINIAC_DIR, "cli-providers")
+  FileUtils.mkdir_p(providers_dir)
+  providers_src = File.join(BRAINIAC_ROOT, "templates", "cli-providers")
+  if Dir.exist?(providers_src)
+    Dir.glob(File.join(providers_src, "*.example")).each do |template|
+      dest = File.join(providers_dir, File.basename(template, ".example"))
+      FileUtils.cp(template, dest) unless File.exist?(dest)
+    end
+  end
+
+  # Handler configuration
+  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  puts ""
+  if File.exist?(brainiac_config_path)
+    puts "✓ Handler config already exists at ~/.brainiac/brainiac.json"
+  else
+    puts "Which integrations do you want to enable?"
+    puts "(You can change this later in ~/.brainiac/brainiac.json)"
+    puts ""
+
+    available_handlers = {
+      "fizzy" => "Fizzy (card management, agent dispatch via webhooks)",
+      "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
+      "discord" => "Discord (conversational agent access via bot)",
+      "zoho" => "Zoho Mail (email notifications and triage)"
+    }
+
+    enabled_handlers = {}
+    available_handlers.each do |key, description|
+      print "  Enable #{description}? [Y/n] "
+      answer = $stdin.gets&.strip&.downcase
+      enabled_handlers[key] = answer != "n"
+    end
+
+    config = { "handlers" => enabled_handlers }
+    File.write(brainiac_config_path, JSON.pretty_generate(config))
+    puts ""
+    puts "✓ Wrote handler config to ~/.brainiac/brainiac.json"
+
+    enabled_list = enabled_handlers.select { |_, v| v }.keys
+    disabled_list = enabled_handlers.reject { |_, v| v }.keys
+    puts "  Enabled: #{enabled_list.join(", ")}" if enabled_list.any?
+    puts "  Disabled: #{disabled_list.join(", ")}" if disabled_list.any?
+  end
+
   puts ""
   puts "Next steps:"
   puts "  1. Edit config files in ~/.brainiac/ with your secrets and IDs"
@@ -683,6 +771,64 @@ when "show"
     exit 1
   end
   show_project(ARGV[0])
+
+when "handler", "handlers"
+  handler_cmd = ARGV.shift
+  case handler_cmd
+  when "list", "ls", nil
+    brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+    config = if File.exist?(brainiac_config_path)
+               JSON.parse(File.read(brainiac_config_path))
+             else
+               {}
+             end
+    handlers = config["handlers"] || {}
+
+    # Built-in handlers
+    builtins = %w[fizzy github discord zoho]
+    puts "Built-in handlers:"
+    builtins.each do |name|
+      enabled = handlers.fetch(name, true)
+      status = enabled ? "✓ enabled" : "✗ disabled"
+      puts "  #{name.ljust(10)} #{status}"
+    end
+
+    # Custom handlers
+    custom_dir = File.join(BRAINIAC_DIR, "handlers")
+    if Dir.exist?(custom_dir)
+      custom_files = Dir.glob(File.join(custom_dir, "*.rb"))
+      if custom_files.any?
+        puts ""
+        puts "Custom handlers (#{custom_dir}):"
+        custom_files.each do |f|
+          name = File.basename(f, ".rb")
+          enabled = handlers.fetch(name, true)
+          status = enabled ? "✓ enabled" : "✗ disabled"
+          puts "  #{name.ljust(10)} #{status}"
+        end
+      end
+    end
+
+  when "enable"
+    name = ARGV.shift
+    unless name
+      puts "Usage: brainiac handler enable <name>"
+      exit 1
+    end
+    update_handler_config(name, true)
+
+  when "disable"
+    name = ARGV.shift
+    unless name
+      puts "Usage: brainiac handler disable <name>"
+      exit 1
+    end
+    update_handler_config(name, false)
+
+  else
+    puts "Usage: brainiac handler <list|enable|disable> [name]"
+    exit 1
+  end
 
 when "config"
   OptionParser.new do |opts|
@@ -952,14 +1098,24 @@ when "brain"
   brain_cmd = ARGV.shift
   case brain_cmd
   when "init"
-    agent = ARGV[0] || ENV.fetch("AI_AGENT_NAME", "Galen")
+    agent = ARGV[0] || default_agent_name
+    unless agent
+      puts "Usage: brainiac brain init <agent-name>"
+      puts "  Or set a default: brainiac agent default <name>"
+      exit 1
+    end
     brain_init(agent)
   when "status", "show"
-    agent = ARGV[0] || ENV.fetch("AI_AGENT_NAME", "Galen")
+    agent = ARGV[0] || default_agent_name
+    unless agent
+      puts "Usage: brainiac brain status <agent-name>"
+      puts "  Or set a default: brainiac agent default <name>"
+      exit 1
+    end
     brain_status(agent)
   when "search", "query"
     scope = :knowledge
-    agent_name = ENV.fetch("AI_AGENT_NAME", "Galen")
+    agent_name = default_agent_name
     if ARGV.include?("--persona")
       ARGV.delete("--persona")
       scope = :persona
@@ -979,7 +1135,11 @@ when "brain"
   when "path"
     what = ARGV[0]
     if what == "persona"
-      agent = ARGV[1] || ENV.fetch("AI_AGENT_NAME", "Galen")
+      agent = ARGV[1] || default_agent_name
+      unless agent
+        puts "Usage: brainiac brain path persona <agent-name>"
+        exit 1
+      end
       puts persona_dir_for(agent)
     else
       puts KNOWLEDGE_DIR
@@ -1021,7 +1181,7 @@ when "cron"
   when "add", "create"
     # Parse arguments
     schedule = nil
-    agent = ENV.fetch("AI_AGENT_NAME", "Galen")
+    agent = default_agent_name
     project = nil
     model = nil
     effort = nil
@@ -1402,6 +1562,10 @@ when "agent"
   case agent_cmd
   when "list", "ls"
     registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+
+    # Determine current default agent
+    default_agent = default_agent_name
+
     if registry.empty?
       puts "No agents in registry."
     else
@@ -1414,13 +1578,15 @@ when "agent"
         end
         details << "cli:#{entry["cli_provider"]}" if entry["cli_provider"]
         details << "env:#{entry["env"].size}" if entry["env"]&.any?
-        { key: key, display: display, local: entry["local"], details: details.join(" | ") }
+        is_default = default_agent && display.downcase == default_agent.downcase
+        { key: key, display: display, local: entry["local"], details: details.join(" | "), default: is_default }
       end
 
       local, remote = agents.partition { |a| a[:local] }
 
       local.each do |a|
         line = "  #{a[:display]} (#{a[:key]})"
+        line += "  ★ default" if a[:default]
         line += "  #{a[:details]}" unless a[:details].empty?
         puts line
       end
@@ -1430,9 +1596,48 @@ when "agent"
         puts "  Remote:" if local.any?
         remote.each do |a|
           line = "  #{a[:display]} (#{a[:key]})"
+          line += "  ★ default" if a[:default]
           line += "  #{a[:details]}" unless a[:details].empty?
           puts line
         end
+      end
+    end
+
+  when "default"
+    brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+    brainiac_config = File.exist?(brainiac_config_path) ? JSON.parse(File.read(brainiac_config_path)) : {}
+    name = ARGV.shift
+
+    if name
+      # Set default agent
+      registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+      agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
+
+      # Resolve display name from registry if it exists
+      display_name = if registry.dig(agent_key, "fizzy_name")
+                       registry[agent_key]["fizzy_name"]
+                     else
+                       name
+                     end
+
+      brainiac_config["default_agent"] = display_name
+      ensure_brainiac_dir
+      File.write(brainiac_config_path, JSON.pretty_generate(brainiac_config))
+      puts "✓ Default agent set to '#{display_name}'"
+    else
+      # Show current default
+      env_override = ENV.fetch("AI_AGENT_NAME", nil)
+      config_default = brainiac_config["default_agent"]
+
+      if env_override
+        puts "Default agent: #{env_override} (from AI_AGENT_NAME env var)"
+        puts "  Config value: #{config_default}" if config_default && config_default != env_override
+      elsif config_default
+        puts "Default agent: #{config_default}"
+      else
+        puts "No default agent configured."
+        puts "Set one with: brainiac agent default <name>"
+        puts "  Or set AI_AGENT_NAME in your environment."
       end
     end
 
@@ -1581,11 +1786,13 @@ when "agent"
     puts <<~HELP
       Usage: brainiac agent <name> <command> [args]
              brainiac agent list
+             brainiac agent default [name]
              brainiac agent create <name> [options]
              brainiac agent remove <name>
 
       Commands:
         list                              List all agents in the registry
+        default [name]                    Show or set the default agent
         create <name> [options]           Add a new agent to the registry
         remove <name>                     Remove an agent from the registry
         <name> show                       Show agent configuration (tokens redacted)
@@ -1601,6 +1808,8 @@ when "agent"
         --persona <text>     Create a persona style file
 
       Examples:
+        brainiac agent list
+        brainiac agent default Galen
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
@@ -1936,6 +2145,160 @@ when "completions"
     puts File.read(completion_file)
   end
 
+when "install"
+  name = ARGV.shift
+  unless name
+    puts "Usage: brainiac install <plugin-name>"
+    puts ""
+    puts "Installs a Brainiac plugin gem (brainiac-<name>) and registers it."
+    puts ""
+    puts "Examples:"
+    puts "  brainiac install whatsapp     # installs brainiac-whatsapp gem"
+    puts "  brainiac install slack         # installs brainiac-slack gem"
+    puts ""
+    puts "After installing, restart the server: brainiac restart"
+    exit 1
+  end
+
+  # Strip "brainiac-" prefix if user includes it
+  name = name.sub(/^brainiac-/, "")
+  version = nil
+
+  # Check for --version flag
+  if ["--version", "-v"].include?(ARGV[0])
+    ARGV.shift
+    version = ARGV.shift
+  end
+
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  plugins_config = if File.exist?(plugins_file)
+                     JSON.parse(File.read(plugins_file))
+                   else
+                     { "plugins" => [] }
+                   end
+
+  existing = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
+  if existing
+    puts "Plugin '#{name}' is already installed."
+    puts "  To reinstall: brainiac uninstall #{name} && brainiac install #{name}"
+    exit 0
+  end
+
+  gem_name = "brainiac-#{name}"
+  puts "Installing #{gem_name}..."
+
+  install_cmd = "gem install #{gem_name}"
+  install_cmd += " --version '#{version}'" if version
+
+  system(install_cmd)
+  unless $CHILD_STATUS.success?
+    puts ""
+    puts "Failed to install #{gem_name}."
+    puts "  Check that the gem exists: https://rubygems.org/gems/#{gem_name}"
+    exit 1
+  end
+
+  # Register in plugins.json
+  plugins_config["plugins"] ||= []
+  entry = { "name" => name, "gem" => gem_name, "installed_at" => Time.now.iso8601 }
+  entry["version"] = version if version
+  plugins_config["plugins"] << entry
+
+  ensure_brainiac_dir
+  File.write(plugins_file, JSON.pretty_generate(plugins_config))
+
+  # Enable the handler
+  update_handler_config(name, true)
+
+  puts ""
+  puts "✓ Installed plugin '#{name}' (#{gem_name})"
+  puts "  Restart the server to activate: brainiac restart"
+
+when "uninstall"
+  name = ARGV.shift
+  unless name
+    puts "Usage: brainiac uninstall <plugin-name>"
+    puts ""
+    puts "Removes a Brainiac plugin from the configuration."
+    puts "The gem itself remains installed (use 'gem uninstall brainiac-<name>' to fully remove)."
+    exit 1
+  end
+
+  name = name.sub(/^brainiac-/, "")
+  gem_name = "brainiac-#{name}"
+
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  unless File.exist?(plugins_file)
+    puts "Plugin '#{name}' is not installed (no plugins.json found)."
+    exit 1
+  end
+
+  plugins_config = JSON.parse(File.read(plugins_file))
+  found = (plugins_config["plugins"] || []).any? { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
+
+  unless found
+    puts "Plugin '#{name}' is not installed."
+    exit 1
+  end
+
+  plugins_config["plugins"].reject! { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
+  File.write(plugins_file, JSON.pretty_generate(plugins_config))
+
+  # Disable the handler
+  update_handler_config(name, false)
+
+  puts "✓ Removed plugin '#{name}' from Brainiac."
+  puts "  The gem #{gem_name} is still installed system-wide."
+  puts "  To fully remove: gem uninstall #{gem_name}"
+  puts "  Restart the server to apply: brainiac restart"
+
+when "plugins"
+  plugins_cmd = ARGV.shift
+
+  case plugins_cmd
+  when "list", "ls", nil
+    plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+    plugins_config = if File.exist?(plugins_file)
+                       JSON.parse(File.read(plugins_file))
+                     else
+                       { "plugins" => [] }
+                     end
+
+    plugins = plugins_config["plugins"] || []
+    if plugins.empty?
+      puts "No plugins installed."
+      puts ""
+      puts "Install plugins with: brainiac install <name>"
+      puts "  Example: brainiac install whatsapp"
+    else
+      puts "Installed plugins:"
+      plugins.each do |p|
+        entry = p.is_a?(Hash) ? p : { "name" => p.to_s }
+        name = entry["name"]
+        gem_name = entry["gem"] || "brainiac-#{name}"
+        version = entry["version"] || "latest"
+        installed_at = entry["installed_at"] ? " (#{entry["installed_at"][0..9]})" : ""
+
+        # Check if gem is actually loadable
+        loadable = begin
+          Gem::Specification.find_by_name(gem_name)
+          "✓"
+        rescue Gem::MissingSpecError
+          "✗ (gem not found)"
+        end
+
+        puts "  #{loadable} #{name} (#{gem_name} #{version})#{installed_at}"
+      end
+    end
+  else
+    puts "Usage: brainiac plugins [list]"
+    puts ""
+    puts "Managing plugins:"
+    puts "  brainiac install <name>       Install a plugin"
+    puts "  brainiac uninstall <name>     Remove a plugin"
+    puts "  brainiac plugins              List installed plugins"
+  end
+
 when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
@@ -1956,6 +2319,9 @@ when "help", "--help", "-h", nil
       brainiac projects list          List all registered projects (alias)
       brainiac projects default <key> Set the default project
       brainiac show <key>             Show project configuration
+      brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
+      brainiac uninstall <plugin>     Remove an installed plugin
+      brainiac plugins                List installed plugins
       brainiac brain <command>        Manage agent long-term memory (brain)
       brainiac discord <command>      Manage the Discord bot
       brainiac cron <command>         Manage scheduled agent tasks
@@ -1969,6 +2335,11 @@ when "help", "--help", "-h", nil
 
     Server Options:
       -d, --daemon                     Run server in background (detached)
+
+    Plugin Commands:
+      install <name>                   Install a plugin (gem install brainiac-<name>)
+      uninstall <name>                 Remove a plugin
+      plugins                          List installed plugins
 
     Card Map Commands:
       card-map list                    Show all card map entries

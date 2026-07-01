@@ -81,8 +81,10 @@ def deploy_to_environment(env_key, worktree_path:, deployed_by: nil)
       entry["pr_url"]    = pr["url"]
     end
     # Store card tags for URL resolution (e.g. ops-web-app → ops URL)
-    card_idx = CARD_INDEX[card_entry["number"].to_s]
-    entry["card_tags"] = card_idx["tags"] if card_idx && card_idx["tags"]
+    if defined?(CARD_INDEX)
+      card_idx = CARD_INDEX[card_entry["number"].to_s]
+      entry["card_tags"] = card_idx["tags"] if card_idx && card_idx["tags"]
+    end
   else
     # No card map match — record branch from git
     branch = `git -C #{Shellwords.escape(worktree_path)} rev-parse --abbrev-ref HEAD 2>/dev/null`.strip

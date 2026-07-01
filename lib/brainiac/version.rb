@@ -2,5 +2,5 @@
 
 module Brainiac
   # @return [String] the current gem version
-  VERSION = "0.0.6"
+  VERSION = "0.0.7"
 end

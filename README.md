@@ -136,6 +136,16 @@ brainiac setup
 
 This creates the `~/.brainiac/` directory structure and copies example config files. Then edit the configs with your actual secrets and IDs (see below).
 
+Optionally, install handler plugins for additional integrations:
+
+```bash
+brainiac install whatsapp      # WhatsApp Business API
+brainiac install slack         # Slack (when available)
+brainiac restart               # Restart to activate
+```
+
+See [Plugins](#plugins-gem-based-handlers) for details.
+
 ### Prerequisites
 
 | Dependency | Required | Install |
@@ -211,7 +221,7 @@ kiro-cli agent create    # Interactive
 
 The `webhook_secret` verifies incoming GitHub webhook requests. Generate one with `ruby -rsecurerandom -e 'puts SecureRandom.hex(20)'`.
 
-**Legacy:** `GITHUB_WEBHOOK_SECRET` env var works as fallback.
+`GITHUB_WEBHOOK_SECRET` env var works as fallback.
 
 #### 4. Fizzy (`~/.brainiac/fizzy.json`)
 
@@ -246,10 +256,16 @@ When a human is @mentioned on a card assigned to an agent, the agent will skip t
 
 #### 5. Environment Variables
 
-Most config lives in JSON files now. The only env var you might want:
+Most config lives in JSON files now. The default agent is set in `brainiac.json`:
+
+```json
+{ "default_agent": "Galen" }
+```
+
+Or via environment variable (takes precedence):
 
 ```bash
-export AI_AGENT_NAME="Galen"  # Defaults to Galen (Linux) or Kaylee (macOS)
+export AI_AGENT_NAME="Galen"
 ```
 
 #### 6. Register Projects
@@ -362,8 +378,6 @@ The `local` flag controls which agents pick up card assignments on this machine.
 
 Agents without an `env` block (like Kaylee above on a Linux box) still appear in the agent roster so local agents spell @mentions correctly.
 
-A legacy format with top-level `fizzy_token` / `discord_bot_token` keys is auto-migrated into the `env` hash at load time. A legacy `~/.brainiac/agent_tokens.json` format (flat `{ "galen": "token" }`) is supported as a fallback and auto-migrated.
-
 The registry reloads on every webhook and via `POST /api/reload`.
 
 ### Step 3: Seed Agent Persona and Knowledge
@@ -413,7 +427,7 @@ Agents also update knowledge themselves during sessions (when they learn somethi
 ### Step 4: Initialize Each Agent's Brain
 
 ```bash
-brainiac brain init              # Default agent (Galen on Linux, Kaylee on macOS)
+brainiac brain init              # Default agent (from brainiac.json or AI_AGENT_NAME)
 brainiac brain init SecurityBot  # Additional agent
 brainiac brain list              # Verify all agents
 ```
@@ -946,6 +960,113 @@ The `hook_secret` is auto-captured from Zoho's initial handshake request — no 
 
 **Requires:** Discord integration must be enabled (at least one agent with a `DISCORD_BOT_TOKEN`).
 
+## Plugins (Gem-Based Handlers)
+
+Brainiac supports a plugin system that lets you extend functionality via Ruby gems. Instead of dropping handler files into `~/.brainiac/handlers/`, you install gems named `brainiac-<name>` that register themselves automatically at server startup.
+
+### Installing Plugins
+
+```bash
+brainiac install whatsapp      # Installs brainiac-whatsapp gem + registers it
+brainiac install slack         # Installs brainiac-slack gem + registers it
+brainiac restart               # Restart server to load new plugins
+```
+
+This runs `gem install brainiac-<name>`, adds the plugin to `~/.brainiac/plugins.json`, and enables the handler.
+
+You can also install a specific version:
+
+```bash
+brainiac install whatsapp --version 0.2.0
+```
+
+### Managing Plugins
+
+```bash
+brainiac plugins               # List installed plugins with status
+brainiac uninstall <name>      # Remove plugin from config (gem stays installed)
+```
+
+To fully remove the gem after uninstalling:
+
+```bash
+brainiac uninstall whatsapp
+gem uninstall brainiac-whatsapp
+```
+
+### Configuration
+
+Installed plugins are tracked in `~/.brainiac/plugins.json`:
+
+```json
+{
+  "plugins": [
+    { "name": "whatsapp", "gem": "brainiac-whatsapp", "installed_at": "2026-06-30T14:00:00-04:00" }
+  ]
+}
+```
+
+At server startup, `load_plugins!` iterates this list, requires each gem, and calls `.register(app)`.
+
+### Creating a Plugin
+
+Any Ruby gem named `brainiac-<name>` can be a Brainiac plugin. The gem must:
+
+1. **Define a module** at `Brainiac::Plugins::<Name>`
+2. **Implement `.register(app)`** — receives the Sinatra app instance for defining routes and starting threads
+
+Example plugin structure:
+
+```
+brainiac-whatsapp/
+├── lib/
+│   ├── brainiac-whatsapp.rb              # Gem entry point (loaded by RubyGems)
+│   └── brainiac/plugins/whatsapp/
+│       ├── whatsapp.rb                   # Main module with .register(app)
+│       ├── version.rb
+│       ├── config.rb
+│       ├── handler.rb
+│       └── messages.rb
+├── brainiac-whatsapp.gemspec
+└── test/
+```
+
+Example `.register(app)` implementation:
+
+```ruby
+module Brainiac
+  module Plugins
+    module Whatsapp
+      def self.register(app)
+        app.get "/whatsapp" do
+          # Webhook verification
+        end
+
+        app.post "/whatsapp" do
+          # Handle incoming messages
+        end
+
+        Thread.new { start_background_poller }
+      end
+    end
+  end
+end
+```
+
+Plugins have full access to the Sinatra app — they can define routes, start background threads, access shared constants (`LOG`, `BRAINIAC_DIR`, etc.), and use all core Brainiac modules (agents, brain, sessions, etc.).
+
+The `Brainiac::Plugins` namespace is defined in `lib/brainiac.rb`. Plugin module resolution is flexible — it tries PascalCase first (e.g., `whatsapp` → `Whatsapp`) and falls back to case-insensitive matching.
+
+### Available Plugins
+
+| Plugin | Gem | Description |
+|--------|-----|-------------|
+| whatsapp | `brainiac-whatsapp` | WhatsApp Business API integration |
+
+### Backward Compatibility
+
+The old `~/.brainiac/handlers/*.rb` drop-in system still works. Custom handler files are loaded before gem plugins. Over time, built-in handlers (Discord, Fizzy, GitHub) may be extracted into their own gems.
+
 ## Version Check
 
 On startup, Brainiac checks if the local repo is behind `origin/master`. If it detects the local version is outdated, it logs a warning. This helps ensure agents are always running the latest code.
@@ -991,6 +1112,15 @@ brainiac brain status [agent]            # Show brain status
 brainiac brain search <query>            # Search shared knowledge
 brainiac brain search --persona <query>  # Search agent persona
 brainiac brain list                      # List everything
+```
+
+### Plugins
+
+```bash
+brainiac install <name>                  # Install a plugin gem (e.g., whatsapp)
+brainiac install <name> --version 0.2.0  # Install specific version
+brainiac uninstall <name>                # Remove plugin from config
+brainiac plugins                         # List installed plugins
 ```
 
 ## Project Configuration

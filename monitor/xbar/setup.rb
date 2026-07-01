@@ -1,8 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# One-time setup script to install Brainiac menubar plugin into xbar or SwiftBar
-# Run this once — the plugin will then auto-refresh on its configured interval
+# One-time setup: installs Brainiac menu bar plugin into xbar or SwiftBar.
+#
+# Detects which app is installed and symlinks the plugin.
+# Run this once — the plugin auto-refreshes on its configured interval.
+
+require "fileutils"
 
 PLUGIN_APPS = [
   {
@@ -18,7 +22,7 @@ PLUGIN_APPS = [
 ].freeze
 
 SYMLINK_NAME = "brainiac.2s.rb"
-SOURCE_PATH = File.join(File.dirname(File.expand_path(__FILE__)), "menubar.rb")
+SOURCE_PATH = File.join(File.dirname(File.expand_path(__FILE__)), "plugin.rb")
 
 def detect_plugin_app
   PLUGIN_APPS.each do |app|
@@ -27,32 +31,7 @@ def detect_plugin_app
   nil
 end
 
-def install_plugin(plugin_dir, source_path)
-  FileUtils.mkdir_p(plugin_dir)
-  link_path = File.join(plugin_dir, SYMLINK_NAME)
-
-  # Remove existing symlink/file if present
-  File.delete(link_path) if File.exist?(link_path) || File.symlink?(link_path)
-
-  File.symlink(source_path, link_path)
-rescue StandardError => e
-  warn "✗ Failed to create symlink: #{e.message}"
-  warn "  Source: #{source_path}"
-  warn "  Target: #{link_path}"
-  exit 1
-end
-
-def verify_executable!(path) # rubocop:disable Naming/PredicateMethod
-  unless File.executable?(path)
-    File.chmod(0o755, path)
-    warn "  Fixed executable permission on #{path}"
-  end
-  File.executable?(path)
-end
-
 # --- Main ---
-
-require "fileutils"
 
 app = detect_plugin_app
 
@@ -69,10 +48,15 @@ unless app
 end
 
 puts "Detected #{app[:name]}"
-install_plugin(app[:plugin_dir], SOURCE_PATH)
-verify_executable!(SOURCE_PATH)
 
+FileUtils.mkdir_p(app[:plugin_dir])
 link_path = File.join(app[:plugin_dir], SYMLINK_NAME)
+
+File.delete(link_path) if File.exist?(link_path) || File.symlink?(link_path)
+File.symlink(SOURCE_PATH, link_path)
+File.chmod(0o755, SOURCE_PATH)
+
 puts "✓ Installed Brainiac plugin into #{app[:name]}"
 puts "  Symlink: #{link_path} → #{SOURCE_PATH}"
 puts "  Refresh interval: 2s"
+puts "  Restart #{app[:name]} to activate"

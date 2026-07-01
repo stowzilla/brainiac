@@ -14,8 +14,6 @@ Metrics/BlockLength:
   Max: 25
   Exclude:
     - "receiver.rb"
-    - "lib/brainiac/handlers/**/*"
-    - "lib/user_registry.rb"
     - "test/**/*"
     - "*.gemspec"
   CountAsOne:
@@ -25,7 +23,6 @@ Metrics/MethodLength:
   Max: 45
   Exclude:
     - "bin/brainiac"
-    - "lib/brainiac/handlers/**/*"
     - "monitor/**/*"
 
 Metrics/AbcSize:
@@ -50,9 +47,10 @@ Metrics/PerceivedComplexity:
     - "monitor/**/*"
 
 Metrics/ClassLength:
+  Max: 150
   Exclude:
+    - "lib/brainiac/handlers/**/*"
     - "test/**/*"
-    - "lib/brainiac/card_index.rb"
 
 Metrics/BlockNesting:
   Max: 5
@@ -69,6 +67,7 @@ Style/TopLevelMethodDefinition:
 Style/OneClassPerFile:
   Exclude:
     - "receiver.rb"
+    - "test/**/*"
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
@@ -96,8 +95,6 @@ Layout/LineLength:
   Max: 150
   Exclude:
     - "receiver.rb"
-    - "lib/brainiac/handlers/**/*"
-    - "monitor/**/*"
 
 # Handler methods often have unused params from Sinatra/block signatures
 Lint/UnusedMethodArgument:

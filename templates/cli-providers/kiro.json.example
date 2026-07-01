@@ -1,6 +1,6 @@
 {
   "binary": "kiro-cli",
-  "default_args": "chat --trust-all-tools --no-interactive --trust-tools execute_bash,fs_write,fs_read,code,grep,glob,web_search,web_fetch,use_subagent,use_aws",
+  "default_args": "chat --trust-all-tools --no-interactive",
   "agent_flag": "--agent",
   "model_flag": "--model",
   "effort_flag": "--effort",
@@ -9,7 +9,13 @@
   "models": {
     "opus": "claude-opus-4.6",
     "sonnet": "claude-sonnet-4.6",
-    "haiku": "claude-haiku-4.5"
+    "haiku": "claude-haiku-4.5",
+    "deepseek": "deepseek-3.2",
+    "minimax": "minimax-m2.5",
+    "minimax25": "minimax-m2.5",
+    "minimax21": "minimax-m2.1",
+    "qwen": "qwen3-coder-next",
+    "auto": "auto"
   },
   "efforts": ["low", "medium", "high", "xhigh", "max"]
 }

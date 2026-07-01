@@ -1,0 +1,9 @@
+{
+  "default_agent": "Galen",
+  "handlers": {
+    "fizzy": true,
+    "github": true,
+    "discord": true,
+    "zoho": false
+  }
+}

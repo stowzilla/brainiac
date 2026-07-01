@@ -59,8 +59,9 @@ unless worktree
 end
 
 unless worktree
-  system("osascript", "-e",
-         "display dialog \"No worktree found for card ##{card_number}\" buttons {\"OK\"} default button \"OK\" with title \"Deploy Failed\" with icon stop")
+  dialog = "display dialog \"No worktree found for card ##{card_number}\" " \
+           "buttons {\"OK\"} default button \"OK\" with title \"Deploy Failed\" with icon stop"
+  system("osascript", "-e", dialog)
   exit
 end
 
