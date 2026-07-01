@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 
+require "English"
 require "json"
 require "optparse"
 require "fileutils"
@@ -2164,7 +2165,7 @@ when "install"
   version = nil
 
   # Check for --version flag
-  if ARGV[0] == "--version" || ARGV[0] == "-v"
+  if ["--version", "-v"].include?(ARGV[0])
     ARGV.shift
     version = ARGV.shift
   end
@@ -2190,7 +2191,7 @@ when "install"
   install_cmd += " --version '#{version}'" if version
 
   system(install_cmd)
-  unless $?.success?
+  unless $CHILD_STATUS.success?
     puts ""
     puts "Failed to install #{gem_name}."
     puts "  Check that the gem exists: https://rubygems.org/gems/#{gem_name}"
