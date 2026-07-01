@@ -59,20 +59,38 @@ def execute_restart
     sleep 1
     source_dir = File.expand_path("../../..", __dir__)
     receiver_path = File.join(source_dir, "receiver.rb")
-    log_file = File.join(source_dir, "tmp", "brainiac-server.log")
-    FileUtils.mkdir_p(File.dirname(log_file))
 
-    pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "ruby", receiver_path,
-                chdir: source_dir, out: [log_file, "a"], err: %i[child out])
-    Process.detach(pid)
+    # Determine if we're running in foreground mode.
+    # If stdin is a TTY or we weren't launched as a daemon, use exec to replace the process.
+    # This keeps the server in the foreground terminal.
+    foreground = $stdout.tty? || !File.exist?(File.join(BRAINIAC_DIR, "server.pid")) ||
+                 File.read(File.join(BRAINIAC_DIR, "server.pid")).strip.to_i == Process.pid
 
-    File.write(File.join(BRAINIAC_DIR, "brainiac-server.pid"), pid.to_s)
+    if foreground
+      LOG.info "[Brainiac] Restarting in foreground mode (exec)..."
+      # Write PID file for the new process (same PID after exec)
+      File.write(File.join(BRAINIAC_DIR, "server.pid"), Process.pid.to_s)
 
-    sleep 1
-    LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
-    Sinatra::Application.quit!
-    sleep 0.5
-    exit!
+      # exec replaces this process — the terminal stays attached
+      Dir.chdir(source_dir)
+      exec("ruby", receiver_path)
+    else
+      # Daemon mode — spawn a new background process
+      log_file = File.join(source_dir, "tmp", "brainiac-server.log")
+      FileUtils.mkdir_p(File.dirname(log_file))
+
+      pid = spawn({ "PATH" => ENV.fetch("PATH", nil) }, "ruby", receiver_path,
+                  chdir: source_dir, out: [log_file, "a"], err: %i[child out])
+      Process.detach(pid)
+
+      File.write(File.join(BRAINIAC_DIR, "server.pid"), pid.to_s)
+
+      LOG.info "[Brainiac] Stopping server, new instance started (PID: #{pid}) from #{source_dir}"
+      sleep 0.5
+      Sinatra::Application.quit!
+      sleep 0.5
+      exit!
+    end
   end
 end
 
