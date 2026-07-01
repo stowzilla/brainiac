@@ -57,7 +57,7 @@ def execute_restart
 
   Thread.new do
     sleep 1
-    source_dir = File.expand_path("../../..", __dir__)
+    source_dir = defined?(SERVER_ROOT) ? SERVER_ROOT : File.expand_path("../..", __dir__)
     receiver_path = File.join(source_dir, "receiver.rb")
 
     # Determine if we're running in foreground mode.

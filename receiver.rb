@@ -8,6 +8,9 @@
 require "sinatra"
 require "json"
 
+# The directory this server is running from (supports worktrees)
+SERVER_ROOT = File.expand_path(__dir__)
+
 # Load all modules
 require_relative "lib/brainiac/hooks"
 require_relative "lib/brainiac/config"
