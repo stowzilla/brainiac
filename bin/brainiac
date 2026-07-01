@@ -2317,24 +2317,34 @@ when "plugins"
       puts ""
       puts "Install plugins with: brainiac install <name>"
       puts "  Example: brainiac install whatsapp"
+      puts "  Example: brainiac install fizzy --path ~/Code/brainiac-fizzy"
     else
       puts "Installed plugins:"
       plugins.each do |p|
         entry = p.is_a?(Hash) ? p : { "name" => p.to_s }
         name = entry["name"]
         gem_name = entry["gem"] || "brainiac-#{name}"
-        version = entry["version"] || "latest"
+        local_path = entry["path"]
         installed_at = entry["installed_at"] ? " (#{entry["installed_at"][0..9]})" : ""
 
-        # Check if gem is actually loadable
-        loadable = begin
-          Gem::Specification.find_by_name(gem_name)
-          "✓"
-        rescue Gem::MissingSpecError
-          "✗ (gem not found)"
+        if local_path
+          # Local plugin — check path exists
+          if Dir.exist?(local_path)
+            puts "  ✓ #{name} → #{local_path}#{installed_at}"
+          else
+            puts "  ✗ #{name} → #{local_path} (path missing)#{installed_at}"
+          end
+        else
+          # Gem plugin — check gem is loadable
+          version = entry["version"] || "latest"
+          loadable = begin
+            spec = Gem::Specification.find_by_name(gem_name)
+            "✓ #{name} (#{gem_name} #{spec.version})"
+          rescue Gem::MissingSpecError
+            "✗ #{name} (#{gem_name} — gem not found)"
+          end
+          puts "  #{loadable}#{installed_at}"
         end
-
-        puts "  #{loadable} #{name} (#{gem_name} #{version})#{installed_at}"
       end
     end
   else
