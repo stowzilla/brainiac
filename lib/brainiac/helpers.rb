@@ -111,16 +111,16 @@ def identify_project_by_repo(repo_full_name)
 end
 
 
-def load_card_map
-  return {} unless File.exist?(CARD_MAP_FILE)
+def load_work_item_map
+  return {} unless File.exist?(WORK_ITEM_MAP_FILE)
 
-  JSON.parse(File.read(CARD_MAP_FILE))
+  JSON.parse(File.read(WORK_ITEM_MAP_FILE))
 rescue JSON::ParserError
   {}
 end
 
-def save_card_map(map)
-  File.write(CARD_MAP_FILE, JSON.pretty_generate(map))
+def save_work_item_map(map)
+  File.write(WORK_ITEM_MAP_FILE, JSON.pretty_generate(map))
 end
 
 def slugify(title, max_length: 40)
@@ -150,11 +150,11 @@ end
 MERGED_CARDS = {}
 MERGED_CARDS_MUTEX = Mutex.new
 
-def mark_card_merged(card_number)
+def mark_work_item_merged(card_number)
   MERGED_CARDS_MUTEX.synchronize { MERGED_CARDS[card_number.to_s] = Time.now }
 end
 
-def card_merged?(card_number)
+def work_item_merged?(card_number)
   MERGED_CARDS_MUTEX.synchronize do
     ts = MERGED_CARDS[card_number.to_s]
     ts && (Time.now - ts < 600)

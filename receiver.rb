@@ -169,7 +169,7 @@ post "/github" do
       status_code, body = handle_github_pr_merged(payload)
       halt status_code, body
     elsif action == "opened"
-      track_pr_in_card_map(payload)
+      track_pr_in_work_items(payload)
       halt 200, { status: "processed", action: "pr_tracked" }.to_json
     elsif action == "synchronize"
       status_code, body = handle_github_pr_synchronized(payload)

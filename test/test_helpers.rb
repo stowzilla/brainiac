@@ -28,15 +28,15 @@ class TestHelpers < Minitest::Test
     assert_equal "brainiac", key
   end
 
-  def test_load_card_map_empty_when_no_file
-    FileUtils.rm_f(CARD_MAP_FILE)
-    assert_equal({}, load_card_map)
+  def test_load_work_item_map_empty_when_no_file
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    assert_equal({}, load_work_item_map)
   end
 
-  def test_save_and_load_card_map
+  def test_save_and_load_work_item_map
     map = { "card-abc" => { "number" => 42, "branch" => "fizzy-42-test" } }
-    save_card_map(map)
-    loaded = load_card_map
+    save_work_item_map(map)
+    loaded = load_work_item_map
     assert_equal 42, loaded["card-abc"]["number"]
   end
 
@@ -57,12 +57,12 @@ class TestHelpers < Minitest::Test
   end
 
   def test_mark_and_check_card_merged
-    mark_card_merged(100)
-    assert card_merged?(100)
+    mark_work_item_merged(100)
+    assert work_item_merged?(100)
   end
 
   def test_card_not_merged_initially
-    refute card_merged?(999)
+    refute work_item_merged?(999)
   end
 
   def test_detect_cli_provider_from_text

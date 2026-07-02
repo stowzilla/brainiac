@@ -158,7 +158,7 @@ end
 
 # Clean up all worktrees associated with a card (primary + cross-agent review).
 # Safe: skips worktrees with uncommitted changes.
-def cleanup_card_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
+def cleanup_work_item_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
   return unless card_number
 
   repo_dir = File.dirname(repo_path)

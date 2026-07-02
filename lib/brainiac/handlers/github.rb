@@ -6,9 +6,9 @@
 DEFAULT_UAT_COLUMN_ID = "03fsmglsr6az06ppyotawsti8"
 
 
-# Find a card by matching the PR's head branch to a branch in the card map.
-def find_card_by_branch(branch)
-  map = load_card_map
+# Find a work item by matching the PR's head branch to a branch in the card map.
+def find_work_item_by_branch(branch)
+  map = load_work_item_map
   map.each do |internal_id, info|
     next unless info["branch"] == branch
 
@@ -17,14 +17,14 @@ def find_card_by_branch(branch)
   nil
 end
 
-# Track a newly opened PR in the card map by matching its branch.
-def track_pr_in_card_map(payload)
+# Track a newly opened PR in the work item map by matching its branch.
+def track_pr_in_work_items(payload)
   pr = payload["pull_request"]
   branch = pr.dig("head", "ref")
   pr_number = pr["number"]
   pr_url = pr["html_url"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
     LOG.info "[PR Track] No card found for branch #{branch}"
     return
@@ -37,9 +37,9 @@ def track_pr_in_card_map(payload)
   prs << { "number" => pr_number, "url" => pr_url }
   card_info["prs"] = prs
 
-  map = load_card_map
+  map = load_work_item_map
   map[internal_id] = card_info
-  save_card_map(map)
+  save_work_item_map(map)
   LOG.info "[PR Track] Tracked PR ##{pr_number} on card ##{card_info["number"]} (branch: #{branch})"
 end
 
@@ -77,7 +77,7 @@ def handle_github_pr_merged(payload)
   project_key, project_config = project_result
   repo_path = project_config["repo_path"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
     LOG.info "No card found for branch #{branch}"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
@@ -100,8 +100,8 @@ rescue StandardError => e
 end
 
 def process_merged_pr(card_info, card_number, branch, pull_request, pr_url, pr_title, project_key, project_config, repo_path)
-  mark_card_merged(card_number)
-  cleanup_card_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
+  mark_work_item_merged(card_number)
+  cleanup_work_item_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
 
   # Emit hook — plugins handle their own post-merge actions
   # (e.g., card plugin posts PR link, moves card column, dispatches UAT agent)
@@ -144,7 +144,7 @@ def handle_github_issue_comment(payload)
                     chdir: project_config["repo_path"])
   branch = JSON.parse(pr_data)["branch"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
     LOG.info "No card found for PR ##{pr_number} (branch: #{branch})"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
@@ -320,7 +320,7 @@ def handle_github_pr_review_submitted(payload)
   project_key, project_config = project_result
   repo_path = project_config["repo_path"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   return [200, { status: "ignored", reason: "no matching card" }.to_json] unless result
 
   internal_id, card_info = result
@@ -394,7 +394,7 @@ def handle_github_pr_synchronized(payload)
   pr = payload["pull_request"]
   branch = pr.dig("head", "ref")
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   return [200, { status: "ignored", reason: "no matching card" }.to_json] unless result
 
   _internal_id, card_info = result

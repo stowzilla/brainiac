@@ -19,7 +19,7 @@ BRAINIAC_VERSION = Brainiac::VERSION
 BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
 PROJECTS_FILE = File.join(BRAINIAC_DIR, "projects.json")
 KIRO_AGENTS_DIR = File.join(Dir.home, ".kiro", "agents")
-CARD_MAP_FILE   = File.join(BRAINIAC_DIR, "card_map.json")
+WORK_ITEM_MAP_FILE   = File.join(BRAINIAC_DIR, "work_items.json")
 AGENT_REGISTRY_FILE = File.join(BRAINIAC_DIR, "agents.json")
 
 # --- Master config (handler toggles, global settings) ---

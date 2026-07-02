@@ -55,7 +55,7 @@ class TestGit < Minitest::Test
     wt_path = File.join(@test_dir, "main-repo--fizzy-55-cleanup")
     create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-55-cleanup",
                              base_ref: "HEAD", worktree_path: wt_path)
-    cleanup_card_worktrees(55, repo_path: @repo_path)
+    cleanup_work_item_worktrees(55, repo_path: @repo_path)
     refute File.directory?(wt_path)
   end
 
@@ -64,7 +64,7 @@ class TestGit < Minitest::Test
     create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-56-dirty",
                              base_ref: "HEAD", worktree_path: wt_path)
     File.write(File.join(wt_path, "uncommitted.txt"), "dirty")
-    cleanup_card_worktrees(56, repo_path: @repo_path)
+    cleanup_work_item_worktrees(56, repo_path: @repo_path)
     assert File.directory?(wt_path)
   end
 

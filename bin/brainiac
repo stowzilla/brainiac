@@ -1055,31 +1055,31 @@ when "discord"
     HELP
   end
 
-when "card-map"
-  card_map_file = File.join(BRAINIAC_DIR, "card_map.json")
+when "work-items", "card-map"
+  work_items_file = File.join(BRAINIAC_DIR, "work_items.json")
   cm_cmd = ARGV.shift
   case cm_cmd
   when "clean"
-    unless File.exist?(card_map_file)
-      puts "No card_map.json found."
+    unless File.exist?(work_items_file)
+      puts "No work items found."
       exit 0
     end
-    map = JSON.parse(File.read(card_map_file))
+    map = JSON.parse(File.read(work_items_file))
     before = map.size
     # Remove entries with no valid worktree on disk
     map.reject! { |_id, info| info["worktree"].nil? || !File.directory?(info["worktree"].to_s) }
     after = map.size
     removed = before - after
-    File.write(card_map_file, JSON.pretty_generate(map))
-    puts "Cleaned card map: removed #{removed} stale entries (#{before} → #{after})"
+    File.write(work_items_file, JSON.pretty_generate(map))
+    puts "Cleaned work items: removed #{removed} stale entries (#{before} → #{after})"
   when "list", "ls", nil
-    unless File.exist?(card_map_file)
-      puts "No card_map.json found."
+    unless File.exist?(work_items_file)
+      puts "No work items found."
       exit 0
     end
-    map = JSON.parse(File.read(card_map_file))
+    map = JSON.parse(File.read(work_items_file))
     if map.empty?
-      puts "Card map is empty."
+      puts "No active work items."
     else
       map.each_value do |info|
         num = info["number"] ? "##{info["number"]}" : "(no number)"
@@ -1089,7 +1089,7 @@ when "card-map"
       end
     end
   else
-    puts "Usage: brainiac card-map [clean|list]"
+    puts "Usage: brainiac work-items [clean|list]"
     puts "  clean   Remove stale entries (missing worktrees)"
     puts "  list    Show all card map entries"
   end
