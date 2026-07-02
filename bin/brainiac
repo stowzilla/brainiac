@@ -999,7 +999,7 @@ when "discord"
     else
       puts "Agents with Discord bots:"
       agents_with_tokens.each do |key, entry|
-        display = entry["display_name"] || entry["display_name"] || key.capitalize
+        display = entry["display_name"] || key.capitalize
         token = entry.dig("env", "DISCORD_BOT_TOKEN") || entry["discord_bot_token"]
         token_preview = "#{token[0..10]}..."
         puts "  #{display} (#{key}): #{token_preview}"
@@ -1570,7 +1570,7 @@ when "agent"
       puts "No agents in registry."
     else
       agents = registry.select { |_, e| e.is_a?(Hash) }.map do |key, entry|
-        display = entry["display_name"] || entry["display_name"] || key.capitalize
+        display = entry["display_name"] || key.capitalize
         details = []
         if entry["role"]
           roles = Array(entry["role"])
@@ -1614,7 +1614,7 @@ when "agent"
       agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
 
       # Resolve display name from registry if it exists
-      display_name = if registry.dig(agent_key, "display_name") || registry.dig(agent_key, "display_name")
+      display_name = if registry.dig(agent_key, "display_name")
                        registry[agent_key]["display_name"]
                      else
                        name
@@ -2002,7 +2002,7 @@ when "role"
         roles = entry["role"].is_a?(Array) ? entry["role"] : [entry["role"]]
         roles.each do |r|
           agent_roles[r] ||= []
-          agent_roles[r] << (entry["display_name"] || entry["display_name"] || key.capitalize)
+          agent_roles[r] << (entry["display_name"] || key.capitalize)
         end
       end
 

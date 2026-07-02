@@ -7,7 +7,7 @@
 #
 #   {
 #     "galen": {
-#       "fizzy_name": "Galen",
+#       "display_name": "Galen",
 #       "local": true,
 #       "env": {
 #         "SOME_TOKEN": "token_abc...",
@@ -71,8 +71,8 @@ def agent_env_var(agent_name, var_name)
 end
 
 # Get the display name for an agent (from agents.json registry).
-# Falls back to the provided name if no registry entry exists.
-# Get display name from agent registry (checks display_name, then fizzy_name for backward compat).
+# This is the human-readable canonical name (e.g., "GLaDOS" not "glados").
+# Core owns this — it's the identity used across all channels and plugins.
 def agent_display_name(agent_name)
   return agent_name unless agent_name
 
@@ -80,7 +80,7 @@ def agent_display_name(agent_name)
   entry = AGENT_REGISTRY[key]
   return agent_name unless entry.is_a?(Hash)
 
-  entry["display_name"] || entry["fizzy_name"] || agent_name
+  entry["display_name"] || agent_name
 end
 
 
@@ -143,7 +143,7 @@ def all_agent_names
   discover_kiro_agents.each { |name| names << name.capitalize }
   # Include agents from the registry
   AGENT_REGISTRY.each do |key, entry|
-    names << (entry["display_name"] || entry["fizzy_name"] || key.capitalize)
+    names << (entry["display_name"] || key.capitalize)
   end
   names
 end
@@ -163,7 +163,7 @@ def local_agent_names
   AGENT_REGISTRY.each do |key, entry|
     next unless entry.is_a?(Hash) && entry["local"]
 
-    names << (entry["display_name"] || entry["fizzy_name"] || key.capitalize)
+    names << (entry["display_name"] || key.capitalize)
   end
   names
 end

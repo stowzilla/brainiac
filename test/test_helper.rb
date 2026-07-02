@@ -33,15 +33,15 @@ ENV["LOG_LEVEL"] = "error"
 
 # Write agent registry
 agent_data = {
-  "galen" => { "fizzy_name" => "Galen", "local" => true,
+  "galen" => { "display_name" => "Galen", "local" => true,
                "env" => { "FIZZY_TOKEN" => "fizzy_galen_token", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
-  "glados" => { "fizzy_name" => "GLaDOS", "local" => true,
+  "glados" => { "display_name" => "GLaDOS", "local" => true,
                 "env" => { "FIZZY_TOKEN" => "fizzy_glados_token", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
-  "kaylee" => { "fizzy_name" => "Kaylee", "local" => false,
+  "kaylee" => { "display_name" => "Kaylee", "local" => false,
                 "env" => { "FIZZY_TOKEN" => "fizzy_kaylee_token" } },
-  "sleeper-service" => { "fizzy_name" => "Sleeper Service", "local" => false,
+  "sleeper-service" => { "display_name" => "Sleeper Service", "local" => false,
                          "env" => {} },
-  "threepio" => { "fizzy_name" => "Threepio", "local" => false, "env" => {} }
+  "threepio" => { "display_name" => "Threepio", "local" => false, "env" => {} }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "agents.json"), JSON.generate(agent_data))
 
