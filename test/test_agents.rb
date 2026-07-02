@@ -5,13 +5,13 @@ require_relative "test_helper"
 class TestAgents < Minitest::Test
   def test_agent_env_for_returns_env_hash
     env = agent_env_for("Galen")
-    assert_equal "fizzy_galen_token", env["FIZZY_TOKEN"]
+    assert_equal "token_galen", env["SERVICE_TOKEN"]
     assert_equal "Bot_galen", env["DISCORD_BOT_TOKEN"]
   end
 
   def test_agent_env_for_case_insensitive
     env = agent_env_for("GALEN")
-    assert_equal "fizzy_galen_token", env["FIZZY_TOKEN"]
+    assert_equal "token_galen", env["SERVICE_TOKEN"]
   end
 
   def test_agent_env_for_unknown_agent

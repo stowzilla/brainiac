@@ -34,35 +34,17 @@ ENV["LOG_LEVEL"] = "error"
 # Write agent registry
 agent_data = {
   "galen" => { "display_name" => "Galen", "local" => true,
-               "env" => { "FIZZY_TOKEN" => "fizzy_galen_token", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
+               "env" => { "SERVICE_TOKEN" => "token_galen", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
   "glados" => { "display_name" => "GLaDOS", "local" => true,
-                "env" => { "FIZZY_TOKEN" => "fizzy_glados_token", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
+                "env" => { "SERVICE_TOKEN" => "token_glados", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
   "kaylee" => { "display_name" => "Kaylee", "local" => false,
-                "env" => { "FIZZY_TOKEN" => "fizzy_kaylee_token" } },
+                "env" => { "SERVICE_TOKEN" => "token_kaylee" } },
   "sleeper-service" => { "display_name" => "Sleeper Service", "local" => false,
                          "env" => {} },
   "threepio" => { "display_name" => "Threepio", "local" => false, "env" => {} }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "agents.json"), JSON.generate(agent_data))
 
-# Write fizzy config
-fizzy_data = {
-  "authorized_users" => [
-    { "id" => "user-1", "name" => "Andy", "human" => true },
-    { "id" => "user-2", "name" => "Adam", "human" => true },
-    { "id" => "agent-1", "name" => "Galen", "human" => false },
-    { "id" => "agent-2", "name" => "GLaDOS", "human" => false }
-  ],
-  "boards" => {
-    "development" => {
-      "board_id" => "board-123",
-      "webhook_secret" => "dev-board-secret",
-      "columns" => { "right_now" => "col-1", "needs_review" => "col-2",
-                     "uat" => "col-3" }
-    }
-  }
-}
-File.write(File.join(TEST_BRAINIAC_DIR, "fizzy.json"), JSON.generate(fizzy_data))
 
 # Write GitHub config
 File.write(File.join(TEST_BRAINIAC_DIR, "github.json"), JSON.generate({
@@ -114,7 +96,6 @@ user_data = {
         "discord" => { "username" => "ardavis",
                        "user_id" => "397928984232591361" },
         "github" => { "username" => "ardavis" },
-        "fizzy" => { "username" => "andy-davis" }
       },
       "aliases" => ["Andy"]
     },
@@ -124,7 +105,6 @@ user_data = {
         "discord" => { "username" => "fladamd",
                        "user_id" => "832331260088287242" },
         "github" => { "username" => "dalton" },
-        "fizzy" => { "username" => "adam-dalton" }
       },
       "aliases" => []
     },
@@ -142,7 +122,7 @@ File.write(File.join(TEST_BRAINIAC_DIR, "users.json"), JSON.generate(user_data))
 # Write brainiac.json (handler config)
 brainiac_data = {
   "default_agent" => "Galen",
-  "handlers" => { "fizzy" => true, "github" => true, "discord" => true,
+  "handlers" => { "github" => true, "discord" => true,
                   "zoho" => false }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "brainiac.json"), JSON.generate(brainiac_data))
