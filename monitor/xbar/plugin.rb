@@ -11,8 +11,10 @@ require_relative "../shared"
 SELF_PATH = File.realpath(__FILE__)
 AGENTS = load_agent_config.freeze
 CONFIG = load_monitor_config.freeze
-FIZZY_ACCOUNT_ID = CONFIG["fizzy_account_id"]
-DISCORD_GUILD_ID = CONFIG["discord_guild_id"]
+
+# URL patterns for different session types — configured in ~/.brainiac/waybar.json or monitor config
+# Plugins can add their patterns here via the config file.
+URL_PATTERNS = CONFIG["url_patterns"] || {}
 
 LOG_VIEWER_PATH = File.join(File.dirname(SELF_PATH), "view_logs.rb")
 DEPLOY_SCRIPT_PATH = File.join(File.dirname(SELF_PATH), "deploy_env.rb")
@@ -35,12 +37,14 @@ def prompt_url(card_key)
 
   if card_key.start_with?("card-")
     card_num = card_key.split("-")[1]
-    "https://app.fizzy.do/#{FIZZY_ACCOUNT_ID}/cards/#{card_num}" if FIZZY_ACCOUNT_ID && card_num
-  elsif card_key.start_with?("discord-") && DISCORD_GUILD_ID
+    pattern = URL_PATTERNS["card"]
+    pattern&.gsub("{{NUMBER}}", card_num.to_s) if card_num
+  elsif card_key.start_with?("discord-")
     parts = card_key.split("-")
     channel_id = parts[-2]
     message_id = parts[-1]
-    "https://discord.com/channels/#{DISCORD_GUILD_ID}/#{channel_id}/#{message_id}" if channel_id && message_id
+    pattern = URL_PATTERNS["discord"]
+    pattern&.gsub("{{CHANNEL_ID}}", channel_id.to_s)&.gsub("{{MESSAGE_ID}}", message_id.to_s) if channel_id && message_id
   end
 end
 
