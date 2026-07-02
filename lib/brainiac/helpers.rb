@@ -92,7 +92,6 @@ def default_project_key
   default ? default[0] : nil
 end
 
-
 def identify_project_by_repo(repo_full_name)
   return nil if PROJECTS.empty?
 
@@ -110,7 +109,6 @@ def identify_project_by_repo(repo_full_name)
   nil
 end
 
-
 def load_work_item_map
   return {} unless File.exist?(WORK_ITEM_MAP_FILE)
 
@@ -126,7 +124,6 @@ end
 def slugify(title, max_length: 40)
   title.downcase.gsub(/[^a-z0-9\s-]/, "").strip.gsub(/\s+/, "-").slice(0, max_length).chomp("-")
 end
-
 
 def verify_github_signature!(request, payload_body)
   signature = request.env["HTTP_X_HUB_SIGNATURE_256"]
@@ -161,7 +158,6 @@ def work_item_merged?(card_number)
   end
 end
 
-
 # Returns a formatted string suitable for injection into the prompt, or ''
 # if the fetch fails (agent can still fetch manually as a fallback).
 PREFETCH_COMMENT_LIMIT = 15
@@ -169,11 +165,7 @@ COMMENT_BODY_TRUNCATE_LENGTH = 500
 CARD_CONTEXT_CACHE = {}
 CARD_CONTEXT_CACHE_TTL = 60 # seconds
 
-
-
-
 # Fetch recent comments for a card. Returns array of text parts.
-
 
 # Extract the last N meaningful lines from an agent log for crash reporting.
 def extract_crash_snippet(log_file, max_lines: 20)
@@ -201,7 +193,7 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
                           snippet: snippet)
 
   # If a plugin handled it for this source, we're done
-  return if handled.any? { |r| r == source }
+  return if handled.any?(source)
 
   case source
   when :github
@@ -231,7 +223,6 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
 rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
 end
-
 
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false)
@@ -370,7 +361,6 @@ def handle_agent_completion(**ctx)
   check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
 end
 
-
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
   return unless project_key_for_restart == "brainiac" && head_before
 
@@ -381,7 +371,6 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
     LOG.info "[Brainiac] #{agent_config_name || "agent"} session on brainiac had no changes — skipping restart"
   end
 end
-
 
 def detect_model(project_config, tags: [], text: "")
   resolved = resolve_project_cli_config(project_config)

@@ -35,7 +35,6 @@ end
 
 # --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
 
-
 if handler_enabled?("github")
   require_relative "lib/brainiac/handlers/github"
   LOG.info "[Handlers] GitHub handler enabled"
@@ -100,7 +99,7 @@ set :quiet, true
 set :server_settings, { Silent: true }
 
 # Custom logger that filters polling endpoints unless LOG_LEVEL=debug
-SILENT_POLL_PATHS = %w[/api/status].freeze
+SILENT_POLL_PATHS = %w[/api/status /api/deployments].freeze
 
 class SelectiveLogger < Rack::CommonLogger
   def call(env)
@@ -145,7 +144,6 @@ before "/api/*" do
   pass if request.path_info == "/api/discord"
   authenticate_dashboard!
 end
-
 
 post "/github" do
   content_type :json
@@ -441,7 +439,6 @@ CURATOR_THREAD = Thread.new do
     LOG.warn "[Curator] Error: #{e.message}"
   end
 end
-
 
 LOG.info "[Monitor] Starting daemon..."
 daemon_path = File.join(__dir__, "monitor", "daemon.rb")

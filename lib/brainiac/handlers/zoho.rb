@@ -435,4 +435,3 @@ rescue StandardError => e
   LOG.error "[Zoho:Triage] Error creating card: #{e.message}\n#{e.backtrace.first(3).join("\n")}"
   notify_zoho_match(email, { "label" => "Support Email", "emoji" => "🆘" }.merge(rule_defaults(nil)))
 end
-

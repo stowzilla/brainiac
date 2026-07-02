@@ -675,7 +675,7 @@ when "setup"
     puts ""
 
     available_handlers = {
-      
+
       "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
       "discord" => "Discord (conversational agent access via bot)",
       "zoho" => "Zoho Mail (email notifications and triage)"
@@ -1842,7 +1842,7 @@ when "agent"
       puts JSON.pretty_generate(display)
 
     when "env"
-      if ARGV[0] == "--delete" || ARGV[0] == "unset" || ARGV[0] == "delete" || ARGV[0] == "rm"
+      if ["--delete", "unset", "delete", "rm"].include?(ARGV[0])
         ARGV.shift
         var_name = ARGV.shift
         unless var_name
@@ -1957,7 +1957,7 @@ when "agent"
         MD
         puts "✓ Wrote persona to #{persona_file}"
 
-      when "display_name", "display_name"
+      when "display_name"
         unless value
           puts "Usage: brainiac agent #{agent_cmd} set display_name <name>"
           exit 1

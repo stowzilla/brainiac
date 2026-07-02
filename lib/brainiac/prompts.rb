@@ -286,7 +286,6 @@ PROMPT_GITHUB_CHANNEL = <<~PROMPT
 
 PROMPT
 
-
 PROMPT_DISCORD = <<~'PROMPT'
   ## Context
 
@@ -366,6 +365,7 @@ CHANNEL_PROMPTS = {
 #   channel: :discord, :github, or plugin-registered channels (e.g., :fizzy, :linear)
 # ---------------------------------------------------------------------------
 
+# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :discord, board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
@@ -374,11 +374,7 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
 
   # Channel prompt: check plugin-registered prompts first, then built-in
   plugin_prompt = Brainiac.channel_prompts[channel]
-  if plugin_prompt
-    result += plugin_prompt
-  else
-    result += CHANNEL_PROMPTS.fetch(channel, PROMPT_DISCORD_CHANNEL)
-  end
+  result += plugin_prompt || CHANNEL_PROMPTS.fetch(channel, PROMPT_DISCORD_CHANNEL)
 
   result += template
 
@@ -421,6 +417,7 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
   vars.each { |key, val| result.gsub!("{{#{key}}}", val.to_s) }
   result
 end
+# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 # Lean prompt for resumed sessions. The previous session already has the full context
 # (role, persona, knowledge, core instructions, channel prompts). We only send the new

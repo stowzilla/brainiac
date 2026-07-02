@@ -69,16 +69,12 @@ module Brainiac
     # Get registered channel prompts (used by render_prompt).
     #
     # @return [Hash<Symbol, String>]
-    def channel_prompts
-      @channel_prompts
-    end
+    attr_reader :channel_prompts
 
     # Get registered pre-post checks (used by render_prompt).
     #
     # @return [Hash<Symbol, String>]
-    def channel_pre_post_checks
-      @channel_pre_post_checks
-    end
+    attr_reader :channel_pre_post_checks
 
     # Clear all hooks (useful for testing).
     def reset_hooks!

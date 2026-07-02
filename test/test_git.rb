@@ -50,7 +50,6 @@ class TestGit < Minitest::Test
     assert File.exist?(File.join(wt_path, "marker.txt"))
   end
 
-
   def test_cleanup_removes_clean_worktree
     wt_path = File.join(@test_dir, "main-repo--fizzy-55-cleanup")
     create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-55-cleanup",

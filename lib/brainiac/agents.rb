@@ -83,7 +83,6 @@ def agent_display_name(agent_name)
   entry["display_name"] || agent_name
 end
 
-
 # Get the role name(s) configured for an agent in agents.json.
 # Returns an array of role names (may be empty).
 def agent_roles_for(agent_name)

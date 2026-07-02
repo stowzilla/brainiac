@@ -45,7 +45,6 @@ agent_data = {
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "agents.json"), JSON.generate(agent_data))
 
-
 # Write GitHub config
 File.write(File.join(TEST_BRAINIAC_DIR, "github.json"), JSON.generate({
                                                                         "webhook_secret" => "github-test-secret"
@@ -95,7 +94,7 @@ user_data = {
       "identities" => {
         "discord" => { "username" => "ardavis",
                        "user_id" => "397928984232591361" },
-        "github" => { "username" => "ardavis" },
+        "github" => { "username" => "ardavis" }
       },
       "aliases" => ["Andy"]
     },
@@ -104,7 +103,7 @@ user_data = {
       "identities" => {
         "discord" => { "username" => "fladamd",
                        "user_id" => "832331260088287242" },
-        "github" => { "username" => "dalton" },
+        "github" => { "username" => "dalton" }
       },
       "aliases" => []
     },
@@ -167,7 +166,6 @@ PROMPT_FOLLOWUP_COMMENT = "Stub prompt" unless defined?(PROMPT_FOLLOWUP_COMMENT)
 PROMPT_CROSS_AGENT_REVIEW = "Stub prompt" unless defined?(PROMPT_CROSS_AGENT_REVIEW)
 PROMPT_CARD_ASSIGNED = "Stub prompt" unless defined?(PROMPT_CARD_ASSIGNED)
 PROMPT_NEW_MENTION = "Stub prompt" unless defined?(PROMPT_NEW_MENTION)
-
 
 def handle_deploy_comment(_eventable, _text, _card_id) = [200, { status: "deploy_handled" }.to_json]
 

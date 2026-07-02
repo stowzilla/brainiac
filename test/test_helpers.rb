@@ -69,7 +69,6 @@ class TestHelpers < Minitest::Test
     assert_equal "grok", detect_cli_provider(text: "[cli:grok] do stuff")
   end
 
-
   def test_default_project_key
     assert_equal "brainiac", default_project_key
   end

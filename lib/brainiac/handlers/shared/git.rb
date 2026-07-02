@@ -156,7 +156,7 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   worktree_path
 end
 
-# Clean up all worktrees associated with a card (primary + cross-agent review).
+# Clean up all worktrees associated with a work item (primary + cross-agent review).
 # Safe: skips worktrees with uncommitted changes.
 def cleanup_work_item_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
   return unless card_number
@@ -165,7 +165,7 @@ def cleanup_work_item_worktrees(card_number, repo_path:, primary_worktree: nil, 
   repo_base = File.basename(repo_path)
   cleaned = 0
 
-  # Find worktrees that contain the card number in their name (any naming convention)
+  # Find worktrees that contain the work item number in their name (any naming convention)
   candidates = Dir.glob(File.join(repo_dir, "#{repo_base}--*#{card_number}*")).select { |d| File.directory?(d) }
   candidates << primary_worktree if primary_worktree && File.directory?(primary_worktree) && !candidates.include?(primary_worktree)
 

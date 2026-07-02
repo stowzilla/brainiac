@@ -127,7 +127,7 @@ get "/api/roles" do
   if Dir.exist?(ROLES_DIR)
     Dir.glob(File.join(ROLES_DIR, "*.md")).each do |f|
       name = File.basename(f, ".md")
-      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, e| agent_display_name(k) }
+      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, _e| agent_display_name(k) }
       roles << { name: name, agents: agents }
     end
   end
@@ -208,8 +208,6 @@ post "/api/skills/curate" do
   result = curate_skills
   result.to_json
 end
-
-# --- Card Index ---
 
 # --- Dispatch Depth ---
 

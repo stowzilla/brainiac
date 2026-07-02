@@ -40,7 +40,6 @@ def find_user_by_github_username(username)
   USER_REGISTRY["users"].find { |u| u.dig("identities", "github", "username") == username.to_s }
 end
 
-
 # Find user by canonical name
 def find_user_by_canonical_name(name)
   USER_REGISTRY["users"].find { |u| u["canonical_name"].downcase == name.downcase }

@@ -7,7 +7,6 @@ class TestConfig < Minitest::Test
     assert_equal "Galen", AI_AGENT_NAME
   end
 
-
   def test_handler_enabled_github
     assert handler_enabled?("github")
   end
@@ -25,7 +24,6 @@ class TestConfig < Minitest::Test
     assert PROJECTS.key?("brainiac")
     assert_equal "/home/test/Code/marketplace", PROJECTS["marketplace"]["repo_path"]
   end
-
 
   def test_file_changed_detects_new_file
     test_file = File.join(TEST_BRAINIAC_DIR, "config-change-test-#{rand(10_000)}.txt")

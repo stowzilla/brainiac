@@ -5,7 +5,6 @@
 # Fallback column ID for backwards compatibility when no board config exists
 DEFAULT_UAT_COLUMN_ID = "03fsmglsr6az06ppyotawsti8"
 
-
 # Find a work item by matching the PR's head branch to a branch in the card map.
 def find_work_item_by_branch(branch)
   map = load_work_item_map
@@ -116,7 +115,6 @@ def process_merged_pr(card_info, card_number, branch, pull_request, pr_url, pr_t
                 project_config: project_config,
                 repo_path: repo_path)
 end
-
 
 def handle_github_issue_comment(payload)
   comment = payload["comment"]
@@ -354,7 +352,7 @@ def dispatch_pr_review(card_number, card_key, card_info, pr_number, review, revi
   agent_name = agent_name_for(project_config)
   # Notify work item system that a review was received (plugin posts status comment)
   Brainiac.emit(:pr_review_received, card_number: card_number, reviewer: reviewer,
-                                      agent_name: agent_name, project_config: project_config, repo_path: repo_path)
+                                     agent_name: agent_name, project_config: project_config, repo_path: repo_path)
 
   review_context = build_review_context(reviewer, review, pr_number, repo_name)
   worktree = card_info["worktree"]
@@ -388,7 +386,6 @@ def build_review_context(reviewer, review, pr_number, repo_name)
   end
   context
 end
-
 
 def handle_github_pr_synchronized(payload)
   pr = payload["pull_request"]

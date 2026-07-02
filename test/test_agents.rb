@@ -22,7 +22,6 @@ class TestAgents < Minitest::Test
     assert_equal({}, agent_env_for(nil))
   end
 
-
   def test_agent_display_name_from_registry
     assert_equal "Galen", agent_display_name("galen")
     assert_equal "GLaDOS", agent_display_name("glados")

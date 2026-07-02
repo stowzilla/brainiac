@@ -40,6 +40,7 @@ end
 # Load all installed plugin gems and call their register hooks.
 # Called once during server startup, after core handlers are loaded.
 def load_plugins!(app)
+  # rubocop:disable Metrics/BlockLength
   installed_plugins.each do |name|
     gem_name = "brainiac-#{name}"
     entry = plugin_entry(name)
@@ -51,7 +52,13 @@ def load_plugins!(app)
         LOG.info "[Plugins] Loading #{gem_name} from local path: #{entry["path"]}"
       end
 
-      require gem_name
+      # Try both naming conventions: brainiac-fizzy and brainiac_fizzy
+      begin
+        require gem_name
+      rescue LoadError
+        require gem_name.tr("-", "_")
+      end
+
       plugin_module = resolve_plugin_module(name)
       if plugin_module.respond_to?(:register)
         plugin_module.register(app)
@@ -63,7 +70,6 @@ def load_plugins!(app)
       LOG.error "[Plugins] Could not load #{gem_name}: #{e.message}"
       if entry.is_a?(Hash) && entry["path"]
         LOG.error "[Plugins]   Local path: #{entry["path"]}"
-        LOG.error "[Plugins]   Check that #{File.join(entry["path"], "lib", gem_name + ".rb")} exists"
       else
         LOG.error "[Plugins]   Is the gem installed? Run: gem install #{gem_name}"
       end
@@ -72,6 +78,7 @@ def load_plugins!(app)
       LOG.error "[Plugins]   #{e.backtrace.first(3).join("\n  ")}"
     end
   end
+  # rubocop:enable Metrics/BlockLength
 end
 
 # Resolve the plugin module for a given name.
