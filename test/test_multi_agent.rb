@@ -92,9 +92,9 @@ class TestMultiAgentInteraction < Minitest::Test
     end
   end
 
-  def test_fizzy_display_name_preserves_casing
-    assert_equal "GLaDOS", fizzy_display_name("glados")
-    assert_equal "Galen", fizzy_display_name("galen")
-    assert_equal "Kaylee", fizzy_display_name("kaylee")
+  def test_agent_display_name_preserves_casing
+    assert_equal "GLaDOS", agent_display_name("glados")
+    assert_equal "Galen", agent_display_name("galen")
+    assert_equal "Kaylee", agent_display_name("kaylee")
   end
 end

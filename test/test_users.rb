@@ -25,12 +25,6 @@ class TestUsers < Minitest::Test
     assert_equal "Andy Davis", user["canonical_name"]
   end
 
-  def test_find_user_by_fizzy_username
-    user = find_user_by_fizzy_username("adam-dalton")
-    assert user
-    assert_equal "Adam Dalton", user["canonical_name"]
-  end
-
   def test_find_user_by_canonical_name
     user = find_user_by_canonical_name("Galen")
     assert user

@@ -2,7 +2,7 @@
 
 # Shared inline tag parsing for handler messages.
 #
-# Both Discord and Fizzy messages can contain inline tags like:
+# Messages from any channel can contain inline tags like:
 #   [project:my-project], [opus], [effort:high], [cli:grok], [chat], [plan]
 #
 # This module provides a single parser that extracts all tags and returns

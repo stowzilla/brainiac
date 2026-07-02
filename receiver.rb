@@ -8,7 +8,11 @@
 require "sinatra"
 require "json"
 
+# The directory this server is running from (supports worktrees)
+SERVER_ROOT = File.expand_path(__dir__)
+
 # Load all modules
+require_relative "lib/brainiac/hooks"
 require_relative "lib/brainiac/config"
 require_relative "lib/brainiac/users"
 require_relative "lib/brainiac/agents"
@@ -16,7 +20,6 @@ require_relative "lib/brainiac/brain"
 require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
 require_relative "lib/brainiac/prompts"
-require_relative "lib/brainiac/planning"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/cron"
 require_relative "lib/brainiac/restart"
@@ -31,13 +34,6 @@ module Brainiac
 end
 
 # --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
-
-if handler_enabled?("fizzy")
-  require_relative "lib/brainiac/handlers/fizzy"
-  require_relative "lib/brainiac/handlers/fizzy/card_index"
-  require_relative "lib/brainiac/handlers/fizzy/deployments"
-  LOG.info "[Handlers] Fizzy handler enabled"
-end
 
 if handler_enabled?("github")
   require_relative "lib/brainiac/handlers/github"
@@ -86,7 +82,10 @@ if Dir.exist?(CUSTOM_HANDLERS_DIR)
 end
 
 # --- Load gem-based plugins (brainiac-*) ---
-load_plugins!(self)
+load_plugins!(Sinatra::Application)
+
+# Emit server_started hook — plugins can run startup tasks (backfill, background jobs, etc.)
+Brainiac.emit(:server_started)
 
 # --- Sinatra config ---
 set :host_authorization, { permit_all: true }
@@ -146,90 +145,6 @@ before "/api/*" do
   authenticate_dashboard!
 end
 
-# --- Fizzy webhook routes ---
-
-post "/fizzy/?:board_key?" do
-  content_type :json
-  request.body.rewind
-  payload_body = request.body.read
-  board_key = params["board_key"]
-
-  verify_signature!(request, payload_body, board_key: board_key)
-
-  payload = JSON.parse(payload_body)
-
-  event_id = payload["id"]
-  action = payload["action"]
-
-  LOG.info "[Fizzy] Received event #{event_id}: action=#{action}"
-
-  if already_processed?(event_id)
-    LOG.info "Skipping duplicate event #{event_id}"
-    halt 200, { status: "duplicate" }.to_json
-  end
-
-  reload_projects!
-  reload_agent_registry!
-  reload_github_config!
-
-  case action
-  when "card_assigned"
-    status_code, body = handle_card_assigned(payload)
-    LOG.info "[Fizzy] #{action} response: #{status_code} - #{body}"
-    halt status_code, body
-  when "comment_created"
-    status_code, body = handle_comment(payload)
-    LOG.info "[Fizzy] comment_created response: #{status_code} - #{body}"
-    halt status_code, body
-  when "card_published", "card_triaged"
-    eventable = payload["eventable"] || {}
-    card_number = eventable["number"]&.to_s
-
-    # card_triaged never dispatches agents — only card_assigned and @mentions do that.
-    # Guards remain as defense-in-depth for any future column-based routing.
-    if action == "card_triaged" && card_number
-      if self_move_recent?(card_number)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — self-move echo"
-        halt 200, { status: "ignored", reason: "self_move" }.to_json
-      end
-
-      if card_merged?(card_number)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — card already merged"
-        halt 200, { status: "ignored", reason: "card_merged" }.to_json
-      end
-
-      card_key = "card-#{card_number}"
-      if recently_completed?(card_key)
-        LOG.info "[Fizzy] Ignoring card_triaged for ##{card_number} — recently completed"
-        halt 200, { status: "ignored", reason: "recently_completed" }.to_json
-      end
-    end
-
-    # Only card_published does duplicate detection — card_triaged skips agent dispatch entirely
-    if action == "card_published"
-      assignees = eventable["assignees"] || []
-      if assignees.any? { |a| local_agent_names.include?(a["name"]) }
-        status_code, body = handle_card_assigned(payload)
-        LOG.info "[Fizzy] #{action} (with assignee) response: #{status_code} - #{body}"
-        halt status_code, body
-      end
-    end
-
-    status_code, body = handle_card_published(payload)
-    LOG.info "[Fizzy] #{action} response: #{status_code} - #{body}"
-    halt status_code, body
-  else
-    LOG.info "[Fizzy] Ignoring unknown action: #{action}"
-    halt 200, { status: "ignored", action: action }.to_json
-  end
-rescue JSON::ParserError => e
-  LOG.error "Invalid JSON: #{e.message}"
-  halt 400, { error: "Invalid JSON" }.to_json
-rescue StandardError => e
-  LOG.error "Unhandled error: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
-  halt 500, { error: e.message }.to_json
-end
-
 post "/github" do
   content_type :json
   request.body.rewind
@@ -252,7 +167,7 @@ post "/github" do
       status_code, body = handle_github_pr_merged(payload)
       halt status_code, body
     elsif action == "opened"
-      track_pr_in_card_map(payload)
+      track_pr_in_work_items(payload)
       halt 200, { status: "processed", action: "pr_tracked" }.to_json
     elsif action == "synchronize"
       status_code, body = handle_github_pr_synchronized(payload)
@@ -511,64 +426,6 @@ else
   end
 end
 
-# --- Deployment environment tracking (requires fizzy handler) ---
-
-if defined?(DEPLOYMENTS_CONFIG)
-  get "/api/deployments" do
-    content_type :json
-    reload_deployments_config!
-    reload_deployment_state!
-    { deployments: deployment_status }.to_json
-  end
-
-  post "/api/deployments/:env" do
-    content_type :json
-    env_key = params["env"]
-    request.body.rewind
-    payload = JSON.parse(request.body.read)
-
-    result = deploy_to_environment(env_key, worktree_path: payload["worktree"], deployed_by: payload["deployed_by"])
-    if result[:error]
-      halt 404, result.to_json
-    else
-      { status: "deployed", env: env_key, deployment: result }.to_json
-    end
-  rescue JSON::ParserError
-    halt 400, { error: "Invalid JSON" }.to_json
-  end
-
-  delete "/api/deployments/:env" do
-    content_type :json
-    env_key = params["env"]
-    state = load_deployment_state
-    if state.key?(env_key)
-      state[env_key] = { "status" => "available", "cleared_at" => Time.now.iso8601, "last_card" => state[env_key]["card_number"] }
-      save_deployment_state(state)
-      DEPLOYMENT_STATE.replace(state)
-      LOG.info "[Deploy] Manually cleared #{env_key}"
-      { status: "cleared", env: env_key }.to_json
-    else
-      halt 404, { error: "Unknown environment: #{env_key}" }.to_json
-    end
-  end
-
-  post "/api/deployments/:env/deploying" do
-    content_type :json
-    env_key = params["env"]
-    config = DEPLOYMENTS_CONFIG["environments"] || {}
-    halt 404, { error: "Unknown environment: #{env_key}" }.to_json unless config.key?(env_key)
-    request.body.rewind
-    payload = begin
-      JSON.parse(request.body.read)
-    rescue StandardError
-      {}
-    end
-    mark_deploying(env_key, worktree_path: payload["worktree"] || "")
-    LOG.info "[Deploy] #{env_key} marked deploying via API"
-    { status: "deploying", env: env_key }.to_json
-  end
-end
-
 LOG.info "[Cron] Starting cron thread..."
 start_cron_thread
 
@@ -581,11 +438,6 @@ CURATOR_THREAD = Thread.new do
   rescue StandardError => e
     LOG.warn "[Curator] Error: #{e.message}"
   end
-end
-
-if defined?(CARD_INDEX)
-  LOG.info "[CardIndex] Starting background backfill..."
-  CARD_INDEX.backfill
 end
 
 LOG.info "[Monitor] Starting daemon..."

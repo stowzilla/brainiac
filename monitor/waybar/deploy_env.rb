@@ -48,9 +48,9 @@ def handle_deploy(env_key, deployment)
   return unless deployment
 
   prefill = deployment["status"] == "occupied" && deployment["card_number"] ? deployment["card_number"].to_s : ""
-  card_number = `timeout 60 zenity --entry --title="Deploy to #{env_key}" --text="Fizzy card number:"#{unless prefill.empty?
-                                                                                                         " --entry-text=#{Shellwords.escape(prefill)}"
-                                                                                                       end} 2>/dev/null`.strip
+  card_number = `timeout 60 zenity --entry --title="Deploy to #{env_key}" --text="Card number:"#{unless prefill.empty?
+                                                                                                   " --entry-text=#{Shellwords.escape(prefill)}"
+                                                                                                 end} 2>/dev/null`.strip
   return if card_number.empty?
 
   worktree = resolve_worktree(card_number)

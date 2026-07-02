@@ -26,20 +26,20 @@
 
 ## Plugin Gems
 
-Plugins are separate gems that extend Brainiac:
+Plugins extend Brainiac via separate gems:
 
 | Gem | Purpose |
 |-----|---------|
+| brainiac-fizzy | Fizzy card management (extracted from core) |
 | brainiac-whatsapp | WhatsApp Business API handler |
 
-Plugins follow the naming convention `brainiac-<name>` and are installed via `brainiac install <name>`.
+Install plugins: `brainiac install <name>` or `brainiac install <name> --path <dir>` for local dev.
 
 ## External Tools
 
 | Tool | Purpose |
 |------|---------|
 | kiro-cli | Agent dispatch (spawned as subprocess) |
-| fizzy-cli | Fizzy card management |
 | gh (GitHub CLI) | PR/issue operations |
 | qmd | Brain semantic search and indexing |
 | ngrok | Webhook tunneling |
@@ -56,20 +56,11 @@ rake rubocop
 # Run both (default task)
 rake
 
-# Start the server (foreground with log tailing)
+# Start the server
 brainiac server
 
-# Start as daemon
-brainiac server --daemon
-
-# Register current directory as a project
-brainiac register
-
-# List registered projects
-brainiac list
-
 # Install a plugin
-brainiac install whatsapp
+brainiac install fizzy --path ~/Code/brainiac-fizzy
 
 # List plugins
 brainiac plugins
@@ -85,12 +76,15 @@ brainiac plugins
 
 ## Plugin Development
 
-Plugins are standard Ruby gems with this contract:
+Plugins follow this contract:
 
 1. Gem named `brainiac-<name>`
 2. Entry file at `lib/brainiac-<name>.rb`
-3. Module at `Brainiac::Plugins::<Name>` (namespace defined in `lib/brainiac.rb`)
-4. `.register(app)` method receives Sinatra app instance
-5. Plugin state tracked in `~/.brainiac/plugins.json`
+3. Module at `Brainiac::Plugins::<Name>`
+4. `.register(app)` receives `Sinatra::Application` — define routes, subscribe to hooks
+5. `Brainiac.register_channel_prompt(:channel, prompt)` for channel-specific prompts
+6. Subscribe to hooks: `:agent_completed`, `:agent_crashed`, `:pre_dispatch`, etc.
+7. Plugin state tracked in `~/.brainiac/plugins.json`
+8. Plugin config in its own file (e.g., `~/.brainiac/fizzy.json`)
 
-See `~/Code/brainiac-whatsapp` as a reference implementation.
+Reference implementation: `~/Code/brainiac-fizzy`

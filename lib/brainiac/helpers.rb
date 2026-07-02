@@ -70,19 +70,18 @@ def agent_cli_provider_for(agent_name)
   entry["cli_provider"]
 end
 
-# Detect CLI provider override from inline [cli:X] tag or Fizzy card tags.
+# Detect CLI provider override from inline [cli:X] tag or card tags.
 # Returns the provider name (e.g. "grok") or nil.
 def detect_cli_provider(text: "", tags: [])
-  # Inline tag: [cli:grok]
+  # Inline tag: [cli:grok] — works in any channel
   if (match = text.match(/\[cli:(\w+)\]/i))
     return match[1].downcase
   end
 
-  # Fizzy card tags: cli-grok
-  tags.each do |tag|
-    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
-    return name.sub("cli-", "") if name.start_with?("cli-")
-  end
+  # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
+  results = Brainiac.emit(:detect_cli_provider, text: text, tags: tags)
+  plugin_result = results.compact.first
+  return plugin_result if plugin_result
 
   nil
 end
@@ -91,26 +90,6 @@ def default_project_key
   # Find the project marked as default
   default = PROJECTS.find { |_key, config| config["default"] == true }
   default ? default[0] : nil
-end
-
-def identify_project_by_tags(tags)
-  return nil if PROJECTS.empty?
-
-  tag_names = tags.map { |t| (t.is_a?(Hash) ? t["name"] : t).to_s.downcase }
-
-  PROJECTS.each do |project_key, config|
-    project_tags = (config["fizzy_tags"] || []).map(&:downcase)
-    return [project_key, config] if tag_names.intersect?(project_tags)
-  end
-
-  # Fall back to default project if configured
-  default_key = default_project_key
-  if default_key
-    LOG.info "No project matched tags [#{tag_names.join(", ")}], falling back to default project '#{default_key}'"
-    return [default_key, PROJECTS[default_key]]
-  end
-
-  nil
 end
 
 def identify_project_by_repo(repo_full_name)
@@ -130,52 +109,20 @@ def identify_project_by_repo(repo_full_name)
   nil
 end
 
-def resolve_card_number(internal_id, repo_path:)
-  env = default_fizzy_env
-  [nil, "--indexed-by closed"].each do |extra_flag|
-    cmd = ["fizzy", "card", "list", "--all"]
-    cmd << extra_flag if extra_flag
-    output, status = Open3.capture2(env, *cmd, chdir: repo_path)
-    next unless status.success?
+def load_work_item_map
+  return {} unless File.exist?(WORK_ITEM_MAP_FILE)
 
-    data = JSON.parse(output)["data"] || []
-    match = data.find { |c| c["id"] == internal_id }
-    if match
-      LOG.info "Resolved card number #{match["number"]} for internal_id #{internal_id}"
-      return match["number"]
-    end
-  end
-
-  LOG.warn "Could not resolve card number for internal_id #{internal_id}"
-  nil
-rescue StandardError => e
-  LOG.warn "resolve_card_number failed for #{internal_id}: #{e.message}"
-  nil
-end
-
-def load_card_map
-  return {} unless File.exist?(CARD_MAP_FILE)
-
-  JSON.parse(File.read(CARD_MAP_FILE))
+  JSON.parse(File.read(WORK_ITEM_MAP_FILE))
 rescue JSON::ParserError
   {}
 end
 
-def save_card_map(map)
-  File.write(CARD_MAP_FILE, JSON.pretty_generate(map))
+def save_work_item_map(map)
+  File.write(WORK_ITEM_MAP_FILE, JSON.pretty_generate(map))
 end
 
 def slugify(title, max_length: 40)
   title.downcase.gsub(/[^a-z0-9\s-]/, "").strip.gsub(/\s+/, "-").slice(0, max_length).chomp("-")
-end
-
-def verify_signature!(request, payload_body, board_key: nil)
-  signature = request.env["HTTP_X_WEBHOOK_SIGNATURE"]
-  halt 403, { error: "Missing signature" }.to_json unless signature
-  secret = board_key ? board_webhook_secret(board_key) : FIZZY_WEBHOOK_SECRET
-  halt 403, { error: "No webhook secret configured" }.to_json unless secret
-  computed = OpenSSL::HMAC.hexdigest("sha256", secret, payload_body)
-  halt 403, { error: "Invalid signature" }.to_json unless Rack::Utils.secure_compare(signature, computed)
 end
 
 def verify_github_signature!(request, payload_body)
@@ -200,18 +147,17 @@ end
 MERGED_CARDS = {}
 MERGED_CARDS_MUTEX = Mutex.new
 
-def mark_card_merged(card_number)
+def mark_work_item_merged(card_number)
   MERGED_CARDS_MUTEX.synchronize { MERGED_CARDS[card_number.to_s] = Time.now }
 end
 
-def card_merged?(card_number)
+def work_item_merged?(card_number)
   MERGED_CARDS_MUTEX.synchronize do
     ts = MERGED_CARDS[card_number.to_s]
     ts && (Time.now - ts < 600)
   end
 end
 
-# Pre-fetch a Fizzy card's body and comments so the agent doesn't have to.
 # Returns a formatted string suitable for injection into the prompt, or ''
 # if the fetch fails (agent can still fetch manually as a fallback).
 PREFETCH_COMMENT_LIMIT = 15
@@ -219,106 +165,7 @@ COMMENT_BODY_TRUNCATE_LENGTH = 500
 CARD_CONTEXT_CACHE = {}
 CARD_CONTEXT_CACHE_TTL = 60 # seconds
 
-def prefetch_card_context(card_number, repo_path:, agent_name: nil)
-  return "" unless card_number
-
-  # Return cached context if fresh enough
-  cache_key = "#{card_number}-#{agent_name}"
-  cached = CARD_CONTEXT_CACHE[cache_key]
-  if cached && (Time.now - cached[:at]) < CARD_CONTEXT_CACHE_TTL
-    LOG.info "Using cached card context for ##{card_number} (#{(Time.now - cached[:at]).to_i}s old)"
-    return cached[:context]
-  end
-
-  env = fizzy_env_for(agent_name)
-  parts = []
-
-  card_parts = fetch_card_details(card_number, repo_path: repo_path, env: env)
-  return "" if card_parts.nil?
-
-  parts.concat(card_parts)
-  parts.concat(fetch_card_comments(card_number, repo_path: repo_path, env: env))
-  return "" if parts.empty?
-
-  context = parts.join("\n")
-  result = <<~CARD_CONTEXT
-    ## Card Context (pre-fetched — do NOT re-fetch this)
-    #{context}
-
-  CARD_CONTEXT
-
-  CARD_CONTEXT_CACHE[cache_key] = { context: result, at: Time.now }
-  CARD_CONTEXT_CACHE.delete_if { |_, v| (Time.now - v[:at]) > CARD_CONTEXT_CACHE_TTL * 5 } if CARD_CONTEXT_CACHE.size > 50
-  result
-rescue StandardError => e
-  LOG.warn "prefetch_card_context failed for card ##{card_number}: #{e.message}"
-  ""
-end
-
-# Fetch card details from Fizzy. Returns array of text parts, or nil on failure.
-def fetch_card_details(card_number, repo_path:, env:)
-  card_output = run_cmd("fizzy", "card", "show", card_number.to_s, chdir: repo_path, env: env)
-  card_data = begin
-    JSON.parse(card_output)["data"]
-  rescue StandardError
-    nil
-  end
-  return [] unless card_data
-
-  parts = []
-  parts << "## Card ##{card_number}: #{card_data["title"]}"
-  parts << "Status: #{card_data["status"]}" if card_data["status"]
-  tags = (card_data["tags"] || []).map { |t| t.is_a?(Hash) ? t["name"] : t }
-  parts << "Tags: #{tags.join(", ")}" unless tags.empty?
-  body = card_data.dig("body", "plain_text") || card_data["body"]
-  parts << "\n#{body}" if body && !body.to_s.strip.empty?
-  parts
-rescue StandardError => e
-  LOG.warn "Could not pre-fetch card ##{card_number}: #{e.message}"
-  nil
-end
-
 # Fetch recent comments for a card. Returns array of text parts.
-def fetch_card_comments(card_number, repo_path:, env:)
-  comments_output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: repo_path, env: env)
-  comments_data = JSON.parse(comments_output)["data"] || []
-  return [] if comments_data.empty?
-
-  parts = []
-  total = comments_data.size
-  comments_data = comments_data.last(PREFETCH_COMMENT_LIMIT)
-  parts << "\n## Comments#{" (last #{PREFETCH_COMMENT_LIMIT} of #{total})" if total > PREFETCH_COMMENT_LIMIT}"
-  comments_data.each do |c|
-    author = c.dig("creator", "name") || "Unknown"
-    body = c.dig("body", "plain_text") || ""
-    cid = c["id"]
-    next if body.strip.empty?
-
-    body = "#{body[0...COMMENT_BODY_TRUNCATE_LENGTH]}… [truncated]" if body.length > COMMENT_BODY_TRUNCATE_LENGTH
-    parts << "\n### #{author} (comment ID: #{cid})\n#{body}"
-  end
-  parts
-rescue StandardError => e
-  LOG.warn "Could not pre-fetch comments for card ##{card_number}: #{e.message}"
-  []
-end
-
-def scrub_invalid_attachments!(dir)
-  attachments_dir = File.join(dir, ".fizzy-attachments")
-  return unless File.directory?(attachments_dir)
-
-  Dir.glob(File.join(attachments_dir, "*")).each do |file_path|
-    next unless File.file?(file_path)
-
-    file_type, _status = Open3.capture2("file", "--brief", "--mime-type", file_path)
-    unless file_type.strip.start_with?("image/")
-      LOG.warn "Removing invalid attachment #{file_path} (detected as: #{file_type.strip})"
-      FileUtils.rm_f(file_path)
-    end
-  end
-rescue StandardError => e
-  LOG.error "Error scrubbing attachments in #{dir}: #{e.message}"
-end
 
 # Extract the last N meaningful lines from an agent log for crash reporting.
 def extract_crash_snippet(log_file, max_lines: 20)
@@ -332,33 +179,23 @@ rescue StandardError => e
 end
 
 # Notify the originating channel that an agent crashed.
-# source: :fizzy, :github, :discord
+# source: :github, :discord, or plugin-registered sources
 # source_context: hash with channel-specific info needed to post the notification
 def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_context:, project_config:)
   agent_display = agent_name || "Agent"
   snippet = extract_crash_snippet(log_file)
   snippet_block = snippet ? "\n```\n#{snippet[-1500..]}\n```" : ""
 
+  # Try plugin-registered crash handlers first
+  handled = Brainiac.emit(:agent_crashed,
+                          exit_status: exit_status, log_file: log_file, agent_name: agent_display,
+                          source: source, source_context: source_context, project_config: project_config,
+                          snippet: snippet)
+
+  # If a plugin handled it for this source, we're done
+  return if handled.any?(source)
+
   case source
-  when :fizzy
-    card_number = source_context[:card_number]
-    return unless card_number
-
-    repo_path = project_config&.dig("repo_path") || Dir.pwd
-    body = "<p>💥 <strong>#{agent_display} crashed</strong> (exit code #{exit_status})</p>" \
-           "<p>Log: <code>#{log_file}</code></p>"
-    if snippet
-      escaped = snippet[-1500..].gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
-      body += "<pre>#{escaped}</pre>"
-    end
-    begin
-      run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", body,
-              chdir: repo_path, env: fizzy_env_for(agent_display))
-      LOG.info "[CrashNotify] Posted crash comment on Fizzy card ##{card_number}"
-    rescue StandardError => e
-      LOG.error "[CrashNotify] Failed to post Fizzy crash comment: #{e.message}"
-    end
-
   when :github
     pr_number = source_context[:pr_number]
     repo_name = source_context[:repo_name]
@@ -387,67 +224,6 @@ rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
 end
 
-# Append an italic PR/branch footer to the agent's most recent Fizzy comment.
-def append_fizzy_comment_footer(card_number, project_config:, agent_name: nil)
-  repo_path = project_config["repo_path"]
-  project_config["github_repo"]
-  env = fizzy_env_for(agent_name)
-
-  # Find branch and tracked PRs from card_map
-  card_map = load_card_map
-  card_info = card_map.values.find { |v| v["number"] == card_number }
-  branch = card_info&.dig("branch")
-  return unless branch
-
-  prs = card_info&.dig("prs") || []
-
-  # Build footer parts
-  parts = []
-  parts << "Branch: <code>#{branch}</code>"
-  prs.each { |pr| parts << "PR: <a href=\"#{pr["url"]}\">##{pr["number"]}</a>" }
-  return if parts.empty?
-
-  footer_html = "<p style=\"margin-top:12px;font-size:0.85em;color:#888;\"><em>#{parts.join(" · ")}</em></p>"
-
-  # Find agent's most recent comment
-  begin
-    output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: repo_path, env: env)
-    comments = (JSON.parse(output)["data"] || []).reverse
-    agent_display = fizzy_display_name(agent_name)
-    comment = comments.find { |c| c.dig("creator", "name") == agent_display && c.dig("body", "html")&.include?("<") }
-    return unless comment
-
-    existing_html = comment.dig("body", "html") || ""
-    # Don't double-append if footer already present
-    return if existing_html.include?("Branch: <code>#{branch}</code>")
-
-    # Strip Fizzy's outer wrapper — it re-wraps on update
-    inner = existing_html.sub(/\A\s*<div class="action-text-content">\s*/m, "").sub(%r{\s*</div>\s*\z}m, "")
-    updated_html = "#{inner}\n#{footer_html}"
-    run_cmd("fizzy", "comment", "update", comment["id"], "--card", card_number.to_s,
-            "--body", updated_html, chdir: repo_path, env: env)
-    LOG.info "[Footer] Appended PR/branch footer to comment #{comment["id"]} on card ##{card_number}"
-  rescue StandardError => e
-    LOG.warn "[Footer] Could not append footer to card ##{card_number}: #{e.message}"
-  end
-end
-
-def move_card_to_column(card_number, column_name, project_config:, agent_name: nil)
-  return unless card_number
-
-  board_key = board_key_for_project(project_config)
-  column_id = (board_key && board_column_id(board_key, column_name)) || DEFAULT_COLUMN_IDS[column_name]
-  return unless column_id
-
-  repo_path = project_config["repo_path"]
-  env = fizzy_env_for(agent_name || AI_AGENT_NAME)
-  run_cmd("fizzy", "card", "column", card_number.to_s, "--column", column_id, chdir: repo_path, env: env)
-  record_self_move(card_number)
-  LOG.info "[Column] Moved card ##{card_number} to #{column_name} (#{column_id})"
-rescue StandardError => e
-  LOG.warn "[Column] Failed to move card ##{card_number} to #{column_name}: #{e.message}"
-end
-
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
@@ -460,8 +236,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   # that has had a previous session, resume it. Only applies to follow-ups (not first dispatch).
   should_resume = resume && resolved["resume_flag"]
 
-  ensure_fizzy_yaml!(chdir, project_config)
-  Thread.new { scrub_invalid_attachments!(chdir) }
+  # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
+  Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)
 
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
   log_file = File.join(chdir, "tmp/agent-#{log_name}-#{timestamp}.log")
@@ -504,18 +280,6 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
            "model: #{model || "default"}), tail -f #{log_file}"
 
   [pid, log_file]
-end
-
-# Ensure .fizzy.yaml is present in the working directory (worktrees need a copy).
-def ensure_fizzy_yaml!(chdir, project_config)
-  fizzy_yaml_dest = File.join(chdir, ".fizzy.yaml")
-  return if File.exist?(fizzy_yaml_dest)
-
-  fizzy_yaml_src = File.join(project_config["repo_path"], ".fizzy.yaml")
-  return unless File.exist?(fizzy_yaml_src)
-
-  FileUtils.cp(fizzy_yaml_src, fizzy_yaml_dest)
-  LOG.info "Copied .fizzy.yaml to #{chdir}"
 end
 
 # Write agent prompt to a temp file, return path.
@@ -566,10 +330,18 @@ def handle_agent_completion(**ctx)
     )
   end
 
-  fizzy_card = ctx[:card_number] || ctx[:source_context][:card_number]
-  handle_fizzy_post_session(fizzy_card, agent_exit_status, agent_signaled, ctx[:agent_name], ctx[:chdir], ctx[:source], ctx[:source_context],
-                            ctx[:project_config], ctx[:skip_column_move])
-  handle_plan_finalization(ctx[:prompt_file], ctx[:agent_name], ctx[:project_config])
+  # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
+  Brainiac.emit(:agent_completed,
+                card_number: ctx[:card_number] || ctx[:source_context]&.dig(:card_number),
+                exit_status: agent_exit_status,
+                signaled: agent_signaled,
+                agent_name: ctx[:agent_name],
+                chdir: ctx[:chdir],
+                source: ctx[:source],
+                source_context: ctx[:source_context],
+                project_config: ctx[:project_config],
+                skip_column_move: ctx[:skip_column_move],
+                prompt_file: ctx[:prompt_file])
 
   qmd_out, qmd_status = Open3.capture2e("qmd", "update")
   if qmd_status.success?
@@ -589,55 +361,6 @@ def handle_agent_completion(**ctx)
   check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
 end
 
-def handle_fizzy_post_session(fizzy_card, exit_status, signaled, agent_name, chdir, source, source_context, project_config, skip_column_move)
-  return unless source == :fizzy && fizzy_card && exit_status&.zero? && !signaled
-
-  unless skip_column_move || card_merged?(fizzy_card)
-    move_card_to_column(fizzy_card, "needs_review", project_config: project_config,
-                                                    agent_name: agent_name)
-  end
-
-  append_fizzy_comment_footer(fizzy_card, project_config: project_config, agent_name: agent_name)
-
-  return unless source_context[:deploy_intent]
-
-  auto_deploy_after_session(
-    deploy_intent: source_context[:deploy_intent],
-    card_internal_id: source_context[:card_internal_id] || load_card_map.find { |_, v| v["number"] == fizzy_card }&.first,
-    card_number: fizzy_card,
-    worktree_path: chdir,
-    agent_name: agent_name
-  )
-end
-
-def handle_plan_finalization(prompt_file, agent_name, project_config)
-  return unless File.exist?(prompt_file)
-
-  prompt_content = File.read(prompt_file)
-  card_id_match = prompt_content.match(/CARD_ID.*?(\d+|discord-[\w-]+)/)
-  return unless card_id_match
-
-  card_id = card_id_match[1]
-  plan_file = File.join(PLANS_DIR, "card-#{card_id}-plan.md")
-  return unless File.exist?(plan_file)
-
-  LOG.info "[Planning] Plan file detected for card #{card_id}, finalizing..."
-  card_num = card_id.match?(/^\d+$/) ? card_id.to_i : nil
-  project_key = PROJECTS.find { |_k, v| v == project_config }&.first
-
-  result = finalize_plan(
-    card_id: card_id, card_number: card_num,
-    agent_name: agent_name || AI_AGENT_NAME,
-    project_key: project_key, repo_path: project_config["repo_path"]
-  )
-
-  if result[:success]
-    LOG.info "[Planning] Plan finalized: #{result[:tasks].size} tasks created"
-  else
-    LOG.error "[Planning] Failed to finalize plan: #{result[:error]}"
-  end
-end
-
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
   return unless project_key_for_restart == "brainiac" && head_before
 
@@ -647,18 +370,6 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
   else
     LOG.info "[Brainiac] #{agent_config_name || "agent"} session on brainiac had no changes — skipping restart"
   end
-end
-
-def authorized?(payload)
-  creator_id = payload.dig("creator", "id")
-  AUTHORIZED_USER_IDS.include?(creator_id)
-end
-
-def human_mentioned?(user_id)
-  return false unless FIZZY_CONFIG["authorized_users"]
-
-  user = FIZZY_CONFIG["authorized_users"].find { |u| u["id"] == user_id }
-  user && user["human"]
 end
 
 def detect_model(project_config, tags: [], text: "")
@@ -679,7 +390,7 @@ def detect_model(project_config, tags: [], text: "")
   resolved["agent_model"]
 end
 
-# Detect effort level from inline tags [effort:high] or Fizzy card tags (effort-high).
+# Detect effort level from inline tags [effort:high] or card tags (effort-high).
 # Returns the effort level string (e.g. "high") or nil.
 # If the requested level isn't supported by the current model, returns the closest
 # lower level from allowed_efforts.
@@ -687,20 +398,16 @@ def detect_effort(project_config, tags: [], text: "")
   resolved = resolve_project_cli_config(project_config)
   allowed = resolved["allowed_efforts"] || %w[low medium high xhigh max]
 
-  # Inline tag: [effort:high]
+  # Inline tag: [effort:high] — works in any channel
   if (match = text.match(/\[effort:(\w+)\]/i))
     level = match[1].downcase
     return resolve_effort_level(level, allowed) if allowed.include?(level)
   end
 
-  # Fizzy card tags: effort-high, effort-max
-  tags.each do |tag|
-    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
-    if name.start_with?("effort-")
-      level = name.sub("effort-", "")
-      return resolve_effort_level(level, allowed) if allowed.include?(level)
-    end
-  end
+  # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
+  results = Brainiac.emit(:detect_effort, tags: tags, allowed: allowed)
+  plugin_result = results.compact.first
+  return resolve_effort_level(plugin_result, allowed) if plugin_result
 
   resolved["agent_effort"]
 end

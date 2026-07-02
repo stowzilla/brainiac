@@ -39,7 +39,7 @@ def resolve_session_agent_name(card_key, info)
               else
                 "Unknown"
               end
-  fizzy_display_name(agent_key)
+  agent_display_name(agent_key)
 end
 
 def format_recent_sessions
@@ -109,7 +109,6 @@ post "/api/reload" do
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
   reload_github_config!(force: true)
-  reload_deployments_config!(force: true) if defined?(DEPLOYMENTS_CONFIG)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
     users: USER_REGISTRY["users"].size }.to_json
@@ -128,7 +127,7 @@ get "/api/roles" do
   if Dir.exist?(ROLES_DIR)
     Dir.glob(File.join(ROLES_DIR, "*.md")).each do |f|
       name = File.basename(f, ".md")
-      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, e| e["fizzy_name"] || k.capitalize }
+      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, _e| agent_display_name(k) }
       roles << { name: name, agents: agents }
     end
   end
@@ -208,21 +207,6 @@ post "/api/skills/curate" do
   content_type :json
   result = curate_skills
   result.to_json
-end
-
-# --- Card Index ---
-
-get "/api/card-index" do
-  content_type :json
-  halt 404, { error: "Card index not enabled (fizzy handler disabled)" }.to_json unless defined?(CARD_INDEX)
-
-  query = params["q"]
-  if query && !query.empty?
-    similar = CARD_INDEX.find_similar_cards(query)
-    { query: query, matches: similar, total_indexed: CARD_INDEX.size }.to_json
-  else
-    { total: CARD_INDEX.size, cards: CARD_INDEX }.to_json
-  end
 end
 
 # --- Dispatch Depth ---

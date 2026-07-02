@@ -11,8 +11,9 @@ require_relative "../shared"
 SELF_PATH = File.realpath(__FILE__)
 AGENTS = load_agent_config.freeze
 CONFIG = load_monitor_config.freeze
-FIZZY_ACCOUNT_ID = CONFIG["fizzy_account_id"]
-DISCORD_GUILD_ID = CONFIG["discord_guild_id"]
+
+# URL patterns for different session types — configured in ~/.brainiac/waybar.json or monitor config
+# Plugins can add their patterns here via the config file.
 
 LOG_VIEWER_PATH = File.join(File.dirname(SELF_PATH), "view_logs.rb")
 DEPLOY_SCRIPT_PATH = File.join(File.dirname(SELF_PATH), "deploy_env.rb")
@@ -30,22 +31,15 @@ def full_log_action(log_file)
   " | shell=#{OPEN_SCRIPT} param1=#{log_file.shellescape} terminal=false refresh=false"
 end
 
-def prompt_url(card_key)
-  return nil unless card_key
+def prompt_url(session)
+  # Prefer URL provided directly by the source plugin in session data
+  return session["url"] if session.is_a?(Hash) && session["url"]
 
-  if card_key.start_with?("card-")
-    card_num = card_key.split("-")[1]
-    "https://app.fizzy.do/#{FIZZY_ACCOUNT_ID}/cards/#{card_num}" if FIZZY_ACCOUNT_ID && card_num
-  elsif card_key.start_with?("discord-") && DISCORD_GUILD_ID
-    parts = card_key.split("-")
-    channel_id = parts[-2]
-    message_id = parts[-1]
-    "https://discord.com/channels/#{DISCORD_GUILD_ID}/#{channel_id}/#{message_id}" if channel_id && message_id
-  end
+  nil
 end
 
-def prompt_action(card_key)
-  url = prompt_url(card_key)
+def prompt_action(session)
+  url = prompt_url(session)
   url ? " | shell=#{OPEN_SCRIPT} param1=#{url} terminal=false refresh=false" : ""
 end
 
@@ -66,7 +60,7 @@ def render_session_submenu(session)
   lines << "-- ---" if session["log_file"]
   lines << "-- Tail Log#{log_action(session["log_file"])}" if session["log_file"]
   lines << "-- View Full Log#{full_log_action(session["log_file"])}" if session["log_file"]
-  lines << "-- Open Prompt#{prompt_action(session["card_key"])}" unless prompt_url(session["card_key"]).nil?
+  lines << "-- Open Prompt#{prompt_action(session)}" unless prompt_url(session).nil?
   wt = worktree_path(session["log_file"], session["card_key"])
   lines << "-- Open Worktree#{worktree_action(session["log_file"], session["card_key"])}" if wt
   lines

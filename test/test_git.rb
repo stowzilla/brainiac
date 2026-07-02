@@ -50,24 +50,11 @@ class TestGit < Minitest::Test
     assert File.exist?(File.join(wt_path, "marker.txt"))
   end
 
-  def test_find_worktree_for_card_nil_when_none
-    assert_nil find_worktree_for_card(999, repo_path: @repo_path)
-  end
-
-  def test_find_worktree_for_card_finds_existing
-    wt_path = File.join(@test_dir, "main-repo--fizzy-42-test-feature")
-    create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-42-test-feature",
-                             base_ref: "HEAD", worktree_path: wt_path)
-    result = find_worktree_for_card(42, repo_path: @repo_path)
-    assert result
-    assert_equal wt_path, result[:worktree]
-  end
-
   def test_cleanup_removes_clean_worktree
     wt_path = File.join(@test_dir, "main-repo--fizzy-55-cleanup")
     create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-55-cleanup",
                              base_ref: "HEAD", worktree_path: wt_path)
-    cleanup_card_worktrees(55, repo_path: @repo_path)
+    cleanup_work_item_worktrees(55, repo_path: @repo_path)
     refute File.directory?(wt_path)
   end
 
@@ -76,7 +63,7 @@ class TestGit < Minitest::Test
     create_or_reuse_worktree(repo_path: @repo_path, branch: "fizzy-56-dirty",
                              base_ref: "HEAD", worktree_path: wt_path)
     File.write(File.join(wt_path, "uncommitted.txt"), "dirty")
-    cleanup_card_worktrees(56, repo_path: @repo_path)
+    cleanup_work_item_worktrees(56, repo_path: @repo_path)
     assert File.directory?(wt_path)
   end
 

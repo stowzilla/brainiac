@@ -4,7 +4,6 @@
 #
 # Prompts are layered:
 #   PROMPT_CORE            — universal (identity, memory, brain, reflection)
-#   PROMPT_FIZZY_CHANNEL   — Fizzy-specific rules (HTML formatting, reactions, screenshots)
 #   PROMPT_DISCORD_CHANNEL — Discord-specific rules (markdown, response file, char limits)
 #   PROMPT_GITHUB_CHANNEL  — GitHub-specific rules (GFM, PR conventions)
 #
@@ -26,7 +25,7 @@ PROMPT_CORE = <<~PROMPT
   **At the very start of every session:**
   1. Read `{{MEMORY_DIR}}/card-{{CARD_ID}}.md`. If it contains content, it has context from your previous sessions. If the file is empty (first session on this card), just proceed without prior context.
 
-  **Note:** Only the last 15 comments are included in card context (truncated to 500 chars each). Your memory file is the authoritative record of prior discussions. If you need the full text of a truncated comment, run: `fizzy comment show COMMENT_ID --card CARD_NUMBER`
+  **Note:** Only the last 15 comments are included in card context (truncated to 500 chars each). Your memory file is the authoritative record of prior discussions.
 
   **Before you finish every session (even if you didn't complete the task):**
   2. Update your memory file at `{{MEMORY_DIR}}/card-{{CARD_ID}}.md`.
@@ -43,11 +42,11 @@ PROMPT_CORE = <<~PROMPT
   Relevant knowledge is automatically retrieved and included above in this prompt when available.
   You can also search manually: `qmd search "<query>" -c brainiac-knowledge`
 
-  **MANDATORY: Before running any non-standard CLI tool (fizzy, qmd, gh, project scripts) you haven't used in this session, search the brain first:**
+  **MANDATORY: Before running any non-standard CLI tool (qmd, gh, project scripts) you haven't used in this session, search the brain first:**
   ```
   qmd search "<tool-name>" -c brainiac-knowledge
   ```
-  Examples: `qmd search "fizzy" -c brainiac-knowledge`, `qmd search "qmd" -c brainiac-knowledge`
+  Examples: `qmd search "qmd" -c brainiac-knowledge`, `qmd search "gh" -c brainiac-knowledge`
 
   Standard unix commands (cd, ls, grep, cat, git, curl, etc.) don't need a brain search.
   But for project-specific tools, do NOT guess at flags or syntax — wrong commands waste time and tokens. Look it up first.
@@ -63,7 +62,7 @@ PROMPT_CORE = <<~PROMPT
 
   ### Persona (`{{PERSONA_DIR}}/`) — unique to you
   Communication style, tone, personality, how to interact with specific people.
-  **This is for all external communication, such as writing comments on Fizzy cards, Discord chat, and GitHub PRs.**
+  **This is for all external communication, such as writing comments on cards, Discord chat, and GitHub PRs.**
 
   Do NOT manually read persona files during coding/debugging — the auto-retrieved persona
   above already shapes your communication style. Focus on implementation during work phases,
@@ -119,7 +118,7 @@ PROMPT_CORE = <<~PROMPT
   - To discover project locations for cross-repo work, run: `brainiac list`
 
   **Limitations:** Subagents don't get your brain context, persona, or memory.
-  They can read files and run commands, but cannot post to Fizzy, Discord, or GitHub.
+  They can read files and run commands, but cannot post to Discord, GitHub, or other channels.
   They're excellent researchers — use them as such.
 
   ## Image Reading Limits
@@ -131,36 +130,8 @@ PROMPT
 # ---------------------------------------------------------------------------
 # PROMPT_PRE_POST_CHECK — inserted before PROMPT_REFLECTION so the agent
 # re-checks for new comments/messages before posting its response.
-# Channel-specific: Fizzy and GitHub get re-fetch instructions, Discord skips.
+# Channel-specific: plugins register pre-post checks, Discord skips.
 # ---------------------------------------------------------------------------
-PROMPT_PRE_POST_CHECK_FIZZY = <<~PROMPT
-  ## Pre-Post Comment Check (MANDATORY — do this BEFORE posting your comment)
-
-  Your session may have been running for a while. Before you post your final comment,
-  re-fetch the card to see if anything changed while you were working:
-
-  ```bash
-  fizzy card show {{CARD_NUMBER}}
-  fizzy comment list --card {{CARD_NUMBER}}
-  ```
-
-  Compare what you see now against the card context that was provided at the start
-  of your session. Check for:
-
-  **Card body changes:** If the card description was edited (new acceptance criteria,
-  clarified scope, updated requirements), adjust your work to match before posting.
-
-  **New comments:** If there are new comments that weren't in your original context:
-  1. **Read them carefully** — a human may have added context, changed requirements, or asked you to adjust something
-  2. **Decide how to respond:**
-     - If the new comment changes what you should build or how → adjust your work before posting
-     - If the new comment adds context that affects your response → incorporate it into your comment
-     - If the new comment is unrelated or just acknowledgment → proceed as planned, but mention you saw it
-  3. **Do NOT ignore new comments** — the whole point is to avoid posting a response that's already outdated
-
-  If nothing changed, proceed normally.
-
-PROMPT
 
 PROMPT_PRE_POST_CHECK_GITHUB = <<~PROMPT
   ## Pre-Post Comment Check (MANDATORY — do this BEFORE posting your comment)
@@ -216,46 +187,6 @@ PROMPT_REFLECTION = <<~PROMPT
 PROMPT
 
 # ---------------------------------------------------------------------------
-# PROMPT_FIZZY_CHANNEL — Fizzy-specific rules, prepended to Fizzy templates
-# ---------------------------------------------------------------------------
-PROMPT_FIZZY_CHANNEL = <<~PROMPT
-  ## Fizzy Channel Rules
-
-  ### Standard Procedure
-  - If you have questions, ask them in the card's comments.
-  - Only assign a fizzy card if it is currently unassigned and you are requested to work on it. Otherwise leave it, it will be managed by the users.
-
-  ### Column Transitions
-  Brainiac handles column moves automatically — do NOT move cards between columns yourself.
-  Cards move to "Right Now" when you're dispatched and to "Needs Review" when your session ends.
-
-  ### Formatting
-  **Fizzy comments use HTML, NOT Markdown.** Use `<h2>`/`<h3>` for sections, `<p>` for paragraphs, `<ul><li>` for lists, `<pre data-language="ruby">` for code blocks, `<strong>` for emphasis. Never use markdown syntax (`**bold**`, `- list`, `## heading`) in Fizzy comments — it renders as raw text.
-
-  ### Screenshots (MANDATORY for UI changes)
-  If you touched any `.js`, `.jsx`, `.css`, or `.html` in a web app directory and `./scripts/screenshot-page.sh` exists in the project, screenshot every affected page. Search the brain for "screenshot" if you need the full workflow.
-
-  **Before uploading, review your own screenshot:**
-  1. Read the screenshot image file
-  2. Check for: blank/white pages, obvious rendering errors, missing content, broken layouts, error messages, or anything that doesn't match what you expected
-  3. If the screenshot looks wrong, fix the underlying issue and retake (max 2 retries)
-  4. After 2 retries, upload whatever you have and note the display issue in your comment so the human knows it needs attention
-
-  Upload screenshots and embed them in your comment using `<action-text-attachment>`.
-
-  ### Card Memory Discipline (CRITICAL for long-running cards)
-  Cards evolve — scope expands, requirements shift, new acceptance criteria appear mid-work.
-  When writing your memory file for a Fizzy card session, you MUST include:
-  - The original card scope/requirements (from the card body at time of assignment)
-  - Any scope changes from comments (e.g. "also handle X while you're in there")
-  - Any card body edits you detected during pre-post check
-  - The current scope/focus as of this session
-  This is the ONLY way future sessions will know the full picture when the card body has changed
-  or key decisions were made in comments that fell outside the pre-fetched window.
-
-PROMPT
-
-# ---------------------------------------------------------------------------
 # PROMPT_DISCORD_CHANNEL — Discord-specific rules, prepended to Discord templates
 # ---------------------------------------------------------------------------
 PROMPT_DISCORD_CHANNEL = <<~PROMPT
@@ -284,7 +215,7 @@ PROMPT_DISCORD_CHANNEL = <<~PROMPT
   per message, though long responses will be split automatically.
 
   ### Scope
-  This is a conversational interaction — no Fizzy card, no PR. You're here to answer questions,
+  This is a conversational interaction — no card, no PR. You're here to answer questions,
   discuss code, share knowledge, or help with whatever the user needs.
 
   **Detect user intent:**
@@ -351,81 +282,8 @@ PROMPT_GITHUB_CHANNEL = <<~PROMPT
 
   ### Scope
   You are responding to activity on a GitHub PR. Focus on the code changes and review feedback.
-  When posting comments, post on the PR unless specifically asked to update the Fizzy card.
+  When posting comments, post on the PR unless specifically asked to update the card.
 
-PROMPT
-
-# ---------------------------------------------------------------------------
-# Situation templates — the specific "what happened" for each trigger type
-# ---------------------------------------------------------------------------
-
-PROMPT_CARD_ASSIGNED = <<~'PROMPT'
-  You have been assigned Fizzy card #{{CARD_NUMBER}}: "{{CARD_TITLE}}".
-  You are on branch "{{BRANCH}}" in a fresh worktree.
-  Implement the task, commit, push, and open a PR (link back to Fizzy).
-  When you're done, post a comment on the card with a concise summary, PR link, and branch name.
-
-  **MANDATORY: Always include the branch name in your comment.** Use this format:
-  `<p><strong>Branch:</strong> <code>{{BRANCH}}</code></p>`
-PROMPT
-
-PROMPT_FOLLOWUP_WORKTREE = <<~'PROMPT'
-  There's a new comment on Fizzy card #{{CARD_NUMBER}} that you've already started working on.
-  You are in the existing worktree for this card.
-
-  The comment that triggered this session is from {{COMMENT_CREATOR}} (comment ID: {{COMMENT_ID}}):
-  """
-  {{COMMENT_BODY}}
-  """
-
-  The card and its full comment history are provided above. Focus your response on the comment above.
-  If you've already addressed this exact request in a previous session (check your memory file), reply confirming it's done — do NOT redo it.
-  Otherwise, make the requested changes, commit, push, and update the PR.
-PROMPT
-
-PROMPT_FOLLOWUP_NO_WORKTREE = <<~PROMPT
-  There's a new comment on a Fizzy card (internal_id: "{{CARD_INTERNAL_ID}}") that you've been involved with.
-
-  The comment that triggered this session is from {{COMMENT_CREATOR}} (comment ID: {{COMMENT_ID}}):
-  """
-  {{COMMENT_BODY}}
-  """
-
-  The card and its full comment history are provided above. Focus your response on the comment above.
-  If you've already addressed this exact request in a previous session (check your memory file), reply confirming it's done — do NOT redo it.
-  Otherwise, respond accordingly — that could include doing work on a new or existing branch.
-PROMPT
-
-PROMPT_MENTION = <<~PROMPT
-  You were mentioned in a comment on a Fizzy card with internal_id "{{CARD_INTERNAL_ID}}"{{CARD_NUMBER_TEXT}}.
-  You are on branch "{{BRANCH}}" in a dedicated worktree for exploration and investigation.
-
-  Find the card and respond accordingly. You can:
-  - Investigate the codebase and provide your thoughts
-  - Make exploratory changes or create test files (they won't pollute the main branch)
-  - Create a PR if your exploration leads to a concrete solution
-PROMPT
-
-PROMPT_CROSS_AGENT_REVIEW = <<~'PROMPT'
-  You were tagged in a comment on Fizzy card #{{CARD_NUMBER}} (internal_id: "{{CARD_INTERNAL_ID}}").
-  This card is being worked on by {{CARD_AGENT}} — you're being brought in for your perspective.
-
-  The comment that tagged you is from {{COMMENT_CREATOR}} (comment ID: {{COMMENT_ID}}):
-  """
-  {{COMMENT_BODY}}
-  """
-
-  The card and its full comment history are provided above. Also check any linked PR to understand the current state.
-  Then respond to what's being asked of you — that might be a code review, an opinion on
-  an approach, debugging help, or just a sanity check.
-
-  You are in your own worktree at `{{WORKTREE_PATH}}` on branch `{{BRANCH}}`.
-  This is separate from {{CARD_AGENT}}'s worktree — you can read code, make changes, and
-  commit without affecting their work or the main repo.
-
-  **IMPORTANT: Do NOT @mention any other agents in your response.** You were brought in for
-  a one-shot review. If you think another agent should be involved, say so in plain text
-  but do NOT use @Agent syntax — tagging agents creates automated dispatches.
 PROMPT
 
 PROMPT_DISCORD = <<~'PROMPT'
@@ -447,7 +305,7 @@ PROMPT_DISCORD = <<~'PROMPT'
 PROMPT
 
 PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
-  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for Fizzy card #{{CARD_NUMBER}}.
+  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
 
   Comment:
   {{COMMENT_BODY}}
@@ -462,7 +320,7 @@ PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
 PROMPT
 
 PROMPT_GITHUB_PR_REVIEW = <<~'PROMPT'
-  A code review has been submitted on your PR #{{PR_NUMBER}} for Fizzy card #{{CARD_NUMBER}}.
+  A code review has been submitted on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
 
   {{REVIEW_CONTEXT}}
 
@@ -480,11 +338,11 @@ PROMPT
 # Channel constant mapping for render_prompt
 # ---------------------------------------------------------------------------
 PROMPT_GITHUB_UAT = <<~'PROMPT'
-  PR #{{PR_NUMBER}} has been merged into main for Fizzy card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
+  PR #{{PR_NUMBER}} has been merged into main for card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
 
   The card has been moved to the UAT column. The changes are now deployed to the UAT environment.
 
-  Your job: post a comment on Fizzy card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
+  Your job: post a comment on card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
   1. What URL(s) or screen(s) to visit
   2. Step-by-step actions to verify the feature works
   3. What the expected behavior should be
@@ -497,7 +355,6 @@ PROMPT_GITHUB_UAT = <<~'PROMPT'
 PROMPT
 
 CHANNEL_PROMPTS = {
-  fizzy: PROMPT_FIZZY_CHANNEL,
   discord: PROMPT_DISCORD_CHANNEL,
   github: PROMPT_GITHUB_CHANNEL
 }.freeze
@@ -505,30 +362,32 @@ CHANNEL_PROMPTS = {
 # ---------------------------------------------------------------------------
 # render_prompt — composes PROMPT_CORE + channel rules + situation template
 #
-#   channel: :fizzy (default), :discord, or :github
+#   channel: :discord, :github, or plugin-registered channels (e.g., :fizzy, :linear)
 # ---------------------------------------------------------------------------
-DEFAULT_COLUMN_IDS = {
-  "right_now" => "03f5xa5q9fog9592pa1279dts",
-  "needs_review" => "03f5ykobhpsd78hbuvajtn8g8",
-  "uat" => "03fsmglsr6az06ppyotawsti8"
-}.freeze
 
-def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :fizzy, board_key: nil)
+# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :discord, board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
   result += card_context unless card_context.empty?
   result += PROMPT_CORE
-  result += CHANNEL_PROMPTS.fetch(channel, PROMPT_FIZZY_CHANNEL)
+
+  # Channel prompt: check plugin-registered prompts first, then built-in
+  plugin_prompt = Brainiac.channel_prompts[channel]
+  result += plugin_prompt || CHANNEL_PROMPTS.fetch(channel, PROMPT_DISCORD_CHANNEL)
+
   result += template
 
-  # Pre-post comment check: tell the agent to re-fetch comments before posting.
-  # Discord skips this — its supersede mechanism handles mid-session updates differently.
-  case channel
-  when :fizzy   then result += PROMPT_PRE_POST_CHECK_FIZZY
-  when :github  then result += PROMPT_PRE_POST_CHECK_GITHUB
+  # Pre-post comment check: plugin-registered or built-in
+  plugin_pre_post = Brainiac.channel_pre_post_checks[channel]
+  if plugin_pre_post
+    result += plugin_pre_post
+  elsif channel == :github
+    result += PROMPT_PRE_POST_CHECK_GITHUB
   end
 
-  result += PROMPT_REFLECTION
+  # Reflection prompt — skip for Discord (causes crashes in post-task phase)
+  result += PROMPT_REFLECTION unless channel == :discord
 
   vars["KNOWLEDGE_DIR"] ||= KNOWLEDGE_DIR
   vars["MEMORY_DIR"] ||= memory_dir_for(agent_name)
@@ -537,9 +396,11 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
   vars["AGENT_NAME"] ||= agent_name
 
   # Populate column IDs from board config, falling back to defaults
-  DEFAULT_COLUMN_IDS.each do |col_name, default_id|
-    var_name = "#{col_name.upcase}_COLUMN_ID"
-    vars[var_name] ||= (board_key && board_column_id(board_key, col_name)) || default_id
+  if defined?(DEFAULT_COLUMN_IDS)
+    DEFAULT_COLUMN_IDS.each do |col_name, default_id|
+      var_name = "#{col_name.upcase}_COLUMN_ID"
+      vars[var_name] ||= (board_key && board_column_id(board_key, col_name)) || default_id
+    end
   end
 
   # Touch memory file if CARD_ID is present — ensures file exists before agent tries to read it
@@ -556,6 +417,7 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
   vars.each { |key, val| result.gsub!("{{#{key}}}", val.to_s) }
   result
 end
+# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 # Lean prompt for resumed sessions. The previous session already has the full context
 # (role, persona, knowledge, core instructions, channel prompts). We only send the new

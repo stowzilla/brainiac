@@ -5,14 +5,9 @@
 # Fallback column ID for backwards compatibility when no board config exists
 DEFAULT_UAT_COLUMN_ID = "03fsmglsr6az06ppyotawsti8"
 
-def uat_column_id(project_config)
-  bk = board_key_for_project(project_config)
-  (bk && board_column_id(bk, "uat")) || DEFAULT_UAT_COLUMN_ID
-end
-
-# Find a Fizzy card by matching the PR's head branch to a branch in the card map.
-def find_card_by_branch(branch)
-  map = load_card_map
+# Find a work item by matching the PR's head branch to a branch in the card map.
+def find_work_item_by_branch(branch)
+  map = load_work_item_map
   map.each do |internal_id, info|
     next unless info["branch"] == branch
 
@@ -21,14 +16,14 @@ def find_card_by_branch(branch)
   nil
 end
 
-# Track a newly opened PR in the card map by matching its branch.
-def track_pr_in_card_map(payload)
+# Track a newly opened PR in the work item map by matching its branch.
+def track_pr_in_work_items(payload)
   pr = payload["pull_request"]
   branch = pr.dig("head", "ref")
   pr_number = pr["number"]
   pr_url = pr["html_url"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
     LOG.info "[PR Track] No card found for branch #{branch}"
     return
@@ -41,9 +36,9 @@ def track_pr_in_card_map(payload)
   prs << { "number" => pr_number, "url" => pr_url }
   card_info["prs"] = prs
 
-  map = load_card_map
+  map = load_work_item_map
   map[internal_id] = card_info
-  save_card_map(map)
+  save_work_item_map(map)
   LOG.info "[PR Track] Tracked PR ##{pr_number} on card ##{card_info["number"]} (branch: #{branch})"
 end
 
@@ -57,15 +52,6 @@ rescue StandardError => e
 end
 
 # Check if a PR link is already present in the card's comments.
-def pr_link_already_commented?(card_number, pr_url, chdir:, env: default_fizzy_env)
-  output = run_cmd("fizzy", "comment", "list", "--card", card_number.to_s, chdir: chdir, env: env)
-  data = JSON.parse(output)
-  comments = data["data"] || []
-  comments.any? { |c| (c.dig("body", "plain_text") || "").include?(pr_url) }
-rescue StandardError => e
-  LOG.warn "Could not check existing comments for card ##{card_number}: #{e.message}"
-  false
-end
 
 def handle_github_pr_merged(payload)
   pr = payload["pull_request"]
@@ -90,9 +76,9 @@ def handle_github_pr_merged(payload)
   project_key, project_config = project_result
   repo_path = project_config["repo_path"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
-    LOG.info "No Fizzy card found for branch #{branch}"
+    LOG.info "No card found for branch #{branch}"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
   end
 
@@ -113,38 +99,21 @@ rescue StandardError => e
 end
 
 def process_merged_pr(card_info, card_number, branch, pull_request, pr_url, pr_title, project_key, project_config, repo_path)
-  card_agent = card_info["agent"]
-  card_fizzy_env = fizzy_env_for(card_agent)
+  mark_work_item_merged(card_number)
+  cleanup_work_item_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
 
-  unless pr_link_already_commented?(card_number, pr_url, chdir: repo_path, env: card_fizzy_env)
-    comment_body = "<p>PR merged into main: <a href=\"#{pr_url}\">#{pr_title}</a></p><p>Branch: <code>#{branch}</code></p>"
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", comment_body, chdir: repo_path, env: card_fizzy_env)
-  end
-
-  mark_card_merged(card_number)
-  run_cmd("fizzy", "card", "column", card_number.to_s, "--column", uat_column_id(project_config), chdir: repo_path, env: card_fizzy_env)
-  record_self_move(card_number)
-  cleanup_card_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
-  clear_deployment_for_card(card_number)
-
-  agent_name = card_agent || agent_name_for(project_config)
-  card_title = card_info["title"] || pr_title
-  dispatch_uat_agent(card_number, card_title, pull_request["number"].to_s, agent_name, project_key, project_config, repo_path)
-end
-
-def dispatch_uat_agent(card_number, card_title, pr_number, agent_name, project_key, project_config, repo_path)
-  prompt = render_prompt(PROMPT_GITHUB_UAT,
-                         { "CARD_NUMBER" => card_number, "CARD_TITLE" => card_title, "PR_NUMBER" => pr_number },
-                         brain_context: build_brain_context(agent_name: agent_name, card_number: card_number,
-                                                            card_title: card_title, project_key: project_key),
-                         agent_name: agent_name, channel: :fizzy,
-                         board_key: board_key_for_project(project_config))
-
-  pid, log_file = run_agent(prompt, project_config: project_config, chdir: repo_path,
-                                    log_name: "uat-#{card_number}", agent_name: agent_name,
-                                    source: :fizzy, source_context: { card_number: card_number }, skip_column_move: true)
-  register_session("card-#{card_number}", pid, log_file: log_file, agent_name: agent_name)
-  LOG.info "Dispatched #{agent_name} for UAT testing steps on card ##{card_number}"
+  # Emit hook — plugins handle their own post-merge actions
+  # (e.g., card plugin posts PR link, moves card column, dispatches UAT agent)
+  Brainiac.emit(:pr_merged,
+                card_number: card_number,
+                card_info: card_info,
+                branch: branch,
+                pull_request: pull_request,
+                pr_url: pr_url,
+                pr_title: pr_title,
+                project_key: project_key,
+                project_config: project_config,
+                repo_path: repo_path)
 end
 
 def handle_github_issue_comment(payload)
@@ -173,9 +142,9 @@ def handle_github_issue_comment(payload)
                     chdir: project_config["repo_path"])
   branch = JSON.parse(pr_data)["branch"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   unless result
-    LOG.info "No Fizzy card found for PR ##{pr_number} (branch: #{branch})"
+    LOG.info "No card found for PR ##{pr_number} (branch: #{branch})"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
   end
 
@@ -265,54 +234,18 @@ rescue StandardError => e
 end
 
 def close_uat_cards_after_deploy(project_key, project_config)
-  repo_path = project_config["repo_path"]
-  output = run_cmd("fizzy", "card", "list", "--column", uat_column_id(project_config), "--all",
-                   chdir: repo_path, env: default_fizzy_env)
-  card_list = JSON.parse(output)["data"] || []
+  # Emit hook — work item plugins handle closing cards after production deploy
+  results = Brainiac.emit(:production_deployed, project_key: project_key, project_config: project_config)
+  closed_cards = results.flatten.compact
 
-  if card_list.empty?
-    LOG.info "No cards in UAT column — nothing to close"
-    return [200, { status: "processed", action: "no_uat_cards", project: project_key }.to_json]
+  if closed_cards.any?
+    send_deploy_notification(project_key, closed_cards)
+    LOG.info "Prod deploy complete — closed #{closed_cards.size} cards"
+  else
+    LOG.info "Prod deploy processed — no cards closed (plugin may not be installed)"
   end
 
-  closed_cards = close_and_cleanup_uat_cards(card_list, repo_path)
-  send_deploy_notification(project_key, closed_cards) if closed_cards.any?
-
-  LOG.info "Prod deploy complete — closed #{closed_cards.size} UAT cards: #{closed_cards.map { |c| c[:number] }.join(", ")}"
-  [200, { status: "processed", action: "prod_deploy_closed_uat",
-          closed_cards: closed_cards.map { |c| c[:number] }, project: project_key }.to_json]
-end
-
-def close_and_cleanup_uat_cards(card_list, repo_path)
-  closed_cards = []
-  map = load_card_map
-
-  card_list.each do |card|
-    card_number = card["number"]
-    next unless card_number
-
-    map_entry = map.values.find { |info| info["number"] == card_number }
-    agent_name = map_entry["agent"] if map_entry
-    env = agent_name ? fizzy_env_for(agent_name) : default_fizzy_env
-
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s,
-            "--body", "<p>✅ Deployed to production. Closing card.</p>", chdir: repo_path, env: env)
-    run_cmd("fizzy", "card", "close", card_number.to_s, chdir: repo_path, env: env)
-
-    cleanup_card_worktrees(card_number, repo_path: repo_path,
-                                        primary_worktree: map_entry&.dig("worktree"), primary_branch: map_entry&.dig("branch"))
-
-    if map_entry
-      internal_id = map.key(map_entry)
-      map.delete(internal_id)
-    end
-
-    closed_cards << { number: card_number, url: card["url"], title: card["title"] }
-    LOG.info "Closed UAT card ##{card_number} after prod deploy (agent: #{agent_name || "default"})"
-  end
-
-  save_card_map(map) if closed_cards.any?
-  closed_cards
+  [200, { status: "processed", action: "prod_deploy", closed_cards: closed_cards.map { |c| c[:number] }, project: project_key }.to_json]
 end
 
 def send_deploy_notification(project_key, closed_cards)
@@ -385,7 +318,7 @@ def handle_github_pr_review_submitted(payload)
   project_key, project_config = project_result
   repo_path = project_config["repo_path"]
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   return [200, { status: "ignored", reason: "no matching card" }.to_json] unless result
 
   internal_id, card_info = result
@@ -417,13 +350,9 @@ def dispatch_pr_review(card_number, card_key, card_info, pr_number, review, revi
   end
 
   agent_name = agent_name_for(project_config)
-  Thread.new do
-    status_comment = "<p>🔄 Code review received from @#{reviewer}. Updates in progress...</p>"
-    run_cmd("fizzy", "comment", "create", "--card", card_number.to_s, "--body", status_comment,
-            chdir: repo_path, env: fizzy_env_for(agent_name))
-  rescue StandardError => e
-    LOG.warn "Could not post status update to card ##{card_number}: #{e.message}"
-  end
+  # Notify work item system that a review was received (plugin posts status comment)
+  Brainiac.emit(:pr_review_received, card_number: card_number, reviewer: reviewer,
+                                     agent_name: agent_name, project_config: project_config, repo_path: repo_path)
 
   review_context = build_review_context(reviewer, review, pr_number, repo_name)
   worktree = card_info["worktree"]
@@ -462,7 +391,7 @@ def handle_github_pr_synchronized(payload)
   pr = payload["pull_request"]
   branch = pr.dig("head", "ref")
 
-  result = find_card_by_branch(branch)
+  result = find_work_item_by_branch(branch)
   return [200, { status: "ignored", reason: "no matching card" }.to_json] unless result
 
   _internal_id, card_info = result
@@ -471,65 +400,16 @@ def handle_github_pr_synchronized(payload)
 
   return [200, { status: "ignored", reason: "no worktree" }.to_json] unless worktree && File.directory?(worktree)
 
-  state = load_deployment_state
-  config = DEPLOYMENTS_CONFIG["environments"] || {}
-  env_key = state.find { |_k, v| v["card_number"] == card_number && v["status"] == "occupied" }&.first
+  # Emit hook — deployment plugin handles sync-deploy logic
+  results = Brainiac.emit(:pr_synchronized, card_number: card_number, card_info: card_info,
+                                            worktree: worktree, pull_request: pr, branch: branch)
 
-  return [200, { status: "ignored", reason: "card not deployed" }.to_json] unless env_key
-
-  env_owner = config.dig(env_key, "owner")
-  return [200, { status: "ignored", reason: "not env owner" }.to_json] unless env_owner && env_owner.downcase == AI_AGENT_NAME.downcase
-
-  return [200, { status: "ignored", reason: "deploy cooldown" }.to_json] if on_deploy_cooldown?(env_key)
-
-  touch_deploy_cooldown(env_key)
-
-  system("git", "pull", "--ff-only", chdir: worktree)
-  deploy_script = File.join(worktree, "scripts", "deploy.sh")
-  return [200, { status: "ignored", reason: "no deploy script" }.to_json] unless File.exist?(deploy_script)
-
-  LOG.info "[PR Sync] Auto-deploying card ##{card_number} to #{env_key} (PR updated)"
-  mark_deploying(env_key, worktree_path: worktree)
-  run_pr_sync_deploy(env_key, card_number, worktree, config)
-
-  [200, { status: "processed", action: "pr_sync_deploy", card: card_number, env: env_key }.to_json]
+  if results.any?
+    [200, { status: "processed", action: "pr_sync", card: card_number }.to_json]
+  else
+    [200, { status: "ignored", reason: "no deployment plugin" }.to_json]
+  end
 rescue StandardError => e
   LOG.error "[PR Sync] Error: #{e.message}"
   [500, { error: e.message }.to_json]
-end
-
-def run_pr_sync_deploy(env_key, card_number, worktree, config)
-  Thread.new do
-    deploy_env = {}
-    aws_profile = config.dig(env_key, "aws_profile")
-    deploy_env["AWS_PROFILE"] = aws_profile if aws_profile
-    deploy_script = File.join(worktree, "scripts", "deploy.sh")
-
-    stdout, stderr, status = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree)
-
-    if status.success?
-      deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "pr-sync")
-      LOG.info "[PR Sync] Deploy to #{env_key} succeeded for card ##{card_number}"
-    elsif terraform_lock_error?(stdout, stderr)
-      retry_pr_sync_deploy(deploy_env, deploy_script, env_key, card_number, worktree)
-    else
-      record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
-      LOG.error "[PR Sync] Deploy to #{env_key} failed for card ##{card_number}"
-    end
-  end
-end
-
-def retry_pr_sync_deploy(deploy_env, deploy_script, env_key, card_number, worktree)
-  infra_dir = File.join(worktree, "infrastructure/#{env_key}")
-  FileUtils.rm_f(File.join(infra_dir, ".terraform.lock.hcl"))
-  Open3.capture3("terraform", "init", "-upgrade", chdir: infra_dir)
-  stdout, stderr, status = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree)
-
-  if status.success?
-    deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "pr-sync")
-    LOG.info "[PR Sync] Deploy to #{env_key} succeeded (after terraform lock fix) for card ##{card_number}"
-  else
-    record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
-    LOG.error "[PR Sync] Deploy to #{env_key} failed (after retry) for card ##{card_number}"
-  end
 end

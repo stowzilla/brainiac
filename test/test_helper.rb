@@ -33,36 +33,17 @@ ENV["LOG_LEVEL"] = "error"
 
 # Write agent registry
 agent_data = {
-  "galen" => { "fizzy_name" => "Galen", "local" => true,
-               "env" => { "FIZZY_TOKEN" => "fizzy_galen_token", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
-  "glados" => { "fizzy_name" => "GLaDOS", "local" => true,
-                "env" => { "FIZZY_TOKEN" => "fizzy_glados_token", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
-  "kaylee" => { "fizzy_name" => "Kaylee", "local" => false,
-                "env" => { "FIZZY_TOKEN" => "fizzy_kaylee_token" } },
-  "sleeper-service" => { "fizzy_name" => "Sleeper Service", "local" => false,
+  "galen" => { "display_name" => "Galen", "local" => true,
+               "env" => { "SERVICE_TOKEN" => "token_galen", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
+  "glados" => { "display_name" => "GLaDOS", "local" => true,
+                "env" => { "SERVICE_TOKEN" => "token_glados", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
+  "kaylee" => { "display_name" => "Kaylee", "local" => false,
+                "env" => { "SERVICE_TOKEN" => "token_kaylee" } },
+  "sleeper-service" => { "display_name" => "Sleeper Service", "local" => false,
                          "env" => {} },
-  "threepio" => { "fizzy_name" => "Threepio", "local" => false, "env" => {} }
+  "threepio" => { "display_name" => "Threepio", "local" => false, "env" => {} }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "agents.json"), JSON.generate(agent_data))
-
-# Write fizzy config
-fizzy_data = {
-  "authorized_users" => [
-    { "id" => "user-1", "name" => "Andy", "human" => true },
-    { "id" => "user-2", "name" => "Adam", "human" => true },
-    { "id" => "agent-1", "name" => "Galen", "human" => false },
-    { "id" => "agent-2", "name" => "GLaDOS", "human" => false }
-  ],
-  "boards" => {
-    "development" => {
-      "board_id" => "board-123",
-      "webhook_secret" => "dev-board-secret",
-      "columns" => { "right_now" => "col-1", "needs_review" => "col-2",
-                     "uat" => "col-3" }
-    }
-  }
-}
-File.write(File.join(TEST_BRAINIAC_DIR, "fizzy.json"), JSON.generate(fizzy_data))
 
 # Write GitHub config
 File.write(File.join(TEST_BRAINIAC_DIR, "github.json"), JSON.generate({
@@ -73,7 +54,7 @@ File.write(File.join(TEST_BRAINIAC_DIR, "github.json"), JSON.generate({
 project_data = {
   "marketplace" => {
     "repo_path" => "/home/test/Code/marketplace",
-    "fizzy_tags" => %w[marketplace mp],
+    "tags" => %w[marketplace mp],
     "github_repo" => "stowzilla/marketplace",
     "agent_cli" => "kiro-cli",
     "agent_cli_args" => "chat --no-interactive",
@@ -88,7 +69,7 @@ project_data = {
   },
   "brainiac" => {
     "repo_path" => "/home/test/Code/brainiac",
-    "fizzy_tags" => ["brainiac"],
+    "tags" => ["brainiac"],
     "github_repo" => "stowzilla/brainiac",
     "default" => true
   }
@@ -113,8 +94,7 @@ user_data = {
       "identities" => {
         "discord" => { "username" => "ardavis",
                        "user_id" => "397928984232591361" },
-        "github" => { "username" => "ardavis" },
-        "fizzy" => { "username" => "andy-davis" }
+        "github" => { "username" => "ardavis" }
       },
       "aliases" => ["Andy"]
     },
@@ -123,8 +103,7 @@ user_data = {
       "identities" => {
         "discord" => { "username" => "fladamd",
                        "user_id" => "832331260088287242" },
-        "github" => { "username" => "dalton" },
-        "fizzy" => { "username" => "adam-dalton" }
+        "github" => { "username" => "dalton" }
       },
       "aliases" => []
     },
@@ -142,7 +121,7 @@ File.write(File.join(TEST_BRAINIAC_DIR, "users.json"), JSON.generate(user_data))
 # Write brainiac.json (handler config)
 brainiac_data = {
   "default_agent" => "Galen",
-  "handlers" => { "fizzy" => true, "github" => true, "discord" => true,
+  "handlers" => { "github" => true, "discord" => true,
                   "zoho" => false }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "brainiac.json"), JSON.generate(brainiac_data))
@@ -155,12 +134,12 @@ $LOAD_PATH.unshift File.expand_path("..", __dir__)
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 
 # --- Load brainiac modules ONCE for all tests ---
+require_relative "../lib/brainiac/hooks"
 require_relative "../lib/brainiac/config"
 require_relative "../lib/brainiac/users"
 require_relative "../lib/brainiac/agents"
 require_relative "../lib/brainiac/brain"
 require_relative "../lib/brainiac/sessions"
-require_relative "../lib/brainiac/planning"
 require_relative "../lib/brainiac/helpers"
 require_relative "../lib/brainiac/handlers/shared/inline_tags"
 require_relative "../lib/brainiac/handlers/shared/git"
@@ -178,21 +157,16 @@ def run_agent(prompt:, agent_name:, worktree:, project_config:, session_key:, lo
 end
 
 def auto_inject_skills(_context) = ""
-def render_prompt(_template, _vars, brain_context: "", agent_name: nil, channel: :fizzy) = "rendered prompt"
+def render_prompt(_template, _vars, brain_context: "", agent_name: nil, channel: :discord) = "rendered prompt"
 def role_content_for(_agent_name) = nil
 $VERBOSE = verbose
 
-# Load fizzy comment handler (needs prompts stub)
 PROMPT_FOLLOWUP_NO_WORKTREE = "Stub prompt" unless defined?(PROMPT_FOLLOWUP_NO_WORKTREE)
 PROMPT_FOLLOWUP_COMMENT = "Stub prompt" unless defined?(PROMPT_FOLLOWUP_COMMENT)
 PROMPT_CROSS_AGENT_REVIEW = "Stub prompt" unless defined?(PROMPT_CROSS_AGENT_REVIEW)
 PROMPT_CARD_ASSIGNED = "Stub prompt" unless defined?(PROMPT_CARD_ASSIGNED)
 PROMPT_NEW_MENTION = "Stub prompt" unless defined?(PROMPT_NEW_MENTION)
 
-require_relative "../lib/brainiac/handlers/fizzy/comments"
-require_relative "../lib/brainiac/handlers/fizzy/assignment"
-
-# Stub deploy handler (lives in fizzy/deploy.rb which we don't load)
 def handle_deploy_comment(_eventable, _text, _card_id) = [200, { status: "deploy_handled" }.to_json]
 
 # Cleanup

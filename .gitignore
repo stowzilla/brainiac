@@ -3,6 +3,7 @@ pkg/
 *.gem
 *.log
 card_map.json
+work_items.json
 users.json
 discord.json
 .fizzy.yaml

@@ -156,30 +156,17 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   worktree_path
 end
 
-# Find an existing worktree for a card by scanning the filesystem.
-def find_worktree_for_card(card_number, repo_path:)
-  return nil unless card_number
-
-  repo_dir = File.dirname(repo_path)
-  repo_base = File.basename(repo_path)
-  candidates = Dir.glob(File.join(repo_dir, "#{repo_base}--fizzy-#{card_number}-*")).select { |d| File.directory?(d) }
-  return nil if candidates.empty?
-
-  worktree = candidates.first
-  branch = File.basename(worktree).sub("#{repo_base}--", "")
-  { worktree: worktree, branch: branch }
-end
-
-# Clean up all worktrees associated with a card (primary + cross-agent review).
+# Clean up all worktrees associated with a work item (primary + cross-agent review).
 # Safe: skips worktrees with uncommitted changes.
-def cleanup_card_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
+def cleanup_work_item_worktrees(card_number, repo_path:, primary_worktree: nil, primary_branch: nil)
   return unless card_number
 
   repo_dir = File.dirname(repo_path)
   repo_base = File.basename(repo_path)
   cleaned = 0
 
-  candidates = Dir.glob(File.join(repo_dir, "#{repo_base}--*fizzy-#{card_number}-*")).select { |d| File.directory?(d) }
+  # Find worktrees that contain the work item number in their name (any naming convention)
+  candidates = Dir.glob(File.join(repo_dir, "#{repo_base}--*#{card_number}*")).select { |d| File.directory?(d) }
   candidates << primary_worktree if primary_worktree && File.directory?(primary_worktree) && !candidates.include?(primary_worktree)
 
   candidates.uniq.each do |wt_path|

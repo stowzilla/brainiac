@@ -162,9 +162,6 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
   primary_query = topics.first(5).join(" ")
   primary_query = "project conventions" if primary_query.empty?
 
-  fizzy_mentioned = [card_title, comment_body].any? { |s| s&.match?(/fizzy/i) }
-  fizzy_originated = source == :fizzy
-
   search_queries = [primary_query]
 
   knowledge_threads = [
@@ -173,9 +170,12 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
   ]
   search_queries << agent_name
 
-  if fizzy_mentioned || fizzy_originated
-    knowledge_threads << Thread.new { query_brain("fizzy CLI commands", scope: :knowledge, max_results: 2) }
-    search_queries << "fizzy CLI commands"
+  # Plugin hook: source-specific brain queries (e.g., plugins inject source-specific knowledge)
+  plugin_queries = Brainiac.emit(:build_brain_context,
+                                 source: source, card_title: card_title, comment_body: comment_body)
+  plugin_queries.flatten.compact.each do |query|
+    knowledge_threads << Thread.new { query_brain(query, scope: :knowledge, max_results: 2) }
+    search_queries << query
   end
 
   persona_thread = Thread.new { query_brain("personality tone voice communication style", agent_name: agent_name, scope: :persona, max_results: 5) }

@@ -7,10 +7,10 @@
 #
 #   {
 #     "galen": {
-#       "fizzy_name": "Galen",
+#       "display_name": "Galen",
 #       "local": true,
 #       "env": {
-#         "FIZZY_TOKEN": "fizzy_abc...",
+#         "SOME_TOKEN": "token_abc...",
 #         "DISCORD_BOT_TOKEN": "Bot_abc..."
 #       }
 #     }
@@ -70,30 +70,17 @@ def agent_env_var(agent_name, var_name)
   agent_env_for(agent_name)[var_name]
 end
 
-# Convenience: get the Fizzy token for an agent.
-def fizzy_token_for(agent_name)
-  agent_env_var(agent_name, "FIZZY_TOKEN")
-end
-
-# Convenience: build env hash for fizzy CLI calls (backward compat).
-# Falls back to default agent token when the given agent has no token.
-def fizzy_env_for(agent_name)
-  token = fizzy_token_for(agent_name) || fizzy_token_for(AI_AGENT_NAME)
-  token ? { "FIZZY_TOKEN" => token } : {}
-end
-
-def default_fizzy_env
-  fizzy_env_for(AI_AGENT_NAME)
-end
-
-def fizzy_display_name(agent_name)
+# Get the display name for an agent (from agents.json registry).
+# This is the human-readable canonical name (e.g., "GLaDOS" not "glados").
+# Core owns this — it's the identity used across all channels and plugins.
+def agent_display_name(agent_name)
   return agent_name unless agent_name
 
   key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
   entry = AGENT_REGISTRY[key]
   return agent_name unless entry.is_a?(Hash)
 
-  entry["fizzy_name"] || agent_name
+  entry["display_name"] || agent_name
 end
 
 # Get the role name(s) configured for an agent in agents.json.
@@ -132,7 +119,7 @@ end
 
 def agent_roster
   roster = {}
-  all_agent_names.each { |name| roster[name.downcase] = fizzy_display_name(name) }
+  all_agent_names.each { |name| roster[name.downcase] = agent_display_name(name) }
   roster
 end
 
@@ -153,9 +140,9 @@ def all_agent_names
   names = Set.new([AI_AGENT_NAME])
   PROJECTS.each_value { |config| names << config["agent_name"] if config["agent_name"] }
   discover_kiro_agents.each { |name| names << name.capitalize }
-  # Include agents from the registry (with their fizzy_name if specified)
+  # Include agents from the registry
   AGENT_REGISTRY.each do |key, entry|
-    names << (entry["fizzy_name"] || key.capitalize)
+    names << (entry["display_name"] || key.capitalize)
   end
   names
 end
@@ -175,7 +162,7 @@ def local_agent_names
   AGENT_REGISTRY.each do |key, entry|
     next unless entry.is_a?(Hash) && entry["local"]
 
-    names << (entry["fizzy_name"] || key.capitalize)
+    names << (entry["display_name"] || key.capitalize)
   end
   names
 end
@@ -186,24 +173,13 @@ def detect_mentioned_agent(text)
   all_agent_names.each do |name|
     return name if downcased.include?("@#{name.downcase}")
 
-    # Fizzy renders mentions using first name only (e.g. "@Sleeper" not "@Sleeper Service").
+    # Some systems render mentions using first name only (e.g. "@Sleeper" not "@Sleeper Service").
     # Fall back to matching the first word of multi-word agent names.
     first_word = name.split.first.downcase
     next if first_word == name.downcase # already checked above
     return name if downcased.include?("@#{first_word}")
   end
   nil
-end
-
-def detect_mentioned_user_ids(text)
-  return [] unless FIZZY_CONFIG["authorized_users"]
-
-  mentioned_ids = []
-  FIZZY_CONFIG["authorized_users"].each do |user|
-    name = user["name"]
-    mentioned_ids << user["id"] if text.downcase.include?("@#{name.downcase}")
-  end
-  mentioned_ids
 end
 
 def comment_from_agent?(name)
