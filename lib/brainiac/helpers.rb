@@ -70,19 +70,18 @@ def agent_cli_provider_for(agent_name)
   entry["cli_provider"]
 end
 
-# Detect CLI provider override from inline [cli:X] tag or Fizzy card tags.
+# Detect CLI provider override from inline [cli:X] tag or card tags.
 # Returns the provider name (e.g. "grok") or nil.
 def detect_cli_provider(text: "", tags: [])
-  # Inline tag: [cli:grok]
+  # Inline tag: [cli:grok] — works in any channel
   if (match = text.match(/\[cli:(\w+)\]/i))
     return match[1].downcase
   end
 
-  # Fizzy card tags: cli-grok
-  tags.each do |tag|
-    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
-    return name.sub("cli-", "") if name.start_with?("cli-")
-  end
+  # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
+  results = Brainiac.emit(:detect_cli_provider, text: text, tags: tags)
+  plugin_result = results.compact.first
+  return plugin_result if plugin_result
 
   nil
 end
@@ -162,7 +161,7 @@ def card_merged?(card_number)
   end
 end
 
-# Pre-fetch a Fizzy card's body and comments so the agent doesn't have to.
+
 # Returns a formatted string suitable for injection into the prompt, or ''
 # if the fetch fails (agent can still fetch manually as a fallback).
 PREFETCH_COMMENT_LIMIT = 15
@@ -171,7 +170,7 @@ CARD_CONTEXT_CACHE = {}
 CARD_CONTEXT_CACHE_TTL = 60 # seconds
 
 
-# Fetch card details from Fizzy. Returns array of text parts, or nil on failure.
+
 
 # Fetch recent comments for a card. Returns array of text parts.
 
@@ -340,7 +339,7 @@ def handle_agent_completion(**ctx)
     )
   end
 
-  # Emit lifecycle hook — plugins handle post-session actions (e.g., fizzy moves card, appends footer)
+  # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
                 card_number: ctx[:card_number] || ctx[:source_context]&.dig(:card_number),
                 exit_status: agent_exit_status,
@@ -402,7 +401,7 @@ def detect_model(project_config, tags: [], text: "")
   resolved["agent_model"]
 end
 
-# Detect effort level from inline tags [effort:high] or Fizzy card tags (effort-high).
+# Detect effort level from inline tags [effort:high] or card tags (effort-high).
 # Returns the effort level string (e.g. "high") or nil.
 # If the requested level isn't supported by the current model, returns the closest
 # lower level from allowed_efforts.
@@ -410,20 +409,16 @@ def detect_effort(project_config, tags: [], text: "")
   resolved = resolve_project_cli_config(project_config)
   allowed = resolved["allowed_efforts"] || %w[low medium high xhigh max]
 
-  # Inline tag: [effort:high]
+  # Inline tag: [effort:high] — works in any channel
   if (match = text.match(/\[effort:(\w+)\]/i))
     level = match[1].downcase
     return resolve_effort_level(level, allowed) if allowed.include?(level)
   end
 
-  # Fizzy card tags: effort-high, effort-max
-  tags.each do |tag|
-    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
-    if name.start_with?("effort-")
-      level = name.sub("effort-", "")
-      return resolve_effort_level(level, allowed) if allowed.include?(level)
-    end
-  end
+  # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
+  results = Brainiac.emit(:detect_effort, tags: tags, allowed: allowed)
+  plugin_result = results.compact.first
+  return resolve_effort_level(plugin_result, allowed) if plugin_result
 
   resolved["agent_effort"]
 end

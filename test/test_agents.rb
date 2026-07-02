@@ -23,14 +23,14 @@ class TestAgents < Minitest::Test
   end
 
 
-  def test_fizzy_display_name_from_registry
-    assert_equal "Galen", fizzy_display_name("galen")
-    assert_equal "GLaDOS", fizzy_display_name("glados")
-    assert_equal "Sleeper Service", fizzy_display_name("sleeper-service")
+  def test_agent_display_name_from_registry
+    assert_equal "Galen", agent_display_name("galen")
+    assert_equal "GLaDOS", agent_display_name("glados")
+    assert_equal "Sleeper Service", agent_display_name("sleeper-service")
   end
 
-  def test_fizzy_display_name_falls_back_to_input
-    assert_equal "UnknownBot", fizzy_display_name("UnknownBot")
+  def test_agent_display_name_falls_back_to_input
+    assert_equal "UnknownBot", agent_display_name("UnknownBot")
   end
 
   def test_agent_roster_returns_hash

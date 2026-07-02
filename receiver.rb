@@ -20,7 +20,6 @@ require_relative "lib/brainiac/brain"
 require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
 require_relative "lib/brainiac/prompts"
-require_relative "lib/brainiac/planning"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/cron"
 require_relative "lib/brainiac/restart"
@@ -147,7 +146,6 @@ before "/api/*" do
   authenticate_dashboard!
 end
 
-# --- Fizzy webhook routes ---
 
 post "/github" do
   content_type :json

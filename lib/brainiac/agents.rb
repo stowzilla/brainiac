@@ -10,7 +10,7 @@
 #       "fizzy_name": "Galen",
 #       "local": true,
 #       "env": {
-#         "FIZZY_TOKEN": "fizzy_abc...",
+#         "SOME_TOKEN": "token_abc...",
 #         "DISCORD_BOT_TOKEN": "Bot_abc..."
 #       }
 #     }
@@ -72,7 +72,7 @@ end
 
 # Get the display name for an agent (from agents.json registry).
 # Falls back to the provided name if no registry entry exists.
-# Reads the "fizzy_name" field for backward compat (historically this was the display name field).
+# Get display name from agent registry (checks display_name, then fizzy_name for backward compat).
 def agent_display_name(agent_name)
   return agent_name unless agent_name
 
@@ -80,13 +80,9 @@ def agent_display_name(agent_name)
   entry = AGENT_REGISTRY[key]
   return agent_name unless entry.is_a?(Hash)
 
-  entry["display_name"] || entry["display_name"] || entry["fizzy_name"] || agent_name
+  entry["display_name"] || entry["fizzy_name"] || agent_name
 end
 
-# Backward-compat alias — plugins and older code may reference this.
-def fizzy_display_name(agent_name)
-  agent_display_name(agent_name)
-end
 
 # Get the role name(s) configured for an agent in agents.json.
 # Returns an array of role names (may be empty).
@@ -145,7 +141,7 @@ def all_agent_names
   names = Set.new([AI_AGENT_NAME])
   PROJECTS.each_value { |config| names << config["agent_name"] if config["agent_name"] }
   discover_kiro_agents.each { |name| names << name.capitalize }
-  # Include agents from the registry (with their fizzy_name if specified)
+  # Include agents from the registry
   AGENT_REGISTRY.each do |key, entry|
     names << (entry["display_name"] || entry["fizzy_name"] || key.capitalize)
   end
@@ -178,7 +174,7 @@ def detect_mentioned_agent(text)
   all_agent_names.each do |name|
     return name if downcased.include?("@#{name.downcase}")
 
-    # Fizzy renders mentions using first name only (e.g. "@Sleeper" not "@Sleeper Service").
+    # Some systems render mentions using first name only (e.g. "@Sleeper" not "@Sleeper Service").
     # Fall back to matching the first word of multi-word agent names.
     first_word = name.split.first.downcase
     next if first_word == name.downcase # already checked above

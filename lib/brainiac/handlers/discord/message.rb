@@ -142,7 +142,7 @@ def dispatch_discord_session(agent_key:, agent_name:, bot_token:, channel_id:, m
   root_message = find_root_message(message, channel_id, bot_token)
   card_id = is_thread ? "discord-#{parent_channel_id}-#{channel_id}" : "discord-#{channel_id}-#{root_message[:id]}"
   thread_root_context = build_thread_root_context(is_thread, root_message, parent_channel_id, channel_id, bot_token)
-  planning_info = detect_planning_mode(text: clean_content, tags: [], card_internal_id: card_id, card_number: nil)
+  planning_info = false
   brain_context = build_brain_context(agent_name: agent_name, card_title: clean_content, comment_body: clean_content)
 
   should_resume, thread_worktree_path, thread_cli_provider, thread_model, thread_effort = manage_discord_worktree(
@@ -350,7 +350,7 @@ def validate_cross_agent_dispatch(sender_agent_key, agent_key, mentioned, conten
   if content.match?(/created\s+card\s+#?\d+/i) || content.match?(/assigned\s+.*card\s+#?\d+/i) || content.match?(/card\s+#?\d+.*assigned/i)
     sender_display = agent_display_name(sender_agent_key) || sender_agent_key.capitalize
     agent_display = agent_display_name(agent_key) || agent_key.capitalize
-    LOG.info "[Discord:#{agent_display}] Ignoring cross-agent mention from #{sender_display} — Fizzy card creation/assignment (handled by webhook)"
+    LOG.info "[Discord:#{agent_display}] Ignoring cross-agent mention from #{sender_display} — card creation/assignment (handled by webhook)"
     return false
   end
 

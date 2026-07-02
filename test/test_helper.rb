@@ -73,7 +73,7 @@ File.write(File.join(TEST_BRAINIAC_DIR, "github.json"), JSON.generate({
 project_data = {
   "marketplace" => {
     "repo_path" => "/home/test/Code/marketplace",
-    "fizzy_tags" => %w[marketplace mp],
+    "tags" => %w[marketplace mp],
     "github_repo" => "stowzilla/marketplace",
     "agent_cli" => "kiro-cli",
     "agent_cli_args" => "chat --no-interactive",
@@ -88,7 +88,7 @@ project_data = {
   },
   "brainiac" => {
     "repo_path" => "/home/test/Code/brainiac",
-    "fizzy_tags" => ["brainiac"],
+    "tags" => ["brainiac"],
     "github_repo" => "stowzilla/brainiac",
     "default" => true
   }
@@ -155,6 +155,7 @@ $LOAD_PATH.unshift File.expand_path("..", __dir__)
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 
 # --- Load brainiac modules ONCE for all tests ---
+require_relative "../lib/brainiac/hooks"
 require_relative "../lib/brainiac/config"
 require_relative "../lib/brainiac/users"
 require_relative "../lib/brainiac/agents"
@@ -177,7 +178,7 @@ def run_agent(prompt:, agent_name:, worktree:, project_config:, session_key:, lo
 end
 
 def auto_inject_skills(_context) = ""
-def render_prompt(_template, _vars, brain_context: "", agent_name: nil, channel: :fizzy) = "rendered prompt"
+def render_prompt(_template, _vars, brain_context: "", agent_name: nil, channel: :discord) = "rendered prompt"
 def role_content_for(_agent_name) = nil
 $VERBOSE = verbose
 

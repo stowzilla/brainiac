@@ -127,7 +127,7 @@ get "/api/roles" do
   if Dir.exist?(ROLES_DIR)
     Dir.glob(File.join(ROLES_DIR, "*.md")).each do |f|
       name = File.basename(f, ".md")
-      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, e| e["fizzy_name"] || k.capitalize }
+      agents = AGENT_REGISTRY.select { |_, e| e.is_a?(Hash) && Array(e["role"]).include?(name) }.map { |k, e| agent_display_name(k) }
       roles << { name: name, agents: agents }
     end
   end

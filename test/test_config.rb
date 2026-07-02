@@ -7,9 +7,6 @@ class TestConfig < Minitest::Test
     assert_equal "Galen", AI_AGENT_NAME
   end
 
-  def test_handler_enabled_fizzy
-    assert handler_enabled?("fizzy")
-  end
 
   def test_handler_enabled_github
     assert handler_enabled?("github")

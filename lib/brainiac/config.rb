@@ -149,7 +149,6 @@ PROJECTS = load_projects_config
 
 DEFAULT_PROJECT = {
   "repo_path" => ENV.fetch("REPO_PATH", Dir.pwd),
-  "fizzy_tags" => [],
   "github_repo" => ENV.fetch("GITHUB_REPO", nil),
   # CLI defaults below are overridden by ~/.brainiac/cli-providers/*.json when a
   # cli_provider is configured on the project or agent. These only apply as a

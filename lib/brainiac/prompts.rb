@@ -62,7 +62,7 @@ PROMPT_CORE = <<~PROMPT
 
   ### Persona (`{{PERSONA_DIR}}/`) — unique to you
   Communication style, tone, personality, how to interact with specific people.
-  **This is for all external communication, such as writing comments on Fizzy cards, Discord chat, and GitHub PRs.**
+  **This is for all external communication, such as writing comments on cards, Discord chat, and GitHub PRs.**
 
   Do NOT manually read persona files during coding/debugging — the auto-retrieved persona
   above already shapes your communication style. Focus on implementation during work phases,
@@ -118,7 +118,7 @@ PROMPT_CORE = <<~PROMPT
   - To discover project locations for cross-repo work, run: `brainiac list`
 
   **Limitations:** Subagents don't get your brain context, persona, or memory.
-  They can read files and run commands, but cannot post to Fizzy, Discord, or GitHub.
+  They can read files and run commands, but cannot post to Discord, GitHub, or other channels.
   They're excellent researchers — use them as such.
 
   ## Image Reading Limits
@@ -130,7 +130,7 @@ PROMPT
 # ---------------------------------------------------------------------------
 # PROMPT_PRE_POST_CHECK — inserted before PROMPT_REFLECTION so the agent
 # re-checks for new comments/messages before posting its response.
-# Channel-specific: Fizzy and GitHub get re-fetch instructions, Discord skips.
+# Channel-specific: plugins register pre-post checks, Discord skips.
 # ---------------------------------------------------------------------------
 
 PROMPT_PRE_POST_CHECK_GITHUB = <<~PROMPT
@@ -215,7 +215,7 @@ PROMPT_DISCORD_CHANNEL = <<~PROMPT
   per message, though long responses will be split automatically.
 
   ### Scope
-  This is a conversational interaction — no Fizzy card, no PR. You're here to answer questions,
+  This is a conversational interaction — no card, no PR. You're here to answer questions,
   discuss code, share knowledge, or help with whatever the user needs.
 
   **Detect user intent:**
@@ -282,7 +282,7 @@ PROMPT_GITHUB_CHANNEL = <<~PROMPT
 
   ### Scope
   You are responding to activity on a GitHub PR. Focus on the code changes and review feedback.
-  When posting comments, post on the PR unless specifically asked to update the Fizzy card.
+  When posting comments, post on the PR unless specifically asked to update the card.
 
 PROMPT
 
@@ -306,7 +306,7 @@ PROMPT_DISCORD = <<~'PROMPT'
 PROMPT
 
 PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
-  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for Fizzy card #{{CARD_NUMBER}}.
+  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
 
   Comment:
   {{COMMENT_BODY}}
@@ -321,7 +321,7 @@ PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
 PROMPT
 
 PROMPT_GITHUB_PR_REVIEW = <<~'PROMPT'
-  A code review has been submitted on your PR #{{PR_NUMBER}} for Fizzy card #{{CARD_NUMBER}}.
+  A code review has been submitted on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
 
   {{REVIEW_CONTEXT}}
 
@@ -339,11 +339,11 @@ PROMPT
 # Channel constant mapping for render_prompt
 # ---------------------------------------------------------------------------
 PROMPT_GITHUB_UAT = <<~'PROMPT'
-  PR #{{PR_NUMBER}} has been merged into main for Fizzy card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
+  PR #{{PR_NUMBER}} has been merged into main for card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
 
   The card has been moved to the UAT column. The changes are now deployed to the UAT environment.
 
-  Your job: post a comment on Fizzy card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
+  Your job: post a comment on card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
   1. What URL(s) or screen(s) to visit
   2. Step-by-step actions to verify the feature works
   3. What the expected behavior should be
@@ -363,7 +363,7 @@ CHANNEL_PROMPTS = {
 # ---------------------------------------------------------------------------
 # render_prompt — composes PROMPT_CORE + channel rules + situation template
 #
-#   channel: :discord, :github, or plugin-registered channels (e.g., :fizzy)
+#   channel: :discord, :github, or plugin-registered channels (e.g., :fizzy, :linear)
 # ---------------------------------------------------------------------------
 
 def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :discord, board_key: nil)
@@ -390,7 +390,8 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
     result += PROMPT_PRE_POST_CHECK_GITHUB
   end
 
-  result += PROMPT_REFLECTION
+  # Reflection prompt — skip for Discord (causes crashes in post-task phase)
+  result += PROMPT_REFLECTION unless channel == :discord
 
   vars["KNOWLEDGE_DIR"] ||= KNOWLEDGE_DIR
   vars["MEMORY_DIR"] ||= memory_dir_for(agent_name)

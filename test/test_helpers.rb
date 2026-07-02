@@ -69,12 +69,6 @@ class TestHelpers < Minitest::Test
     assert_equal "grok", detect_cli_provider(text: "[cli:grok] do stuff")
   end
 
-  def test_detect_cli_provider_from_tags
-    assert_equal "grok", detect_cli_provider(tags: [{ "name" => "cli-grok" }])
-  end
-
-  def test_detect_cli_provider_nil_when_absent
-    assert_nil detect_cli_provider(text: "normal message", tags: [])
   end
 
   def test_default_project_key

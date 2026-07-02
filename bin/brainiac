@@ -327,9 +327,9 @@ def register_project(options)
     exit 1
   end
 
-  print "Fizzy tags (comma-separated) [#{project_key}]: "
+  print "Tags (comma-separated) [#{project_key}]: "
   tags_input = $stdin.gets.chomp
-  fizzy_tags = tags_input.empty? ? [project_key] : tags_input.split(",").map(&:strip)
+  project_tags = tags_input.empty? ? [project_key] : tags_input.split(",").map(&:strip)
 
   print "GitHub repo [#{info["github_repo"]}]: "
   github_repo = $stdin.gets.chomp
@@ -360,7 +360,7 @@ def register_project(options)
   # Build project config
   project_config = {
     "repo_path" => info["repo_path"],
-    "fizzy_tags" => fizzy_tags,
+    "tags" => project_tags,
     "github_repo" => github_repo,
     "agent_name" => agent_name,
     "agent_model" => agent_model,
@@ -373,7 +373,7 @@ def register_project(options)
   puts
   puts "✓ Project '#{project_key}' registered successfully!"
   puts "  Repo: #{info["repo_path"]}"
-  puts "  Tags: #{fizzy_tags.join(", ")}"
+  puts "  Tags: #{project_tags.join(", ")}"
   puts "  GitHub: #{github_repo}" if github_repo
 end
 
@@ -407,7 +407,7 @@ def list_projects
     default_marker = config["default"] ? " (default)" : ""
     puts "  #{key}#{default_marker}"
     puts "    Path: #{config["repo_path"]}"
-    puts "    Tags: #{config["fizzy_tags"].join(", ")}"
+    puts "    Tags: #{config["tags"] || config["project_tags"].join(", ")}"
     puts "    GitHub: #{config["github_repo"]}" if config["github_repo"]
     puts "    Agent: #{config["agent_cli"]} (model: #{config["agent_model"]})"
     puts
@@ -675,7 +675,7 @@ when "setup"
     puts ""
 
     available_handlers = {
-      "fizzy" => "Fizzy (card management, agent dispatch via webhooks)",
+      
       "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
       "discord" => "Discord (conversational agent access via bot)",
       "zoho" => "Zoho Mail (email notifications and triage)"
@@ -785,7 +785,7 @@ when "handler", "handlers"
     handlers = config["handlers"] || {}
 
     # Built-in handlers
-    builtins = %w[fizzy github discord zoho]
+    builtins = %w[github discord zoho]
     puts "Built-in handlers:"
     builtins.each do |name|
       enabled = handlers.fetch(name, true)
@@ -999,7 +999,7 @@ when "discord"
     else
       puts "Agents with Discord bots:"
       agents_with_tokens.each do |key, entry|
-        display = entry["fizzy_name"] || key.capitalize
+        display = entry["display_name"] || entry["display_name"] || key.capitalize
         token = entry.dig("env", "DISCORD_BOT_TOKEN") || entry["discord_bot_token"]
         token_preview = "#{token[0..10]}..."
         puts "  #{display} (#{key}): #{token_preview}"
@@ -1570,7 +1570,7 @@ when "agent"
       puts "No agents in registry."
     else
       agents = registry.select { |_, e| e.is_a?(Hash) }.map do |key, entry|
-        display = entry["fizzy_name"] || key.capitalize
+        display = entry["display_name"] || entry["display_name"] || key.capitalize
         details = []
         if entry["role"]
           roles = Array(entry["role"])
@@ -1614,8 +1614,8 @@ when "agent"
       agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
 
       # Resolve display name from registry if it exists
-      display_name = if registry.dig(agent_key, "fizzy_name")
-                       registry[agent_key]["fizzy_name"]
+      display_name = if registry.dig(agent_key, "display_name") || registry.dig(agent_key, "display_name")
+                       registry[agent_key]["display_name"]
                      else
                        name
                      end
@@ -1725,7 +1725,7 @@ when "agent"
       persona_text = input.empty? ? nil : input
     end
 
-    entry = { "fizzy_name" => name }
+    entry = { "display_name" => name }
     entry["local"] = true if local
     entry["cli_provider"] = cli_provider if cli_provider
     entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
@@ -1776,7 +1776,7 @@ when "agent"
       exit 1
     end
 
-    display = registry[agent_key]["fizzy_name"] || name
+    display = registry[agent_key]["display_name"] || name
     registry.delete(agent_key)
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Removed agent '#{display}' (#{agent_key}) from registry"
@@ -1796,7 +1796,7 @@ when "agent"
         create <name> [options]           Add a new agent to the registry
         remove <name>                     Remove an agent from the registry
         <name> show                       Show agent configuration (tokens redacted)
-        <name> set <field> <value>        Update a config field (local, cli, role, persona, fizzy_name)
+        <name> set <field> <value>        Update a config field (local, cli, role, persona, display_name)
         <name> env <KEY> <VALUE>          Set an env var for an agent
         <name> env                        List env vars for an agent
         <name> env --delete <KEY>         Remove an env var from an agent
@@ -1817,7 +1817,7 @@ when "agent"
         brainiac agent galen set local true
         brainiac agent galen set persona "Dry, sardonic"
         brainiac agent galen set role code-reviewer,general-engineer
-        brainiac agent galen env FIZZY_TOKEN fizzy_abc123
+        brainiac agent galen env MY_TOKEN abc123
         brainiac agent galen show
     HELP
 
@@ -1898,7 +1898,7 @@ when "agent"
         puts "  cli <provider>         Set CLI provider"
         puts "  role <roles>           Set roles (comma-separated, or 'none' to clear)"
         puts "  persona <text>         Set/update persona style file"
-        puts "  fizzy_name <name>      Set display name for Fizzy @mentions"
+        puts "  display_name <name>    Set display name for @mentions"
         exit 1
       end
 
@@ -1946,7 +1946,7 @@ when "agent"
         persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
         FileUtils.mkdir_p(persona_dir)
         persona_file = File.join(persona_dir, "style.md")
-        display = registry[agent_key]["fizzy_name"] || agent_cmd.capitalize
+        display = registry[agent_key]["display_name"] || agent_cmd.capitalize
         File.write(persona_file, <<~MD)
           ---
           name: #{agent_key}-style
@@ -1957,17 +1957,17 @@ when "agent"
         MD
         puts "✓ Wrote persona to #{persona_file}"
 
-      when "fizzy_name"
+      when "display_name", "display_name"
         unless value
-          puts "Usage: brainiac agent #{agent_cmd} set fizzy_name <name>"
+          puts "Usage: brainiac agent #{agent_cmd} set display_name <name>"
           exit 1
         end
-        registry[agent_key]["fizzy_name"] = value
+        registry[agent_key]["display_name"] = value
         File.write(agent_registry_file, JSON.pretty_generate(registry))
-        puts "✓ Set fizzy_name=#{value} for #{agent_cmd}"
+        puts "✓ Set display_name=#{value} for #{agent_cmd}"
 
       else
-        puts "Unknown field '#{field}'. Available: local, cli, role, persona, fizzy_name"
+        puts "Unknown field '#{field}'. Available: local, cli, role, persona, display_name"
         exit 1
       end
 
@@ -2002,7 +2002,7 @@ when "role"
         roles = entry["role"].is_a?(Array) ? entry["role"] : [entry["role"]]
         roles.each do |r|
           agent_roles[r] ||= []
-          agent_roles[r] << (entry["fizzy_name"] || key.capitalize)
+          agent_roles[r] << (entry["display_name"] || entry["display_name"] || key.capitalize)
         end
       end
 

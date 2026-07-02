@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # User identity registry - resolves identities across platforms
-# (Discord, GitHub, Fizzy)
+# (Discord, GitHub)
 
 USERS_FILE = File.join(BRAINIAC_DIR, "users.json")
 
@@ -40,10 +40,6 @@ def find_user_by_github_username(username)
   USER_REGISTRY["users"].find { |u| u.dig("identities", "github", "username") == username.to_s }
 end
 
-# Find user by Fizzy username
-def find_user_by_fizzy_username(username)
-  USER_REGISTRY["users"].find { |u| u.dig("identities", "fizzy", "username") == username.to_s }
-end
 
 # Find user by canonical name
 def find_user_by_canonical_name(name)
@@ -55,7 +51,6 @@ def find_user(identifier)
   find_user_by_discord_id(identifier) ||
     find_user_by_discord_username(identifier) ||
     find_user_by_github_username(identifier) ||
-    find_user_by_fizzy_username(identifier) ||
     find_user_by_canonical_name(identifier)
 end
 

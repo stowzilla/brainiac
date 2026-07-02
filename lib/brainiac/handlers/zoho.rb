@@ -195,7 +195,7 @@ ZOHO_TRIAGE_DIR = File.join(BRAINIAC_DIR, "tmp", "zoho", "triage")
 FileUtils.mkdir_p(ZOHO_TRIAGE_DIR)
 
 ZOHO_TRIAGE_PROMPT = <<~PROMPT
-  You are triaging a support email. Decide whether this email needs a Fizzy card or not.
+  You are triaging a support email. Decide whether this email needs a card or not.
 
   ## Email
   **From:** {{FROM}}
@@ -256,7 +256,7 @@ ZOHO_TRIAGE_PROMPT = <<~PROMPT
 PROMPT
 
 # Dispatch an agent to triage a support email. The agent decides whether to create
-# a Fizzy card or just notify Discord.
+# a card or just notify Discord.
 def dispatch_zoho_triage(email, rule)
   agent_name = rule["dispatch_agent"]
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
@@ -390,7 +390,7 @@ def execute_zoho_triage_decision(decision, email, rule)
   end
 end
 
-# Create a Fizzy card from the triage decision
+# Create a card from the triage decision
 def create_zoho_triage_card(decision, email, channel_id, token)
   board_id = ZOHO_CONFIG["triage_board_id"]
   unless board_id
@@ -404,7 +404,7 @@ def create_zoho_triage_card(decision, email, channel_id, token)
   tags = ["support"]
   tags << decision["project_tag"] if decision["project_tag"]
 
-  # Emit hook — work item plugin handles card creation (Fizzy, Linear, etc.)
+  # Emit hook — work item plugin handles card creation (card management plugins)
   results = Brainiac.emit(:create_work_item,
                           board_id: board_id,
                           title: title,
@@ -436,4 +436,3 @@ rescue StandardError => e
   notify_zoho_match(email, { "label" => "Support Email", "emoji" => "🆘" }.merge(rule_defaults(nil)))
 end
 
-# Resolve tag names to IDs by querying Fizzy

@@ -6,7 +6,7 @@
 DEFAULT_UAT_COLUMN_ID = "03fsmglsr6az06ppyotawsti8"
 
 
-# Find a Fizzy card by matching the PR's head branch to a branch in the card map.
+# Find a card by matching the PR's head branch to a branch in the card map.
 def find_card_by_branch(branch)
   map = load_card_map
   map.each do |internal_id, info|
@@ -79,7 +79,7 @@ def handle_github_pr_merged(payload)
 
   result = find_card_by_branch(branch)
   unless result
-    LOG.info "No Fizzy card found for branch #{branch}"
+    LOG.info "No card found for branch #{branch}"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
   end
 
@@ -104,7 +104,7 @@ def process_merged_pr(card_info, card_number, branch, pull_request, pr_url, pr_t
   cleanup_card_worktrees(card_number, repo_path: repo_path, primary_worktree: card_info["worktree"], primary_branch: branch)
 
   # Emit hook — plugins handle their own post-merge actions
-  # (e.g., Fizzy plugin posts PR link comment, moves card to UAT, dispatches UAT agent)
+  # (e.g., card plugin posts PR link, moves card column, dispatches UAT agent)
   Brainiac.emit(:pr_merged,
                 card_number: card_number,
                 card_info: card_info,
@@ -146,7 +146,7 @@ def handle_github_issue_comment(payload)
 
   result = find_card_by_branch(branch)
   unless result
-    LOG.info "No Fizzy card found for PR ##{pr_number} (branch: #{branch})"
+    LOG.info "No card found for PR ##{pr_number} (branch: #{branch})"
     return [200, { status: "ignored", reason: "no matching card" }.to_json]
   end
 
