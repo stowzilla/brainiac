@@ -86,6 +86,9 @@ end
 # --- Load gem-based plugins (brainiac-*) ---
 load_plugins!(Sinatra::Application)
 
+# Emit server_started hook — plugins can run startup tasks (backfill, background jobs, etc.)
+Brainiac.emit(:server_started)
+
 # --- Sinatra config ---
 set :host_authorization, { permit_all: true }
 
@@ -98,7 +101,7 @@ set :quiet, true
 set :server_settings, { Silent: true }
 
 # Custom logger that filters polling endpoints unless LOG_LEVEL=debug
-SILENT_POLL_PATHS = %w[/api/status /api/deployments].freeze
+SILENT_POLL_PATHS = %w[/api/status].freeze
 
 class SelectiveLogger < Rack::CommonLogger
   def call(env)
@@ -427,64 +430,6 @@ else
   end
 end
 
-# --- Deployment environment tracking (requires fizzy handler) ---
-
-if defined?(DEPLOYMENTS_CONFIG)
-  get "/api/deployments" do
-    content_type :json
-    reload_deployments_config!
-    reload_deployment_state!
-    { deployments: deployment_status }.to_json
-  end
-
-  post "/api/deployments/:env" do
-    content_type :json
-    env_key = params["env"]
-    request.body.rewind
-    payload = JSON.parse(request.body.read)
-
-    result = deploy_to_environment(env_key, worktree_path: payload["worktree"], deployed_by: payload["deployed_by"])
-    if result[:error]
-      halt 404, result.to_json
-    else
-      { status: "deployed", env: env_key, deployment: result }.to_json
-    end
-  rescue JSON::ParserError
-    halt 400, { error: "Invalid JSON" }.to_json
-  end
-
-  delete "/api/deployments/:env" do
-    content_type :json
-    env_key = params["env"]
-    state = load_deployment_state
-    if state.key?(env_key)
-      state[env_key] = { "status" => "available", "cleared_at" => Time.now.iso8601, "last_card" => state[env_key]["card_number"] }
-      save_deployment_state(state)
-      DEPLOYMENT_STATE.replace(state)
-      LOG.info "[Deploy] Manually cleared #{env_key}"
-      { status: "cleared", env: env_key }.to_json
-    else
-      halt 404, { error: "Unknown environment: #{env_key}" }.to_json
-    end
-  end
-
-  post "/api/deployments/:env/deploying" do
-    content_type :json
-    env_key = params["env"]
-    config = DEPLOYMENTS_CONFIG["environments"] || {}
-    halt 404, { error: "Unknown environment: #{env_key}" }.to_json unless config.key?(env_key)
-    request.body.rewind
-    payload = begin
-      JSON.parse(request.body.read)
-    rescue StandardError
-      {}
-    end
-    mark_deploying(env_key, worktree_path: payload["worktree"] || "")
-    LOG.info "[Deploy] #{env_key} marked deploying via API"
-    { status: "deploying", env: env_key }.to_json
-  end
-end
-
 LOG.info "[Cron] Starting cron thread..."
 start_cron_thread
 
@@ -499,10 +444,6 @@ CURATOR_THREAD = Thread.new do
   end
 end
 
-if defined?(CARD_INDEX)
-  LOG.info "[CardIndex] Starting background backfill..."
-  CARD_INDEX.backfill
-end
 
 LOG.info "[Monitor] Starting daemon..."
 daemon_path = File.join(__dir__, "monitor", "daemon.rb")

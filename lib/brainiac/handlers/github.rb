@@ -389,6 +389,7 @@ def build_review_context(reviewer, review, pr_number, repo_name)
   context
 end
 
+
 def handle_github_pr_synchronized(payload)
   pr = payload["pull_request"]
   branch = pr.dig("head", "ref")
@@ -402,65 +403,16 @@ def handle_github_pr_synchronized(payload)
 
   return [200, { status: "ignored", reason: "no worktree" }.to_json] unless worktree && File.directory?(worktree)
 
-  state = load_deployment_state
-  config = DEPLOYMENTS_CONFIG["environments"] || {}
-  env_key = state.find { |_k, v| v["card_number"] == card_number && v["status"] == "occupied" }&.first
+  # Emit hook — deployment plugin handles sync-deploy logic
+  results = Brainiac.emit(:pr_synchronized, card_number: card_number, card_info: card_info,
+                                            worktree: worktree, pull_request: pr, branch: branch)
 
-  return [200, { status: "ignored", reason: "card not deployed" }.to_json] unless env_key
-
-  env_owner = config.dig(env_key, "owner")
-  return [200, { status: "ignored", reason: "not env owner" }.to_json] unless env_owner && env_owner.downcase == AI_AGENT_NAME.downcase
-
-  return [200, { status: "ignored", reason: "deploy cooldown" }.to_json] if on_deploy_cooldown?(env_key)
-
-  touch_deploy_cooldown(env_key)
-
-  system("git", "pull", "--ff-only", chdir: worktree)
-  deploy_script = File.join(worktree, "scripts", "deploy.sh")
-  return [200, { status: "ignored", reason: "no deploy script" }.to_json] unless File.exist?(deploy_script)
-
-  LOG.info "[PR Sync] Auto-deploying card ##{card_number} to #{env_key} (PR updated)"
-  mark_deploying(env_key, worktree_path: worktree)
-  run_pr_sync_deploy(env_key, card_number, worktree, config)
-
-  [200, { status: "processed", action: "pr_sync_deploy", card: card_number, env: env_key }.to_json]
+  if results.any?
+    [200, { status: "processed", action: "pr_sync", card: card_number }.to_json]
+  else
+    [200, { status: "ignored", reason: "no deployment plugin" }.to_json]
+  end
 rescue StandardError => e
   LOG.error "[PR Sync] Error: #{e.message}"
   [500, { error: e.message }.to_json]
-end
-
-def run_pr_sync_deploy(env_key, card_number, worktree, config)
-  Thread.new do
-    deploy_env = {}
-    aws_profile = config.dig(env_key, "aws_profile")
-    deploy_env["AWS_PROFILE"] = aws_profile if aws_profile
-    deploy_script = File.join(worktree, "scripts", "deploy.sh")
-
-    stdout, stderr, status = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree)
-
-    if status.success?
-      deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "pr-sync")
-      LOG.info "[PR Sync] Deploy to #{env_key} succeeded for card ##{card_number}"
-    elsif terraform_lock_error?(stdout, stderr)
-      retry_pr_sync_deploy(deploy_env, deploy_script, env_key, card_number, worktree)
-    else
-      record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
-      LOG.error "[PR Sync] Deploy to #{env_key} failed for card ##{card_number}"
-    end
-  end
-end
-
-def retry_pr_sync_deploy(deploy_env, deploy_script, env_key, card_number, worktree)
-  infra_dir = File.join(worktree, "infrastructure/#{env_key}")
-  FileUtils.rm_f(File.join(infra_dir, ".terraform.lock.hcl"))
-  Open3.capture3("terraform", "init", "-upgrade", chdir: infra_dir)
-  stdout, stderr, status = Open3.capture3(deploy_env, deploy_script, env_key, chdir: worktree)
-
-  if status.success?
-    deploy_to_environment(env_key, worktree_path: worktree, deployed_by: "pr-sync")
-    LOG.info "[PR Sync] Deploy to #{env_key} succeeded (after terraform lock fix) for card ##{card_number}"
-  else
-    record_deploy_failure(env_key, worktree_path: worktree, stdout: stdout, stderr: stderr)
-    LOG.error "[PR Sync] Deploy to #{env_key} failed (after retry) for card ##{card_number}"
-  end
 end

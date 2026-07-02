@@ -399,9 +399,11 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
   vars["AGENT_NAME"] ||= agent_name
 
   # Populate column IDs from board config, falling back to defaults
-  DEFAULT_COLUMN_IDS.each do |col_name, default_id|
-    var_name = "#{col_name.upcase}_COLUMN_ID"
-    vars[var_name] ||= (board_key && board_column_id(board_key, col_name)) || default_id
+  if defined?(DEFAULT_COLUMN_IDS)
+    DEFAULT_COLUMN_IDS.each do |col_name, default_id|
+      var_name = "#{col_name.upcase}_COLUMN_ID"
+      vars[var_name] ||= (board_key && board_column_id(board_key, col_name)) || default_id
+    end
   end
 
   # Touch memory file if CARD_ID is present — ensures file exists before agent tries to read it

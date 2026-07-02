@@ -109,7 +109,6 @@ post "/api/reload" do
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
   reload_github_config!(force: true)
-  reload_deployments_config!(force: true) if defined?(DEPLOYMENTS_CONFIG)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
     users: USER_REGISTRY["users"].size }.to_json
@@ -211,19 +210,6 @@ post "/api/skills/curate" do
 end
 
 # --- Card Index ---
-
-get "/api/card-index" do
-  content_type :json
-  halt 404, { error: "Card index not available (fizzy plugin not installed)" }.to_json unless defined?(CARD_INDEX)
-
-  query = params["q"]
-  if query && !query.empty?
-    similar = CARD_INDEX.find_similar_cards(query)
-    { query: query, matches: similar, total_indexed: CARD_INDEX.size }.to_json
-  else
-    { total: CARD_INDEX.size, cards: CARD_INDEX }.to_json
-  end
-end
 
 # --- Dispatch Depth ---
 
