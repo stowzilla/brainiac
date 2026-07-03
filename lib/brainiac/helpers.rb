@@ -186,17 +186,17 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
   snippet = extract_crash_snippet(log_file)
   snippet_block = snippet ? "\n```\n#{snippet[-1500..]}\n```" : ""
 
-  # Try plugin-registered crash handlers first
+  # Emit to plugins — they handle their own channel-specific delivery
   handled = Brainiac.emit(:agent_crashed,
                           exit_status: exit_status, log_file: log_file, agent_name: agent_display,
                           source: source, source_context: source_context, project_config: project_config,
                           snippet: snippet)
 
-  # If a plugin handled it for this source, we're done
-  return if handled.any?(source)
+  # If a plugin handled it, we're done
+  return if handled.any?
 
-  case source
-  when :github
+  # Built-in: GitHub crash comment (doesn't need a plugin)
+  if source == :github
     pr_number = source_context[:pr_number]
     repo_name = source_context[:repo_name]
     return unless pr_number && repo_name
@@ -209,16 +209,6 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
     rescue StandardError => e
       LOG.error "[CrashNotify] Failed to post GitHub crash comment: #{e.message}"
     end
-
-  when :discord
-    channel_id = source_context[:channel_id]
-    message_id = source_context[:message_id]
-    bot_token = source_context[:bot_token]
-    return unless channel_id && bot_token
-
-    message = "💥 **#{agent_display} crashed** (exit code #{exit_status})\nLog: `#{log_file}`#{snippet_block}"
-    send_discord_message(channel_id, message, token: bot_token, reply_to: message_id)
-    LOG.info "[CrashNotify] Posted crash message to Discord channel #{channel_id}"
   end
 rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
@@ -358,7 +348,7 @@ def handle_agent_completion(**ctx)
   end
 
   brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
-  check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+  # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
 end
 
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)

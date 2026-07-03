@@ -22,17 +22,9 @@ def queue_brainiac_restart(agent_name)
   end
 end
 
-# Send a Discord notification about brainiac restart/startup using any available bot token.
+# Send a notification about brainiac restart/startup.
 def send_restart_notification(message)
-  channel_id = DISCORD_CONFIG["notification_channel_id"]
-  return unless channel_id
-
-  tokens = discord_bot_tokens
-  triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
-  token = tokens[triggered_by&.downcase] || tokens.values.first
-  return unless token
-
-  send_discord_message(channel_id, message, token: token)
+  notify_restart(message)
 rescue StandardError => e
   LOG.warn "[Brainiac] Failed to send restart notification: #{e.message}"
 end

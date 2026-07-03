@@ -140,10 +140,10 @@ require_relative "../lib/brainiac/users"
 require_relative "../lib/brainiac/agents"
 require_relative "../lib/brainiac/brain"
 require_relative "../lib/brainiac/sessions"
+require_relative "../lib/brainiac/notifications"
 require_relative "../lib/brainiac/helpers"
 require_relative "../lib/brainiac/handlers/shared/inline_tags"
 require_relative "../lib/brainiac/handlers/shared/git"
-require_relative "../lib/brainiac/handlers/discord/config"
 
 # Stub functions that need external tools.
 # These redefine methods loaded from lib/ — suppress redefinition warnings.

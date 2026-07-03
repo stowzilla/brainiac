@@ -283,23 +283,11 @@ get "/api/logs" do
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
 end
 
-# --- GIF ---
+# --- GIF (handled by discord plugin when installed) ---
 
 get "/api/gif" do
   content_type :json
-  query = params[:q].to_s.strip
-  halt 400, { error: "Missing ?q= parameter" }.to_json if query.empty?
-
-  api_key = DISCORD_CONFIG["giphy_api_key"]
-  halt 503, { error: "No giphy_api_key configured in discord.json" }.to_json unless api_key
-
-  gifs = search_giphy(query, api_key)
-  halt 502, { error: "Giphy API error" }.to_json unless gifs
-
-  { query: query, results: gifs }.to_json
-rescue StandardError => e
-  LOG.error "[GIF] Search failed: #{e.message}"
-  halt 500, { error: e.message }.to_json
+  halt 503, { error: "brainiac-discord plugin not installed (provides GIF API)" }.to_json
 end
 
 # --- Cron ---

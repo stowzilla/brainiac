@@ -220,6 +220,254 @@ def update_handler_config(name, enabled)
   puts "  Restart the server for changes to take effect: brainiac restart"
 end
 
+# After installing a plugin, load it and run its setup if it provides one.
+# Only runs if the plugin defines .cli and responds to a "setup" subcommand via .configured?
+def run_plugin_setup(name, local_path: nil)
+  gem_name = "brainiac-#{name}"
+  begin
+    if local_path
+      lib_path = File.join(local_path, "lib")
+      $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+    end
+
+    begin
+      require gem_name
+    rescue LoadError
+      require gem_name.tr("-", "_")
+    end
+
+    pascal = name.split(/[-_]/).map(&:capitalize).join
+    mod = if defined?(Brainiac::Plugins) && Brainiac::Plugins.const_defined?(pascal)
+            Brainiac::Plugins.const_get(pascal)
+          else
+            Brainiac::Plugins.constants.find { |c| c.to_s.downcase == name.downcase }&.then { |c| Brainiac::Plugins.const_get(c) }
+          end
+
+    return unless mod
+
+    # If plugin reports it's not configured, run setup automatically
+    if mod.respond_to?(:configured?) && !mod.configured? && mod.respond_to?(:cli)
+      puts ""
+      mod.cli(["setup"])
+    end
+  rescue LoadError
+    # Plugin couldn't be loaded — skip setup (will be caught on first use)
+    nil
+  rescue StandardError => e
+    puts "  Note: Auto-setup skipped (#{e.message})"
+  end
+end
+
+# Collect help text from installed plugins for the help command.
+def collect_plugin_help_lines
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  plugins_config = File.exist?(plugins_file) ? JSON.parse(File.read(plugins_file)) : { "plugins" => [] }
+
+  (plugins_config["plugins"] || []).filter_map do |pentry|
+    pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
+    load_plugin_help(pname, pentry)
+  end
+end
+
+def load_plugin_help(pname, pentry)
+  if pentry.is_a?(Hash) && pentry["path"]
+    lib_path = File.join(pentry["path"], "lib")
+    $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+  end
+
+  # Try to load just the metadata file (lightweight, no runtime deps)
+  metadata_loaded = try_require_metadata(pname, pentry)
+
+  # Fall back to loading the full plugin if metadata file doesn't exist
+  unless metadata_loaded
+    gem_name = "brainiac-#{pname}"
+    begin
+      require gem_name
+    rescue LoadError
+      require gem_name.tr("-", "_")
+    end
+  end
+
+  mod = resolve_plugin_module_for(pname)
+  if mod.respond_to?(:help_text)
+    mod.help_text
+  elsif mod.respond_to?(:cli)
+    "    #{pname.ljust(28)} Run 'brainiac #{pname} help' for commands"
+  end
+rescue LoadError
+  "    #{pname.ljust(28)} (could not load — reinstall with: brainiac install #{pname})"
+rescue StandardError
+  nil
+end
+
+def try_require_metadata(pname, pentry)
+  if pentry.is_a?(Hash) && pentry["path"]
+    metadata_file = File.join(pentry["path"], "lib", "brainiac", "plugins", pname, "metadata.rb")
+    if File.exist?(metadata_file)
+      load metadata_file
+      return true
+    end
+  end
+
+  # Try gem path via standard require
+  begin
+    require "brainiac/plugins/#{pname}/metadata"
+    true
+  rescue LoadError
+    false
+  end
+end
+
+# Load only the plugin's CLI module (metadata + cli) without the full server runtime.
+# Returns true if successfully loaded, false if no CLI file exists.
+def try_require_plugin_cli(pname, pentry)
+  plugin_dir = (File.join(pentry["path"], "lib", "brainiac", "plugins", pname) if pentry.is_a?(Hash) && pentry["path"])
+
+  # Load metadata first (defines module + help_text/configured?)
+  try_require_metadata(pname, pentry)
+
+  # Load CLI file
+  if plugin_dir
+    cli_file = File.join(plugin_dir, "cli.rb")
+    if File.exist?(cli_file)
+      load cli_file
+      return true
+    end
+  end
+
+  # Try gem path
+  begin
+    require "brainiac/plugins/#{pname}/cli"
+    true
+  rescue LoadError
+    false
+  end
+end
+
+def resolve_plugin_module_for(name)
+  return nil unless defined?(Brainiac::Plugins)
+
+  pascal = name.split(/[-_]/).map(&:capitalize).join
+  if Brainiac::Plugins.const_defined?(pascal)
+    Brainiac::Plugins.const_get(pascal)
+  else
+    match = Brainiac::Plugins.constants.find { |c| c.to_s.downcase == name.downcase }
+    match ? Brainiac::Plugins.const_get(match) : nil
+  end
+end
+
+# Generate the plugin development SKILL.md content for the scaffold.
+# Uses single-quoted heredoc to avoid interpolation issues with example code.
+def generate_plugin_skill_md(plugin_name, pascal_name)
+  <<~SKILL.gsub("__PLUGIN_NAME__", plugin_name).gsub("__PASCAL_NAME__", pascal_name)
+    ---
+    name: brainiac-plugin-development
+    description: |
+      How to develop Brainiac plugins. Covers the plugin contract, file structure,
+      hooks, CLI commands, and architecture constraints.
+    triggers:
+      - plugin contract
+      - plugin development
+      - register app
+      - brainiac hooks
+    ---
+
+    # Brainiac Plugin Development
+
+    This is a Brainiac plugin gem. Plugins extend Brainiac with new communication
+    channels, integrations, or features without modifying core.
+
+    ## Plugin Contract
+
+    A valid Brainiac plugin MUST:
+
+    1. **Gem named `brainiac-<name>`**
+    2. **Entry file at `lib/brainiac_<name>.rb`** — loaded by RubyGems
+    3. **Module at `Brainiac::Plugins::<Name>`** — PascalCase
+    4. **Implement `.register(app)`** — receives Sinatra::Application at server startup
+
+    Optional but recommended:
+
+    | Method | File | Purpose |
+    |--------|------|---------|
+    | `.register(app)` | main module | **Required.** Define routes, hooks, threads |
+    | `.configured?` | `metadata.rb` | Returns false → auto-runs setup on install |
+    | `.help_text` | `metadata.rb` | One-liner for `brainiac help` |
+    | `.cli(args)` | `cli.rb` | CLI subcommands via `brainiac <plugin> ...` |
+
+    ## Critical Architecture: CLI vs Server Runtime
+
+    Plugins are loaded in TWO contexts:
+
+    1. **Server context** — full plugin via `.register(app)`. Has `LOG`, `AGENT_REGISTRY`, etc.
+    2. **CLI context** — only `metadata.rb` + `cli.rb`. NO server runtime.
+
+    Rules:
+    - `metadata.rb` requires only `version.rb`
+    - `cli.rb` uses only stdlib (`json`, `net/http`, `fileutils`)
+    - Everything else loaded only by `.register(app)`
+
+    ## Available Hooks
+
+    Subscribe in `.register(app)` via `Brainiac.on(:event)`:
+
+    | Hook | When |
+    |------|------|
+    | `:server_started` | All plugins loaded |
+    | `:pre_dispatch` | Before agent CLI spawned |
+    | `:agent_completed` | Agent session finished |
+    | `:agent_crashed` | Agent process crashed |
+    | `:build_brain_context` | Building prompt context |
+    | `:pr_merged` | GitHub PR merged |
+    | `:pr_review_received` | PR review submitted |
+    | `:pr_synchronized` | PR updated |
+    | `:production_deployed` | Deploy succeeded |
+    | `:create_work_item` | Create card/issue/ticket |
+    | `:detect_cli_provider` | Detect CLI provider |
+    | `:detect_effort` | Detect effort level |
+
+    ## Channel Prompts
+
+    For communication channel plugins:
+
+    ```ruby
+    Brainiac.register_channel_prompt(:my_channel, PROMPT_TEXT, pre_post_check: CHECK_TEXT)
+    ```
+
+    ## Core Functions (Server Context)
+
+    | Function | Purpose |
+    |----------|---------|
+    | `agent_display_name(key)` | Display name for agent |
+    | `agent_env_for(name)` | Env vars hash for agent |
+    | `AGENT_REGISTRY` | All agents |
+    | `PROJECTS` | All projects |
+    | `LOG` | Logger |
+    | `BRAINIAC_DIR` | ~/.brainiac/ path |
+    | `register_session(key, pid, **)` | Track active session |
+    | `session_active?(key)` | Check if session running |
+    | `build_brain_context(...)` | Build brain context |
+    | `render_prompt(template, vars, ...)` | Compose full prompt |
+    | `detect_model(config, text:)` | Detect model from tags |
+    | `parse_inline_tags(text)` | Parse inline tags |
+    | `reload_projects!` | Reload projects.json |
+    | `brain_push(message:)` | Push brain to git |
+
+    ## Testing
+
+    ```bash
+    rake test       # Minitest
+    rake rubocop    # Linter
+    rake            # Both
+    ```
+
+    ## Reference Implementations
+
+    - `brainiac-discord` — Communication channel (gateway, messages, delivery, reactions)
+    - `brainiac-fizzy` — Card management (webhooks, hooks, duplicate detection, planning)
+  SKILL
+end
+
 def start_server(daemon: false)
   # Resolve the real path of the brainiac script (follows symlinks)
   receiver_path = File.join(BRAINIAC_ROOT, "receiver.rb")
@@ -632,7 +880,7 @@ when "setup"
   puts ""
 
   # Create directory structure
-  dirs = %w[brain/knowledge brain/persona brain/memory handlers plans tmp/discord/draft tmp/discord/posted]
+  dirs = %w[brain/knowledge brain/persona brain/memory handlers plans tmp/notify/draft tmp/notify/posted]
   dirs.each do |dir|
     path = File.join(BRAINIAC_DIR, dir)
     FileUtils.mkdir_p(path)
@@ -675,9 +923,7 @@ when "setup"
     puts ""
 
     available_handlers = {
-
       "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
-      "discord" => "Discord (conversational agent access via bot)",
       "zoho" => "Zoho Mail (email notifications and triage)"
     }
 
@@ -706,6 +952,42 @@ when "setup"
   puts "  3. Register projects: cd ~/Code/myproject && brainiac register"
   puts "  4. Initialize brain: brainiac brain init"
   puts "  5. Start server: brainiac server"
+
+  # Shell completion setup
+  puts ""
+  completion_source = File.join(BRAINIAC_ROOT, "bin", "brainiac-completion.bash")
+  completion_target = File.join(BRAINIAC_DIR, "brainiac-completion.bash")
+  if File.exist?(completion_source)
+    FileUtils.cp(completion_source, completion_target)
+
+    # Detect shell rc file
+    shell = ENV.fetch("SHELL", "/bin/bash")
+    rc_file = case shell
+              when /zsh/ then File.expand_path("~/.zshrc")
+              when /fish/ then nil # fish uses different mechanism
+              else File.expand_path("~/.bashrc")
+              end
+
+    source_line = "[[ -r \"#{completion_target}\" ]] && source \"#{completion_target}\""
+
+    if rc_file && File.exist?(rc_file) && !File.read(rc_file).include?("brainiac-completion")
+      print "Add shell completion to #{rc_file}? [Y/n] "
+      answer = $stdin.gets&.strip&.downcase
+      if answer == "n"
+        puts "  To add manually:"
+        puts "    #{source_line}"
+      else
+        File.open(rc_file, "a") { |f| f.puts("\n# Brainiac CLI completion\n#{source_line}") }
+        puts "✓ Added completion to #{rc_file}"
+      end
+    elsif rc_file && !File.exist?(rc_file)
+      puts "  Shell completion installed to: #{completion_target}"
+      puts "  Add to your shell rc file:"
+      puts "    #{source_line}"
+    else
+      puts "✓ Shell completion already configured"
+    end
+  end
 
 when "register", "add"
   OptionParser.new do |opts|
@@ -785,7 +1067,7 @@ when "handler", "handlers"
     handlers = config["handlers"] || {}
 
     # Built-in handlers
-    builtins = %w[github discord zoho]
+    builtins = %w[github zoho]
     puts "Built-in handlers:"
     builtins.each do |name|
       enabled = handlers.fetch(name, true)
@@ -895,165 +1177,6 @@ when "status"
 
 when "path"
   puts BRAINIAC_DIR
-
-when "discord"
-  discord_cmd = ARGV.shift
-  discord_config_file = File.join(BRAINIAC_DIR, "discord.json")
-  agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
-
-  case discord_cmd
-  when "config"
-    if File.exist?(discord_config_file)
-      puts File.read(discord_config_file)
-    else
-      puts "No Discord config found at #{discord_config_file}"
-      puts "Create one with: brainiac discord map <channel-id> <project>"
-      puts "Or copy discord.json.example to #{discord_config_file}"
-    end
-
-  when "map"
-    channel_id = ARGV[0]
-    project_key = ARGV[1]
-
-    unless channel_id && project_key
-      puts "Usage: brainiac discord map <channel-id> <project-key>"
-      exit 1
-    end
-
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : { "channel_mappings" => {} }
-    config["channel_mappings"] ||= {}
-    config["channel_mappings"][channel_id] = { "project" => project_key }
-
-    ensure_brainiac_dir
-    File.write(discord_config_file, JSON.pretty_generate(config))
-    puts "✓ Mapped channel #{channel_id} → project '#{project_key}'"
-
-  when "default"
-    project_key = ARGV[0]
-
-    unless project_key
-      puts "Usage: brainiac discord default <project-key>"
-      exit 1
-    end
-
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : { "channel_mappings" => {} }
-    config["default_project"] = project_key
-
-    ensure_brainiac_dir
-    File.write(discord_config_file, JSON.pretty_generate(config))
-    puts "✓ Default project: #{project_key}"
-
-  when "token"
-    agent_key = ARGV[0]
-    token = ARGV[1]
-
-    unless agent_key && token
-      puts "Usage: brainiac discord token <agent-key> <bot-token>"
-      puts "  Sets the DISCORD_BOT_TOKEN env var for an agent in the registry."
-      puts "  Example: brainiac discord token galen Bot_TOKEN_HERE"
-      exit 1
-    end
-
-    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
-    registry[agent_key] ||= {}
-    registry[agent_key]["env"] ||= {}
-    registry[agent_key]["env"]["DISCORD_BOT_TOKEN"] = token
-
-    ensure_brainiac_dir
-    File.write(agent_registry_file, JSON.pretty_generate(registry))
-    puts "✓ Set DISCORD_BOT_TOKEN for '#{agent_key}'"
-
-  when "status"
-    config = load_config
-    server_url = config["server_url"] || "http://localhost:4567"
-    begin
-      uri = URI("#{server_url}/api/discord")
-      response = Net::HTTP.get_response(uri)
-      data = JSON.parse(response.body)
-      if data["enabled"]
-        bots = data["bots"] || {}
-        if bots.empty?
-          puts "Discord: enabled but no bots configured"
-        else
-          puts "Discord bots:"
-          bots.each do |agent, info|
-            puts "  #{agent}: #{info["status"]} (user_id: #{info["user_id"] || "n/a"})"
-          end
-        end
-        puts "Default project: #{data.dig("config", "default_project") || "none"}"
-        puts "Channel mappings: #{data.dig("config", "channel_mappings")}"
-      else
-        puts "Discord: disabled (#{data["reason"]})"
-      end
-    rescue StandardError => e
-      puts "Could not reach server at #{server_url}: #{e.message}"
-      puts "Is the server running? Check with: brainiac status"
-    end
-
-  when "agents"
-    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
-    agents_with_tokens = registry.select { |_k, v| v.is_a?(Hash) && (v.dig("env", "DISCORD_BOT_TOKEN") || v["discord_bot_token"]) }
-    if agents_with_tokens.empty?
-      puts "No agents have Discord bot tokens configured."
-      puts "Add one with: brainiac discord token <agent-key> <bot-token>"
-    else
-      puts "Agents with Discord bots:"
-      agents_with_tokens.each do |key, entry|
-        display = entry["display_name"] || key.capitalize
-        token = entry.dig("env", "DISCORD_BOT_TOKEN") || entry["discord_bot_token"]
-        token_preview = "#{token[0..10]}..."
-        puts "  #{display} (#{key}): #{token_preview}"
-      end
-    end
-
-  when "owner"
-    discord_id = ARGV[0]
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : {}
-    if discord_id
-      config["owner_discord_id"] = discord_id
-      ensure_brainiac_dir
-      File.write(discord_config_file, JSON.pretty_generate(config))
-      puts "✓ Owner set to #{discord_id}"
-    elsif config["owner_discord_id"]
-      puts "Owner: #{config["owner_discord_id"]}"
-    else
-      puts "No owner set."
-      puts "Usage: brainiac discord owner <discord-user-id>"
-    end
-
-  else
-    puts <<~HELP
-      Usage: brainiac discord <command>
-
-      Commands:
-        config                              Show Discord config
-        default <project>                   Set default project for all channels
-        map <channel-id> <project>          Map a specific channel to a project
-        owner [<discord-user-id>]           Set/show machine owner (for version notifications)
-        token <agent-key> <bot-token>       Set Discord bot token for an agent
-        agents                              List agents with Discord bot tokens
-        status                              Check Discord bot status (via server API)
-
-      Each agent gets its own Discord bot. Users @mention @Galen or @GLaDOS
-      directly in Discord — no shared bot needed.
-
-      Setup:
-        1. Create a Discord bot per agent at https://discord.com/developers/applications
-        2. Enable MESSAGE CONTENT intent in each bot's settings
-        3. Invite each bot with permissions: Send Messages, Create Public Threads,
-           Send Messages in Threads, Add Reactions, Read Message History
-        4. Register each bot token:
-           brainiac discord token galen "BOT_TOKEN_FOR_GALEN"
-           brainiac discord token glados "BOT_TOKEN_FOR_GLADOS"
-        5. Set a default project:
-           brainiac discord default marketplace
-        6. Start the server (all bots connect automatically):
-           brainiac server
-
-      Config file: #{discord_config_file}
-      Agent registry: #{agent_registry_file}
-    HELP
-  end
 
 when "work-items", "card-map"
   work_items_file = File.join(BRAINIAC_DIR, "work_items.json")
@@ -1185,7 +1308,8 @@ when "cron"
     project = nil
     model = nil
     effort = nil
-    discord_channel_id = nil
+    notify_channel = nil
+    notify_target = nil
     forum_title = nil
     repeat_count = nil
     prompt = nil
@@ -1198,10 +1322,11 @@ when "cron"
       opts.on("-p", "--project KEY", "Project key") { |v| project = v }
       opts.on("-m", "--model MODEL", "Model to use (opus, sonnet, haiku, auto)") { |v| model = v }
       opts.on("-e", "--effort LEVEL", "Effort level (low, medium, high, xhigh, max)") { |v| effort = v }
-      opts.on("-d", "--discord CHANNEL_ID", "Discord channel ID to post results") { |v| discord_channel_id = v }
+      opts.on("-d", "--notify TARGET", "Notification target (channel ID, card number, etc.)") { |v| notify_target = v }
+      opts.on("-c", "--channel CHANNEL", "Notification channel (discord, fizzy — default: discord)") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "Forum post title (for forum channels)") { |v| forum_title = v }
       opts.on("-r", "--repeat COUNT", Integer, "Number of times to repeat (for recurring schedules)") { |v| repeat_count = v }
-      opts.on("--script PATH", "Run script directly (no agent, output to Discord)") { |v| script = v }
+      opts.on("--script PATH", "Run script directly (no agent, output posted via notify)") { |v| script = v }
     end.parse!
 
     prompt = ARGV.join(" ") unless script
@@ -1241,7 +1366,9 @@ when "cron"
     payload[:script] = script if script
     payload[:model] = model if model
     payload[:effort] = effort if effort
-    payload[:discord_channel_id] = discord_channel_id if discord_channel_id
+    payload[:discord_channel_id] = notify_target if notify_target && (!notify_channel || notify_channel == "discord")
+    payload[:notify_channel] = notify_channel if notify_channel
+    payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
     payload[:repeat_count] = repeat_count if repeat_count
     req.body = payload.to_json
@@ -1256,8 +1383,8 @@ when "cron"
         puts "  Project: #{project}"
         puts "  Model: #{model || "default"}" unless script
         puts "  Effort: #{effort || "default"}" unless script
-        puts "  Discord: #{discord_channel_id || "none"}"
-        puts "  Forum title: #{forum_title || "auto"}" if discord_channel_id
+        puts "  Notify: #{notify_target ? "#{notify_channel || "discord"} → #{notify_target}" : "none"}"
+        puts "  Forum title: #{forum_title || "auto"}" if notify_target && forum_title
         puts "  Repeat: #{repeat_count ? "#{repeat_count} times" : "unlimited"}"
         puts script ? "  Script: #{script}" : "  Prompt: #{prompt}"
       else
@@ -1301,7 +1428,9 @@ when "cron"
           puts "  #{status} #{id}"
           puts "    Schedule: #{schedule_display}"
           puts "    Agent: #{job["script"] ? "none (script mode)" : job["agent"]} | Project: #{job["project"]}"
-          puts "    Discord: #{job["discord_channel_id"]}" if job["discord_channel_id"]
+          notify_ch = job["notify_channel"] || (job["discord_channel_id"] ? "discord" : nil)
+          notify_tgt = job["notify_target"] || job["discord_channel_id"]
+          puts "    Notify: #{notify_ch} → #{notify_tgt}" if notify_tgt
           puts job["script"] ? "    Script: #{job["script"]}" : "    Prompt: #{job["prompt"]}"
           puts "    Last run: #{last_run}"
           puts
@@ -1390,22 +1519,23 @@ when "cron"
   when "update"
     id = ARGV[0]
     schedule = nil
-    discord_channel_id = nil
+    notify_target = nil
+    notify_channel = nil
     forum_title = nil
 
     OptionParser.new do |opts|
       opts.banner = "Usage: brainiac cron update <job-id> [options]"
       opts.on("-s", "--schedule EXPR", "New cron expression") { |v| schedule = v }
-      opts.on("-c", "--channel CHANNEL_ID", "New Discord channel ID") { |v| discord_channel_id = v }
+      opts.on("-d", "--notify TARGET", "New notification target") { |v| notify_target = v }
+      opts.on("-c", "--channel CHANNEL", "New notification channel (discord, fizzy)") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "New forum post title") { |v| forum_title = v }
     end.parse!
 
-    unless id && (schedule || discord_channel_id || forum_title)
+    unless id && (schedule || notify_target || notify_channel || forum_title)
       puts "Error: Missing required arguments"
       puts "Usage: brainiac cron update <job-id> -s \"42 13 * * 1-5\""
-      puts "   or: brainiac cron update <job-id> -c \"1423854179880927274\""
+      puts "   or: brainiac cron update <job-id> -d \"channel-id\" -c discord"
       puts "   or: brainiac cron update <job-id> -t \"Daily Update\""
-      puts "   or: brainiac cron update <job-id> -s \"42 13 * * 1-5\" -c \"1423854179880927274\""
       exit 1
     end
 
@@ -1413,7 +1543,9 @@ when "cron"
     req = Net::HTTP::Post.new(uri, "Content-Type" => "application/json")
     payload = { id: id }
     payload[:schedule] = schedule if schedule
-    payload[:discord_channel_id] = discord_channel_id if discord_channel_id
+    payload[:discord_channel_id] = notify_target if notify_target
+    payload[:notify_channel] = notify_channel if notify_channel
+    payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
     req.body = payload.to_json
 
@@ -1423,7 +1555,7 @@ when "cron"
       if data["success"]
         puts "✓ Updated cron job: #{id}"
         puts "  New schedule: #{schedule}" if schedule
-        puts "  New Discord channel: #{discord_channel_id}" if discord_channel_id
+        puts "  New notify: #{notify_channel || "discord"} → #{notify_target}" if notify_target
         puts "  New forum title: #{forum_title}" if forum_title
       else
         puts "Error: #{data["error"]}"
@@ -2229,6 +2361,9 @@ when "install"
     puts "✓ Registered plugin '#{name}' from #{local_path}"
     puts "  Restart the server to activate: brainiac restart"
     puts "  Note: Source changes take effect on next server restart."
+
+    # Auto-run setup if plugin defines it and isn't already configured
+    run_plugin_setup(name, local_path: local_path)
   else
     # RubyGems mode
     puts "Installing #{gem_name}..."
@@ -2259,6 +2394,9 @@ when "install"
     puts ""
     puts "✓ Installed plugin '#{name}' (#{gem_name})"
     puts "  Restart the server to activate: brainiac restart"
+
+    # Auto-run setup if plugin defines it and isn't already configured
+    run_plugin_setup(name)
   end
 
 when "uninstall"
@@ -2356,151 +2494,643 @@ when "plugins"
     puts "  brainiac plugins              List installed plugins"
   end
 
+when "plugin"
+  plugin_cmd = ARGV.shift
+
+  case plugin_cmd
+  when "new"
+    plugin_name = ARGV.shift
+    unless plugin_name
+      puts "Usage: brainiac plugin new <name>"
+      puts ""
+      puts "Generates a new Brainiac plugin gem skeleton."
+      puts ""
+      puts "Example:"
+      puts "  brainiac plugin new slack"
+      puts "  → Creates ~/Code/brainiac-slack/ with full gem structure"
+      exit 1
+    end
+
+    plugin_name = plugin_name.downcase.gsub(/[^a-z0-9-]/, "-").sub(/^brainiac-/, "")
+    gem_name = "brainiac-#{plugin_name}"
+    pascal_name = plugin_name.split(/[-_]/).map(&:capitalize).join
+    snake_name = plugin_name.tr("-", "_")
+
+    # Determine output directory
+    output_dir = ARGV.shift || File.join(Dir.pwd, gem_name)
+    output_dir = File.expand_path(output_dir)
+
+    if Dir.exist?(output_dir) && !Dir.empty?(output_dir)
+      puts "Error: Directory already exists and is not empty: #{output_dir}"
+      exit 1
+    end
+
+    puts "Creating #{gem_name} at #{output_dir}..."
+
+    # Create directory structure
+    dirs = [
+      "lib/brainiac/plugins/#{plugin_name}",
+      "test",
+      "skills/#{plugin_name}"
+    ]
+    dirs.each { |d| FileUtils.mkdir_p(File.join(output_dir, d)) }
+
+    # version.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "version.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            VERSION = "0.0.1"
+          end
+        end
+      end
+    RUBY
+
+    # metadata.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "metadata.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      # Lightweight metadata — loaded by `brainiac help` without the full plugin runtime.
+
+      require_relative "version"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            def self.configured?
+              # TODO: Return true when the plugin has been configured
+              false
+            end
+
+            def self.help_text
+              "    brainiac #{plugin_name} <command>#{" " * [1, 20 - plugin_name.length].max}Manage #{pascal_name} integration"
+            end
+          end
+        end
+      end
+    RUBY
+
+    # cli.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "cli.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "json"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            module Cli
+              BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
+
+              class << self
+                def run(args)
+                  command = args.shift
+
+                  case command
+                  when "config"
+                    cmd_config
+                  when "setup"
+                    cmd_setup
+                  when "status"
+                    cmd_status
+                  else
+                    print_help
+                  end
+                end
+
+                private
+
+                def cmd_config
+                  puts "TODO: Show #{plugin_name} configuration"
+                end
+
+                def cmd_setup
+                  puts "#{pascal_name} Setup"
+                  puts "#{"=" * (pascal_name.length + 6)}"
+                  puts ""
+                  puts "TODO: Walk user through configuration"
+                end
+
+                def cmd_status
+                  puts "TODO: Show #{plugin_name} status"
+                end
+
+                def print_help
+                  puts <<~HELP
+                    Usage: brainiac #{plugin_name} <command>
+
+                    Commands:
+                      config                              Show #{pascal_name} config
+                      setup                               Interactive setup guide
+                      status                              Check #{pascal_name} status via server API
+
+                    Config file: #{File.join("~/.brainiac", "#{plugin_name}.json")}
+                  HELP
+                end
+              end
+            end
+
+            def self.cli(args)
+              Cli.run(args)
+            end
+
+            # Subcommand names for bash completion.
+            def self.completions
+              %w[config setup status]
+            end
+          end
+        end
+      end
+    RUBY
+
+    # Main plugin module
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", "#{plugin_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "#{plugin_name}/version"
+      require_relative "#{plugin_name}/metadata"
+      require_relative "#{plugin_name}/cli"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            class << self
+              # Called by Brainiac plugin system during server startup.
+              #
+              # @param app [Sinatra::Application] The running Brainiac server
+              def register(app)
+                # TODO: Load config, register hooks, define routes, start threads
+                setup_routes(app)
+
+                LOG.info "[#{pascal_name}] Plugin registered"
+              end
+
+              private
+
+              def setup_routes(app)
+                app.get "/api/#{plugin_name}" do
+                  content_type :json
+                  { enabled: true }.to_json
+                end
+
+                # TODO: Define webhook route
+                # app.post "/#{plugin_name}" do
+                #   content_type :json
+                #   { status: "received" }.to_json
+                # end
+              end
+            end
+          end
+        end
+      end
+    RUBY
+
+    # Entry point (loaded by RubyGems)
+    File.write(File.join(output_dir, "lib", "brainiac_#{snake_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      # Brainiac #{pascal_name} Plugin — entry point loaded by RubyGems.
+      require_relative "brainiac/plugins/#{plugin_name}"
+    RUBY
+
+    # Gemspec
+    File.write(File.join(output_dir, "#{gem_name}.gemspec"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "lib/brainiac/plugins/#{plugin_name}/version"
+
+      Gem::Specification.new do |s|
+        s.name        = "#{gem_name}"
+        s.version     = Brainiac::Plugins::#{pascal_name}::VERSION
+        s.summary     = "#{pascal_name} plugin for Brainiac"
+        s.description = "#{pascal_name} integration for Brainiac — TODO: describe what this plugin does."
+        s.authors     = ["Your Name"]
+        s.homepage    = "https://github.com/yourorg/#{gem_name}"
+        s.license     = "MIT"
+        s.required_ruby_version = ">= 3.4"
+
+        s.files = Dir["lib/**/*.rb", "README.md", "LICENSE"]
+        s.require_paths = ["lib"]
+
+        s.add_dependency "brainiac", ">= #{BRAINIAC_VERSION}"
+
+        s.add_development_dependency "minitest", "~> 5.25"
+        s.add_development_dependency "rake", "~> 13.0"
+        s.add_development_dependency "rubocop", "~> 1.75"
+        s.add_development_dependency "rubocop-performance", "~> 1.25"
+
+        s.metadata["rubygems_mfa_required"] = "true"
+      end
+    RUBY
+
+    # Gemfile
+    File.write(File.join(output_dir, "Gemfile"), <<~RUBY)
+      # frozen_string_literal: true
+
+      source "https://rubygems.org"
+
+      gemspec
+    RUBY
+
+    # Rakefile
+    File.write(File.join(output_dir, "Rakefile"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "rake/testtask"
+      require "rubocop/rake_task"
+
+      Rake::TestTask.new(:test) do |t|
+        t.libs << "test"
+        t.libs << "lib"
+        t.test_files = FileList["test/**/test_*.rb"]
+      end
+
+      RuboCop::RakeTask.new(:rubocop)
+
+      task default: %i[test rubocop]
+    RUBY
+
+    # .rubocop.yml
+    File.write(File.join(output_dir, ".rubocop.yml"), <<~YAML)
+      plugins:
+        - rubocop-performance
+
+      AllCops:
+        TargetRubyVersion: 3.4
+        NewCops: enable
+        SuggestExtensions: false
+        Exclude:
+          - "vendor/**/*"
+          - "tmp/**/*"
+
+      Metrics/MethodLength:
+        Max: 75
+
+      Metrics/AbcSize:
+        Max: 90
+
+      Metrics/ModuleLength:
+        Max: 600
+
+      Metrics/ParameterLists:
+        Max: 10
+        CountKeywordArgs: false
+
+      Metrics/BlockLength:
+        Exclude:
+          - "test/**/*"
+          - "*.gemspec"
+
+      Style/TopLevelMethodDefinition:
+        Enabled: false
+
+      Style/StringLiterals:
+        EnforcedStyle: double_quotes
+
+      Style/FrozenStringLiteralComment:
+        Enabled: false
+
+      Style/ClassAndModuleChildren:
+        Enabled: false
+
+      Style/Documentation:
+        Enabled: false
+
+      Gemspec/DevelopmentDependencies:
+        Enabled: false
+
+      Layout/LineLength:
+        Max: 150
+
+      Naming/PredicateMethod:
+        Enabled: false
+
+      Naming/FileName:
+        Exclude:
+          - "lib/brainiac/plugins/**/*"
+    YAML
+
+    # Test helper
+    File.write(File.join(output_dir, "test", "test_helper.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "minitest/autorun"
+      require "json"
+      require "fileutils"
+      require "tmpdir"
+
+      TEST_BRAINIAC_DIR = Dir.mktmpdir("brainiac-#{plugin_name}-test")
+      ENV["BRAINIAC_DIR"] = TEST_BRAINIAC_DIR
+
+      unless defined?(LOG)
+        LOG = Class.new do
+          def info(_msg) = nil
+          def warn(_msg) = nil
+          def error(_msg) = nil
+          def debug(_msg) = nil
+          def debug? = false
+        end.new
+      end
+
+      module Brainiac
+        @hooks = Hash.new { |h, k| h[k] = [] }
+        @channel_prompts = {}
+        @channel_pre_post_checks = {}
+
+        class << self
+          def on(event, &block) = @hooks[event] << block
+
+          def emit(event, **ctx)
+            @hooks[event].filter_map do |h|
+              h.call(ctx)
+            rescue StandardError
+              nil
+            end
+          end
+
+          def register_channel_prompt(channel, prompt, pre_post_check: nil)
+            @channel_prompts[channel] = prompt
+            @channel_pre_post_checks[channel] = pre_post_check if pre_post_check
+          end
+
+          attr_reader :hooks, :channel_prompts, :channel_pre_post_checks
+
+          def reset_hooks!
+            @hooks = Hash.new { |h, k| h[k] = [] }
+            @channel_prompts = {}
+            @channel_pre_post_checks = {}
+          end
+        end
+
+        module Plugins; end
+      end
+
+      AGENT_REGISTRY = {}.freeze
+      PROJECTS = {}.freeze
+
+      require_relative "../lib/brainiac_#{snake_name}"
+
+      Minitest.after_run { FileUtils.rm_rf(TEST_BRAINIAC_DIR) }
+    RUBY
+
+    # Test file
+    File.write(File.join(output_dir, "test", "test_#{snake_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "test_helper"
+
+      class Test#{pascal_name}Plugin < Minitest::Test
+        def test_register_method_exists
+          assert_respond_to Brainiac::Plugins::#{pascal_name}, :register
+        end
+
+        def test_version_defined
+          assert_match(/\\A\\d+\\.\\d+\\.\\d+\\z/, Brainiac::Plugins::#{pascal_name}::VERSION)
+        end
+
+        def test_cli_method_exists
+          assert_respond_to Brainiac::Plugins::#{pascal_name}, :cli
+        end
+
+        def test_configured_returns_boolean
+          result = Brainiac::Plugins::#{pascal_name}.configured?
+          assert_includes [true, false], result
+        end
+
+        def test_help_text_defined
+          text = Brainiac::Plugins::#{pascal_name}.help_text
+          assert_kind_of String, text
+          assert_includes text, "brainiac #{plugin_name}"
+        end
+      end
+    RUBY
+
+    # README
+    File.write(File.join(output_dir, "README.md"), <<~MD)
+      # #{gem_name}
+
+      #{pascal_name} plugin for [Brainiac](https://github.com/stowzilla/brainiac).
+
+      ## Installation
+
+      ```bash
+      brainiac install #{plugin_name}
+      brainiac restart
+      ```
+
+      Or for local development:
+
+      ```bash
+      brainiac install #{plugin_name} --path #{output_dir}
+      brainiac restart
+      ```
+
+      ## Configuration
+
+      ```bash
+      brainiac #{plugin_name} setup
+      ```
+
+      ## Development
+
+      ```bash
+      bundle install
+      rake test
+      rake rubocop
+      ```
+
+      ## License
+
+      MIT
+    MD
+
+    # Plugin development SKILL.md — stamped into the scaffold so agents
+    # working on this plugin know the contract without needing brain access.
+    File.write(File.join(output_dir, "skills", plugin_name, "SKILL.md"),
+               generate_plugin_skill_md(plugin_name, pascal_name))
+
+    puts ""
+    puts "✓ Created #{gem_name} at #{output_dir}"
+    puts ""
+    puts "Next steps:"
+    puts "  cd #{output_dir}"
+    puts "  bundle install"
+    puts "  rake test                    # Verify scaffold works"
+    puts "  # Edit lib/brainiac/plugins/#{plugin_name}.rb to add your logic"
+    puts "  brainiac install #{plugin_name} --path #{output_dir}"
+    puts "  brainiac restart"
+
+  else
+    puts "Usage: brainiac plugin <command>"
+    puts ""
+    puts "Commands:"
+    puts "  new <name>                   Generate a new plugin gem skeleton"
+    puts ""
+    puts "Managing installed plugins:"
+    puts "  brainiac install <name>      Install a plugin"
+    puts "  brainiac uninstall <name>    Remove a plugin"
+    puts "  brainiac plugins             List installed plugins"
+  end
+
 when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
 when "help", "--help", "-h", nil
+  # Load installed plugin help dynamically
+  plugin_help_lines = collect_plugin_help_lines
+
+  plugin_section = if plugin_help_lines.any?
+                     "\n    Installed Plugins:\n#{plugin_help_lines.join("\n")}\n"
+                   else
+                     ""
+                   end
+
   puts <<~HELP
-    Brainiac CLI - Manage projects with Brainiac server
+      Brainiac CLI - Manage projects with Brainiac server
 
-    Usage:
-      brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
-      brainiac server [options]       Start the Brainiac webhook server (foreground)
-      brainiac stop                   Stop the running server
-      brainiac restart                Restart the server
-      brainiac logs                   Tail the server log
-      brainiac status                 Check if server is running
-      brainiac register [options]     Register current directory as a project
-      brainiac unregister <key>       Unregister a project
-      brainiac list                   List all registered projects
-      brainiac projects list          List all registered projects (alias)
-      brainiac projects default <key> Set the default project
-      brainiac show <key>             Show project configuration
-      brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
-      brainiac uninstall <plugin>     Remove an installed plugin
-      brainiac plugins                List installed plugins
-      brainiac brain <command>        Manage agent long-term memory (brain)
-      brainiac discord <command>      Manage the Discord bot
-      brainiac cron <command>         Manage scheduled agent tasks
-      brainiac provider <command>     Manage CLI providers
-      brainiac role <command>         Manage agent roles
-      brainiac agent <command>        Manage agent registry (env, list, show)
-      brainiac config                 Configure Brainiac CLI
-      brainiac path                   Show Brainiac config directory
-      brainiac version                Show version
-      brainiac help                   Show this help message
+      Usage:
+        brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
+        brainiac server [options]       Start the Brainiac webhook server (foreground)
+        brainiac stop                   Stop the running server
+        brainiac restart                Restart the server
+        brainiac logs                   Tail the server log
+        brainiac status                 Check if server is running
+        brainiac register [options]     Register current directory as a project
+        brainiac unregister <key>       Unregister a project
+        brainiac list                   List all registered projects
+        brainiac projects list          List all registered projects (alias)
+        brainiac projects default <key> Set the default project
+        brainiac show <key>             Show project configuration
+        brainiac plugin new <name>      Generate a new plugin gem skeleton
+        brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
+        brainiac uninstall <plugin>     Remove an installed plugin
+        brainiac plugins                List installed plugins
+        brainiac brain <command>        Manage agent long-term memory (brain)
+        brainiac cron <command>         Manage scheduled agent tasks
+        brainiac provider <command>     Manage CLI providers
+        brainiac role <command>         Manage agent roles
+        brainiac agent <command>        Manage agent registry (env, list, show)
+        brainiac config                 Configure Brainiac CLI
+        brainiac path                   Show Brainiac config directory
+        brainiac version                Show version
+        brainiac help                   Show this help message
+    #{plugin_section}
+      Server Options:
+        -d, --daemon                     Run server in background (detached)
 
-    Server Options:
-      -d, --daemon                     Run server in background (detached)
+      Plugin Commands:
+        plugin new <name>                Generate a new plugin gem skeleton
+        install <name>                   Install a plugin (gem install brainiac-<name>)
+        uninstall <name>                 Remove a plugin
+        plugins                          List installed plugins
 
-    Plugin Commands:
-      install <name>                   Install a plugin (gem install brainiac-<name>)
-      uninstall <name>                 Remove a plugin
-      plugins                          List installed plugins
+      Card Map Commands:
+        card-map list                    Show all card map entries
+        card-map clean                   Remove stale entries (missing worktrees)
 
-    Card Map Commands:
-      card-map list                    Show all card map entries
-      card-map clean                   Remove stale entries (missing worktrees)
+      Brain Commands:
+        brain init [agent]               Initialize brain (knowledge + persona)
+        brain status [agent]             Show brain status and files
+        brain search [--persona] <q>     Search knowledge or persona
+        brain list                       List knowledge and all personas
+        brain path                       Show knowledge directory
 
-    Brain Commands:
-      brain init [agent]               Initialize brain (knowledge + persona)
-      brain status [agent]             Show brain status and files
-      brain search [--persona] <q>     Search knowledge or persona
-      brain list                       List knowledge and all personas
-      brain path                       Show knowledge directory
+      Cron Commands:
+        cron add -s <schedule> -p <project> "<prompt>"
+                                         Add a scheduled task
+        cron list                        List all cron jobs
+        cron remove <job-id>             Remove a cron job
+        cron enable <job-id>             Enable a cron job
+        cron disable <job-id>            Disable a cron job
+        cron update <job-id> -s <schedule>
+                                         Update a cron job's schedule
 
-    Cron Commands:
-      cron add -s <schedule> -p <project> "<prompt>"
-                                       Add a scheduled task
-      cron list                        List all cron jobs
-      cron remove <job-id>             Remove a cron job
-      cron enable <job-id>             Enable a cron job
-      cron disable <job-id>            Disable a cron job
-      cron update <job-id> -s <schedule>
-                                       Update a cron job's schedule
+      Provider Commands:
+        provider list                    List configured CLI providers
+        provider show <name>             Show provider configuration
+        provider add <name>              Create a new provider config
 
-    Discord Commands:
-      discord config                   Show Discord config
-      discord default <proj>           Set default project for all channels
-      discord map <ch> <proj>          Map a channel to a project
-      discord owner [<id>]             Set/show machine owner (version notifications)
-      discord token <agent> <token>    Set Discord bot token for an agent
-      discord agents                   List agents with Discord bot tokens
-      discord status                   Check bot status via server API
+      Role Commands:
+        role list                        List configured roles and assignments
+        role show <name>                 Show role definition
+        role create <name>               Create a new role file
+        role assign <agent> <role>       Assign a role to an agent (additive)
+        role unassign <agent> <role>     Remove a role from an agent
 
-    Provider Commands:
-      provider list                    List configured CLI providers
-      provider show <name>             Show provider configuration
-      provider add <name>              Create a new provider config
+      Agent Commands:
+        agent list                         List all agents in the registry
+        agent <name> show                  Show agent configuration (tokens redacted)
+        agent <name> env <KEY> <VALUE>     Set an env var for an agent
+        agent <name> env                   List env vars for an agent
+        agent <name> env --delete <KEY>    Remove an env var from an agent
 
-    Role Commands:
-      role list                        List configured roles and assignments
-      role show <name>                 Show role definition
-      role create <name>               Create a new role file
-      role assign <agent> <role>       Assign a role to an agent (additive)
-      role unassign <agent> <role>     Remove a role from an agent
+      Examples:
+        # Start the server in the foreground (like rails server)
+        brainiac server
+        brainiac s
+      #{"  "}
+        # Register current directory
+        cd ~/Code/my-project && brainiac register
+      #{"  "}
+        # Install a plugin
+        brainiac install discord
+      #{"  "}
+        # List all projects
+        brainiac list
 
-    Agent Commands:
-      agent list                         List all agents in the registry
-      agent <name> show                  Show agent configuration (tokens redacted)
-      agent <name> env <KEY> <VALUE>     Set an env var for an agent
-      agent <name> env                   List env vars for an agent
-      agent <name> env --delete <KEY>    Remove an env var from an agent
-
-    Examples:
-      # Start the server in the foreground (like rails server)
-      brainiac server
-      brainiac s
-    #{"  "}
-      # Start the server in background (detached)
-      brainiac server --daemon
-      brainiac server -d
-    #{"  "}
-      # Tail the server logs
-      brainiac logs
-    #{"  "}
-      # Restart the server
-      brainiac restart
-    #{"  "}
-      # Stop the server
-      brainiac stop
-    #{"  "}
-      # Check server status
-      brainiac status
-    #{"  "}
-      # Register current directory
-      cd ~/Code/my-project && brainiac register
-    #{"  "}
-      # Register with specific path
-      brainiac register --path ~/Code/my-project
-    #{"  "}
-      # List all projects
-      brainiac list
-      brainiac projects list  # alternative syntax
-    #{"  "}
-      # Set default project
-      brainiac projects default my-project
-    #{"  "}
-      # Unregister a project
-      brainiac unregister my-project
-    #{"  "}
-      # Show project details
-      brainiac show my-project
-    #{"  "}
-      # Initialize brain for your agent
-      brainiac brain init Galen
-    #{"  "}
-      # Search the brain
-      brainiac brain search "ruby conventions"
-
-    Configuration:
-      Projects are stored in: #{BRAINIAC_DIR}/projects.json
-      Server config: #{BRAINIAC_DIR}/config.json
-      Brain storage: #{BRAINIAC_DIR}/brain/
+      Configuration:
+        Projects are stored in: #{BRAINIAC_DIR}/projects.json
+        Server config: #{BRAINIAC_DIR}/config.json
+        Brain storage: #{BRAINIAC_DIR}/brain/
   HELP
 
 else
-  puts "Unknown command: #{subcommand}"
-  puts "Run 'brainiac help' for usage information."
-  exit 1
+  # Check if the subcommand matches an installed plugin (e.g. "brainiac discord ...")
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  plugins_config = File.exist?(plugins_file) ? JSON.parse(File.read(plugins_file)) : { "plugins" => [] }
+  (plugins_config["plugins"] || []).map { |p| p.is_a?(Hash) ? p["name"] : p.to_s }
+  plugin_entry = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == subcommand }
+
+  if plugin_entry
+    # Delegate to the plugin's CLI module
+    gem_name = "brainiac-#{subcommand}"
+    begin
+      if plugin_entry.is_a?(Hash) && plugin_entry["path"]
+        lib_path = File.join(plugin_entry["path"], "lib")
+        $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+      end
+
+      # Try lightweight CLI loading first (metadata + cli only, no server runtime)
+      cli_loaded = try_require_plugin_cli(subcommand, plugin_entry)
+
+      # Fall back to full gem load if no standalone CLI file exists
+      unless cli_loaded
+        begin
+          require gem_name
+        rescue LoadError
+          require gem_name.tr("-", "_")
+        end
+      end
+
+      # Resolve the plugin module and call .cli(ARGV)
+      mod = resolve_plugin_module_for(subcommand)
+
+      if mod.respond_to?(:cli)
+        mod.cli(ARGV)
+      else
+        puts "Plugin '#{subcommand}' is installed but does not provide CLI commands."
+        puts "It runs as a server plugin — use 'brainiac server' to activate it."
+      end
+    rescue LoadError => e
+      puts "Plugin '#{subcommand}' is registered but could not be loaded: #{e.message}"
+      puts "Try reinstalling: brainiac uninstall #{subcommand} && brainiac install #{subcommand}"
+      exit 1
+    end
+  else
+    puts "Unknown command: #{subcommand}"
+    puts "Run 'brainiac help' for usage information."
+    exit 1
+  end
 end

@@ -200,11 +200,16 @@ end
 
 # Add a new cron job
 def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, enabled: true, model: nil, effort: nil, discord_channel_id: nil,
+                 notify_channel: nil, notify_target: nil,
                  forum_title: nil, forum_reply_to_latest: false, repeat_count: nil)
   parsed = parse_cron_expression(schedule)
   return { error: "Invalid cron expression" } unless parsed
   return { error: "Must provide either prompt or script, not both" } if prompt && script
   return { error: "Must provide either prompt or script" } unless prompt || script
+
+  # Normalize: discord_channel_id is legacy shorthand for notify_channel: discord, notify_target: <id>
+  notify_channel ||= :discord if discord_channel_id
+  notify_target ||= discord_channel_id
 
   job = {
     id: id,
@@ -217,6 +222,8 @@ def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, ena
     prompt: prompt,
     script: script,
     enabled: enabled,
+    notify_channel: notify_channel&.to_s,
+    notify_target: notify_target,
     discord_channel_id: discord_channel_id,
     forum_title: forum_title,
     forum_reply_to_latest: forum_reply_to_latest,
@@ -308,7 +315,7 @@ def execute_script_job(job, project)
   log_file = File.join(project["repo_path"], "tmp/cron-script-#{job[:id]}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  draft_file = prepare_script_discord_draft(job, timestamp) if job[:discord_channel_id]
+  draft_file = prepare_script_notification_draft(job, timestamp) if job[:notify_target] || job[:discord_channel_id]
 
   LOG.info "[Cron] Running script #{script_path} for job #{job[:id]}, tail -f #{log_file}"
 
@@ -327,16 +334,17 @@ def execute_script_job(job, project)
   end
 end
 
-# Prepare a Discord draft file and meta for a script job. Returns the draft file path.
-def prepare_script_discord_draft(job, timestamp)
-  draft_file = File.join(DISCORD_DRAFT_DIR, "cron-script-#{timestamp}-#{job[:id]}.md")
+# Prepare a notification draft file for a script job. Returns the draft file path.
+def prepare_script_notification_draft(job, timestamp)
+  notify_dir = File.join(BRAINIAC_DIR, "tmp", "notify", "draft")
+  FileUtils.mkdir_p(notify_dir)
+  draft_file = File.join(notify_dir, "cron-script-#{timestamp}-#{job[:id]}.md")
   meta_file = "#{draft_file}.meta.json"
-
-  FileUtils.mkdir_p(File.dirname(draft_file))
 
   script_agent_key = job[:agent]&.downcase&.gsub(/[^a-z0-9-]/, "-")
   meta = {
-    channel_id: job[:discord_channel_id],
+    notify_channel: (job[:notify_channel] || "discord").to_s,
+    notify_target: job[:notify_target] || job[:discord_channel_id],
     agent_key: script_agent_key,
     agent_name: job[:agent] || "Script",
     cron_job_id: job[:id],
@@ -353,10 +361,13 @@ def deliver_script_output(job, log_file, draft_file)
   return unless File.exist?(log_file)
 
   output = File.read(log_file).strip
+  has_notify = job[:notify_target] || job[:discord_channel_id]
 
-  if job[:discord_channel_id] && draft_file && !output.empty?
+  if has_notify && draft_file && !output.empty?
     File.write(draft_file, output)
-    LOG.info "[Cron] Script output written to #{draft_file} (#{output.length} chars)"
+    # Deliver via notification system
+    notify_cron_output(job, output, agent_name: job[:agent])
+    LOG.info "[Cron] Script output delivered via notification (#{output.length} chars)"
   elsif !output.empty?
     LOG.info "[Cron] Script output: #{output[0..200]}..."
   else
@@ -369,15 +380,22 @@ def build_cron_prompt(job, project)
   prompt = job[:prompt]
   agent_name = job[:agent]
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
+  has_notify = job[:notify_target] || job[:discord_channel_id]
 
-  if job[:discord_channel_id]
-    draft_file = File.join(DISCORD_DRAFT_DIR, "cron-#{timestamp}-#{agent_name}-#{job[:id]}.md")
+  if has_notify
+    notify_dir = File.join(BRAINIAC_DIR, "tmp", "notify", "draft")
+    FileUtils.mkdir_p(notify_dir)
+    draft_file = File.join(notify_dir, "cron-#{timestamp}-#{agent_name}-#{job[:id]}.md")
     meta_file = "#{draft_file}.meta.json"
-    FileUtils.mkdir_p(File.dirname(draft_file))
 
     agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+    notify_channel = (job[:notify_channel] || "discord").to_s
+    notify_target = job[:notify_target] || job[:discord_channel_id]
+
     meta = {
-      channel_id: job[:discord_channel_id],
+      notify_channel: notify_channel,
+      notify_target: notify_target,
+      channel_id: notify_target,
       agent_key: agent_key,
       agent_name: agent_name,
       cron_job_id: job[:id],
@@ -388,8 +406,8 @@ def build_cron_prompt(job, project)
     File.write(meta_file, JSON.pretty_generate(meta))
 
     full_prompt = <<~PROMPT
-      ## Scheduled Task (Discord Posting)
-      This is a scheduled cron job that will post to Discord channel #{job[:discord_channel_id]}.
+      ## Scheduled Task (Notification Posting)
+      This is a scheduled cron job. Output will be posted to #{notify_channel} (#{notify_target}).
 
       You were asked to: "#{prompt}"
 
@@ -397,7 +415,7 @@ def build_cron_prompt(job, project)
       Source directory: #{project["repo_path"]}
 
       **IMPORTANT: Write your response to #{draft_file}. Do NOT reply via stdout.**
-      Your response will be automatically posted to Discord.
+      Your response will be automatically posted.
 
       #{prompt}
     PROMPT
@@ -428,16 +446,13 @@ def handle_cron_completion(job, project, agent_name, agent_config_name, log_file
   cron_exit_status = $CHILD_STATUS.exitstatus
   LOG.info "[Cron] Job #{job[:id]} finished (exit: #{cron_exit_status})"
 
-  if cron_exit_status && cron_exit_status != 0 && job[:discord_channel_id]
-    bot_token = discord_bot_tokens[agent_config_name] || discord_bot_tokens.values.first
-    if bot_token
-      notify_agent_crash(
-        exit_status: cron_exit_status, log_file: log_file,
-        agent_name: agent_name, source: :discord,
-        source_context: { channel_id: job[:discord_channel_id], bot_token: bot_token },
-        project_config: project
-      )
-    end
+  if cron_exit_status && cron_exit_status != 0 && job[:notify_target]
+    notify_agent_crash(
+      exit_status: cron_exit_status, log_file: log_file,
+      agent_name: agent_name, source: :cron,
+      source_context: { job: job },
+      project_config: project
+    )
   end
 
   extract_cron_response_from_log(job, agent_config_name, log_file, response_file, meta_file)

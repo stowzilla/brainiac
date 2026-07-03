@@ -172,19 +172,6 @@ DEFAULT_PROJECT = {
   "allowed_efforts" => %w[low medium high xhigh max]
 }.freeze
 
-# --- Discord (optional) ---
-# Discord is enabled when any agent in the registry has a discord_bot_token
-# Requires the websocket-client-simple gem.
-
-DISCORD_ENABLED = begin
-  require "websocket-client-simple"
-  true
-rescue LoadError
-  warn "WARNING: websocket-client-simple gem not found. Discord bot disabled."
-  warn "Install with: gem install websocket-client-simple"
-  false
-end
-
 # --- Version check ---
 
 # Check if local brainiac is behind origin/master.
@@ -210,13 +197,13 @@ def check_brainiac_version
   { behind: true, local_sha: local_sha[0..6], remote_sha: remote_sha[0..6], commits_behind: count.strip.to_i }
 end
 
-# Discord user ID of the machine owner (for version-outdated notifications).
-# Reads from discord.json (Discord-scoped config).
-def owner_discord_id
-  discord_file = File.join(BRAINIAC_DIR, "discord.json")
-  return nil unless File.exist?(discord_file)
+# Owner identifier (for version-outdated notifications).
+# Reads from brainiac.json.
+def owner_id
+  brainiac_config_file = File.join(BRAINIAC_DIR, "brainiac.json")
+  return nil unless File.exist?(brainiac_config_file)
 
-  JSON.parse(File.read(discord_file))["owner_discord_id"]
+  JSON.parse(File.read(brainiac_config_file))["owner_id"]
 rescue JSON::ParserError
   nil
 end
@@ -224,8 +211,9 @@ end
 # --- Dashboard auth ---
 
 DASHBOARD_TOKEN = begin
-  discord_file = File.join(BRAINIAC_DIR, "discord.json")
-  JSON.parse(File.read(discord_file))["dashboard_token"] if File.exist?(discord_file)
+  brainiac_config_file = File.join(BRAINIAC_DIR, "brainiac.json")
+  config = File.exist?(brainiac_config_file) ? JSON.parse(File.read(brainiac_config_file)) : {}
+  config["dashboard_token"]
 rescue JSON::ParserError
   nil
 end

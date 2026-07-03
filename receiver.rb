@@ -21,6 +21,7 @@ require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
 require_relative "lib/brainiac/prompts"
 require_relative "lib/brainiac/helpers"
+require_relative "lib/brainiac/notifications"
 require_relative "lib/brainiac/cron"
 require_relative "lib/brainiac/restart"
 require_relative "lib/brainiac/plugins"
@@ -40,12 +41,7 @@ if handler_enabled?("github")
   LOG.info "[Handlers] GitHub handler enabled"
 end
 
-if DISCORD_ENABLED && handler_enabled?("discord")
-  require_relative "lib/brainiac/handlers/discord"
-  LOG.info "[Handlers] Discord handler enabled"
-end
-
-if DISCORD_ENABLED && handler_enabled?("zoho")
+if handler_enabled?("zoho")
   require_relative "lib/brainiac/handlers/zoho"
   LOG.info "[Handlers] Zoho handler enabled"
 end
@@ -218,7 +214,7 @@ end
 
 # --- Zoho Mail webhook route ---
 
-if DISCORD_ENABLED
+if handler_enabled?("zoho")
   post "/zoho" do
     content_type :json
     request.body.rewind
@@ -271,7 +267,7 @@ end
 
 # --- Zoho OAuth routes ---
 
-if DISCORD_ENABLED
+if handler_enabled?("zoho")
   ZOHO_AUTH_SCOPES = "ZohoMail.messages.READ,ZohoMail.accounts.READ,ZohoMail.folders.READ".freeze
 
   get "/zoho/auth" do
@@ -368,63 +364,16 @@ get "/dashboard" do
   erb :dashboard, layout: false
 end
 
-# --- Discord API + startup ---
+# --- Discord fallback (plugin handles startup when installed) ---
 
-if DISCORD_ENABLED
+unless Brainiac.channel_prompts[:discord]
   get "/api/discord" do
     content_type :json
-    {
-      enabled: true,
-      bots: discord_bots_status,
-      config: {
-        default_project: DISCORD_CONFIG["default_project"],
-        channel_mappings: DISCORD_CONFIG["channel_mappings"]&.size || 0,
-        authorized_users: (DISCORD_CONFIG["authorized_user_ids"] || []).size,
-        authorized_roles: (DISCORD_CONFIG["authorized_role_ids"] || []).size
-      }
-    }.to_json
-  end
-
-  start_all_discord_gateways
-  start_discord_draft_poller
-  start_brainiac_restart_monitor
-
-  # Send "back online" notification after bots connect (if restarted)
-  Thread.new do
-    # Wait for at least one bot to be ready (up to 30s)
-    30.times do
-      sleep 1
-      ready = DISCORD_BOTS_MUTEX.synchronize { DISCORD_BOTS.any? { |_, info| info[:status] == "ready" } }
-      next unless ready
-
-      send_restart_notification("✅ Brainiac back online")
-
-      # Check if running an outdated version (skip in dev/foreground mode)
-      unless $stdout.tty?
-        version_info = check_brainiac_version
-        if version_info[:behind]
-          owner_id = owner_discord_id
-          mention = owner_id ? "<@#{owner_id}>" : "Someone"
-          channel_id = DISCORD_CONFIG["notification_channel_id"]
-          tokens = discord_bot_tokens
-          token = tokens.values.first
-          if channel_id && token
-            send_discord_message(channel_id,
-                                 "#{mention}: Brainiac was updated and needs to be pulled down (#{version_info[:commits_behind]} commit#{"s" if version_info[:commits_behind] != 1} behind, running #{version_info[:local_sha]} vs #{version_info[:remote_sha]})",
-                                 token: token)
-          end
-        end
-      end
-
-      break
-    end
-  end
-else
-  get "/api/discord" do
-    content_type :json
-    { enabled: false, reason: "websocket-client-simple gem not installed" }.to_json
+    { enabled: false, reason: "brainiac-discord plugin not installed" }.to_json
   end
 end
+
+start_brainiac_restart_monitor
 
 LOG.info "[Cron] Starting cron thread..."
 start_cron_thread

@@ -249,44 +249,19 @@ def close_uat_cards_after_deploy(project_key, project_config)
 end
 
 def send_deploy_notification(project_key, closed_cards)
-  channel_id = DISCORD_CONFIG["deploy_notification_channel_id"]
-  return unless channel_id
-
-  token = discord_bot_tokens.values.first
-  return unless token
-
   card_lines = closed_cards.map { |c| "• [##{c[:number]} — #{c[:title]}](#{c[:url]})" }.join("\n")
   message = "🚀 **#{project_key.capitalize}** deployed to production\nClosed UAT cards:\n#{card_lines}"
-
-  send_discord_message(channel_id, message, token: token)
-rescue StandardError => e
-  LOG.warn "Failed to send deploy notification: #{e.message}"
+  send_notification(:deploy, message, metadata_project: project_key)
 end
 
 def send_uat_deploy_notification(project_key)
-  channel_id = DISCORD_CONFIG["deploy_notification_channel_id"]
-  return unless channel_id
-
-  token = discord_bot_tokens.values.first
-  return unless token
-
   message = "✅ **#{project_key.capitalize}** deployed to UAT successfully"
-  send_discord_message(channel_id, message, token: token)
-rescue StandardError => e
-  LOG.warn "Failed to send UAT deploy notification: #{e.message}"
+  send_notification(:deploy, message, metadata_project: project_key)
 end
 
 def send_workflow_failure_notification(project_key, workflow_name, run_url)
-  channel_id = DISCORD_CONFIG["deploy_notification_channel_id"]
-  return unless channel_id
-
-  token = discord_bot_tokens.values.first
-  return unless token
-
   message = "❌ **#{project_key.capitalize}** — #{workflow_name} failed\n[View run](#{run_url})"
-  send_discord_message(channel_id, message, token: token)
-rescue StandardError => e
-  LOG.warn "Failed to send workflow failure notification: #{e.message}"
+  send_notification(:ci_failure, message, metadata_project: project_key)
 end
 
 def handle_github_issue_opened(payload)
