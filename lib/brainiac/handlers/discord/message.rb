@@ -823,7 +823,9 @@ def handle_completed_session(exit_status:, agent_name:, agent_config_name:, chan
   extract_response_from_log(response_file, meta_file, log_file, exit_status, agent_name, agent_config_name, message_id)
   deliver_discord_response(agent_name, channel_id, message_id, bot_token, response_file, meta_file)
   update_brain_after_session(agent_name, message_id)
-  check_brainiac_restart(agent_name, project_config, head_before, status_before)
+
+  project_key = PROJECTS.find { |_k, v| v == project_config }&.first
+  check_brainiac_restart(head_before, status_before, project_config&.dig("repo_path"), project_key, agent_config_name)
 end
 
 def deliver_discord_response(agent_name, channel_id, message_id, bot_token, response_file, meta_file)
@@ -850,20 +852,6 @@ def update_brain_after_session(agent_name, message_id)
   end
 
   brain_push(message: "#{agent_name}: discord-#{message_id}")
-end
-
-def check_brainiac_restart(agent_name, project_config, head_before, status_before)
-  return unless project_config && head_before
-
-  project_key = PROJECTS.find { |_k, v| v == project_config }&.first
-  return unless project_key == "brainiac"
-
-  head_after, status_after = capture_git_state(project_config["repo_path"])
-  if head_after != head_before || status_after != status_before
-    queue_brainiac_restart(agent_name)
-  else
-    LOG.info "[Brainiac] #{agent_name} Discord session on brainiac had no changes — skipping restart"
-  end
 end
 
 def schedule_temp_cleanup(prompt_file, attachment_paths)

@@ -2207,10 +2207,10 @@ when "install"
       exit 1
     end
 
-    entry_file = File.join(local_path, "lib", "brainiac-#{name}.rb")
+    entry_file = File.join(local_path, "lib", "brainiac_#{name}.rb")
     unless File.exist?(entry_file)
       puts "Error: Expected entry file not found: #{entry_file}"
-      puts "  Plugin gems must have lib/brainiac-<name>.rb"
+      puts "  Plugin gems must have lib/brainiac_<name>.rb"
       exit 1
     end
 
