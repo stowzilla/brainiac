@@ -78,26 +78,6 @@ KNOWLEDGE_COLLECTION = "brainiac-knowledge"
 
 ROLES_DIR = File.join(BRAINIAC_DIR, "roles")
 
-# --- GitHub auth ---
-
-GITHUB_CONFIG_FILE = File.join(BRAINIAC_DIR, "github.json")
-
-def load_github_config
-  return {} unless File.exist?(GITHUB_CONFIG_FILE)
-
-  JSON.parse(File.read(GITHUB_CONFIG_FILE))
-rescue JSON::ParserError => e
-  LOG.error "Failed to parse GitHub config: #{e.message}"
-  {}
-end
-
-GITHUB_CONFIG = load_github_config
-
-def github_webhook_secret
-  # Fallback to env var
-  GITHUB_CONFIG["webhook_secret"] || ENV.fetch("GITHUB_WEBHOOK_SECRET", nil)
-end
-
 NOTIFICATION_COMMAND = ENV.fetch("NOTIFICATION_COMMAND", nil)
 
 # --- Projects ---
@@ -135,13 +115,6 @@ def reload_projects!(force: false)
 
   PROJECTS.replace(load_projects_config)
   LOG.info "Reloaded projects configuration: #{PROJECTS.keys.join(", ")}"
-end
-
-def reload_github_config!(force: false)
-  return unless file_changed?(GITHUB_CONFIG_FILE, force: force)
-
-  GITHUB_CONFIG.replace(load_github_config)
-  LOG.info "Reloaded GitHub configuration"
 end
 
 PROJECTS = load_projects_config

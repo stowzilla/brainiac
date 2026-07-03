@@ -4,7 +4,7 @@
 #
 # Prompts are layered:
 #   PROMPT_CORE            — universal (identity, memory, brain, reflection)
-#   PROMPT_GITHUB_CHANNEL  — GitHub-specific rules (GFM, PR conventions)
+#   (GitHub prompts extracted to brainiac-github plugin)
 #
 # Each handler composes: PROMPT_CORE + channel rules + situation template.
 # Channel-specific prompts (Discord, Fizzy, etc.) are registered by plugins.
@@ -187,77 +187,12 @@ PROMPT_REFLECTION = <<~PROMPT
 PROMPT
 
 # ---------------------------------------------------------------------------
-# PROMPT_GITHUB_CHANNEL — GitHub-specific rules, prepended to GitHub templates
-# ---------------------------------------------------------------------------
-PROMPT_GITHUB_CHANNEL = <<~PROMPT
-  ## GitHub Channel Rules
-
-  ### Formatting
-  Use GitHub-Flavored Markdown for all comments:
-  - `## Heading` for sections
-  - `**bold**` for emphasis
-  - ``` ```language ``` for code blocks
-  - `- item` for lists
-
-  ### Scope
-  You are responding to activity on a GitHub PR. Focus on the code changes and review feedback.
-  When posting comments, post on the PR unless specifically asked to update the card.
-
-PROMPT
-
-PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
-  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
-
-  Comment:
-  {{COMMENT_BODY}}
-
-  Please:
-  1. Read the comment and understand what's being requested
-  2. Make any necessary changes
-  3. Commit and push your updates
-  4. Reply on the PR summarizing what you changed
-
-  You are in the worktree at {{WORKTREE_PATH}}.
-PROMPT
-
-PROMPT_GITHUB_PR_REVIEW = <<~'PROMPT'
-  A code review has been submitted on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
-
-  {{REVIEW_CONTEXT}}
-
-  Please:
-  1. Read the review comments carefully
-  2. Address each piece of feedback
-  3. Make the necessary code changes
-  4. Commit and push your updates
-  5. Post a comment on the PR summarizing the changes
-
-  You are in the worktree at {{WORKTREE_PATH}}.
-PROMPT
-
-# ---------------------------------------------------------------------------
 # Channel constant mapping for render_prompt
+# NOTE: GitHub prompts have been extracted to brainiac-github plugin.
+#       The plugin registers via Brainiac.register_channel_prompt(:github, ...)
 # ---------------------------------------------------------------------------
-PROMPT_GITHUB_UAT = <<~'PROMPT'
-  PR #{{PR_NUMBER}} has been merged into main for card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
 
-  The card has been moved to the UAT column. The changes are now deployed to the UAT environment.
-
-  Your job: post a comment on card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
-  1. What URL(s) or screen(s) to visit
-  2. Step-by-step actions to verify the feature works
-  3. What the expected behavior should be
-  4. Any edge cases worth checking
-  5. Links to relevant pages if applicable (use the UAT/staging URL, not localhost)
-
-  Base your testing steps on the card title, the PR diff, and any card context provided. Be specific — "verify it works" is not a testing step.
-
-  Do NOT make any code changes. This is a read-only review task.
-PROMPT
-
-CHANNEL_PROMPTS = {
-  github: PROMPT_GITHUB_CHANNEL
-}.freeze
+CHANNEL_PROMPTS = {}.freeze
 
 # ---------------------------------------------------------------------------
 # render_prompt — composes PROMPT_CORE + channel rules + situation template

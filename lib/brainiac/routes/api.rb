@@ -108,7 +108,6 @@ post "/api/reload" do
   reload_projects!(force: true)
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
-  reload_github_config!(force: true)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
     users: USER_REGISTRY["users"].size }.to_json

@@ -15,10 +15,6 @@ class TestConfig < Minitest::Test
     refute handler_enabled?("zoho")
   end
 
-  def test_github_webhook_secret
-    assert_equal "github-test-secret", github_webhook_secret
-  end
-
   def test_projects_loaded
     assert PROJECTS.key?("marketplace")
     assert PROJECTS.key?("brainiac")

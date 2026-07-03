@@ -125,15 +125,6 @@ def slugify(title, max_length: 40)
   title.downcase.gsub(/[^a-z0-9\s-]/, "").strip.gsub(/\s+/, "-").slice(0, max_length).chomp("-")
 end
 
-def verify_github_signature!(request, payload_body)
-  signature = request.env["HTTP_X_HUB_SIGNATURE_256"]
-  halt 403, { error: "Missing GitHub signature" }.to_json unless signature
-  secret = github_webhook_secret
-  halt 500, { error: "GitHub webhook secret not configured" }.to_json unless secret
-  computed = "sha256=#{OpenSSL::HMAC.hexdigest("sha256", secret, payload_body)}"
-  halt 403, { error: "Invalid GitHub signature" }.to_json unless Rack::Utils.secure_compare(signature, computed)
-end
-
 def run_cmd(*cmd, chdir:, env: {})
   LOG.info "Running: #{cmd.join(" ")} (in #{chdir})"
   stdout, stderr, status = Open3.capture3(env, *cmd, chdir: chdir)
