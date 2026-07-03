@@ -953,6 +953,42 @@ when "setup"
   puts "  4. Initialize brain: brainiac brain init"
   puts "  5. Start server: brainiac server"
 
+  # Shell completion setup
+  puts ""
+  completion_source = File.join(BRAINIAC_ROOT, "bin", "brainiac-completion.bash")
+  completion_target = File.join(BRAINIAC_DIR, "brainiac-completion.bash")
+  if File.exist?(completion_source)
+    FileUtils.cp(completion_source, completion_target)
+
+    # Detect shell rc file
+    shell = ENV.fetch("SHELL", "/bin/bash")
+    rc_file = case shell
+              when /zsh/ then File.expand_path("~/.zshrc")
+              when /fish/ then nil # fish uses different mechanism
+              else File.expand_path("~/.bashrc")
+              end
+
+    source_line = "[[ -r \"#{completion_target}\" ]] && source \"#{completion_target}\""
+
+    if rc_file && File.exist?(rc_file) && !File.read(rc_file).include?("brainiac-completion")
+      print "Add shell completion to #{rc_file}? [Y/n] "
+      answer = $stdin.gets&.strip&.downcase
+      if answer == "n"
+        puts "  To add manually:"
+        puts "    #{source_line}"
+      else
+        File.open(rc_file, "a") { |f| f.puts("\n# Brainiac CLI completion\n#{source_line}") }
+        puts "✓ Added completion to #{rc_file}"
+      end
+    elsif rc_file && !File.exist?(rc_file)
+      puts "  Shell completion installed to: #{completion_target}"
+      puts "  Add to your shell rc file:"
+      puts "    #{source_line}"
+    else
+      puts "✓ Shell completion already configured"
+    end
+  end
+
 when "register", "add"
   OptionParser.new do |opts|
     opts.banner = "Usage: brainiac register [options]"
