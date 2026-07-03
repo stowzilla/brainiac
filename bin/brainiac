@@ -912,37 +912,19 @@ when "setup"
     end
   end
 
-  # Handler configuration
+  # Core config
   brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
   puts ""
   if File.exist?(brainiac_config_path)
-    puts "✓ Handler config already exists at ~/.brainiac/brainiac.json"
+    puts "✓ Config already exists at ~/.brainiac/brainiac.json"
   else
-    puts "Which integrations do you want to enable?"
-    puts "(You can change this later in ~/.brainiac/brainiac.json)"
-    puts ""
+    print "Default agent name: "
+    agent_name = $stdin.gets&.strip
+    agent_name = "Galen" if agent_name.nil? || agent_name.empty?
 
-    available_handlers = {
-      "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
-      "zoho" => "Zoho Mail (email notifications and triage)"
-    }
-
-    enabled_handlers = {}
-    available_handlers.each do |key, description|
-      print "  Enable #{description}? [Y/n] "
-      answer = $stdin.gets&.strip&.downcase
-      enabled_handlers[key] = answer != "n"
-    end
-
-    config = { "handlers" => enabled_handlers }
+    config = { "default_agent" => agent_name }
     File.write(brainiac_config_path, JSON.pretty_generate(config))
-    puts ""
-    puts "✓ Wrote handler config to ~/.brainiac/brainiac.json"
-
-    enabled_list = enabled_handlers.select { |_, v| v }.keys
-    disabled_list = enabled_handlers.reject { |_, v| v }.keys
-    puts "  Enabled: #{enabled_list.join(", ")}" if enabled_list.any?
-    puts "  Disabled: #{disabled_list.join(", ")}" if disabled_list.any?
+    puts "✓ Wrote config to ~/.brainiac/brainiac.json (default_agent: #{agent_name})"
   end
 
   puts ""
@@ -951,7 +933,8 @@ when "setup"
   puts "  2. Create agent configs in ~/.kiro/agents/"
   puts "  3. Register projects: cd ~/Code/myproject && brainiac register"
   puts "  4. Initialize brain: brainiac brain init"
-  puts "  5. Start server: brainiac server"
+  puts "  5. Install plugins: brainiac install discord / fizzy / github / zoho"
+  puts "  6. Start server: brainiac server"
 
   # Shell completion setup
   puts ""
@@ -2295,7 +2278,7 @@ when "update", "upgrade"
 
     plugin_entry = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
 
-    if plugin_entry && plugin_entry.is_a?(Hash) && plugin_entry["path"]
+    if plugin_entry.is_a?(Hash) && plugin_entry["path"]
       puts "Plugin '#{name}' is installed from a local path: #{plugin_entry["path"]}"
       puts "Local plugins are updated via git pull in their source directory."
       exit 0

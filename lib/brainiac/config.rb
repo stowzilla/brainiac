@@ -46,15 +46,6 @@ AI_AGENT_NAME = ENV.fetch("AI_AGENT_NAME", nil) || BRAINIAC_CONFIG["default_agen
   MSG
 end
 
-# Check whether a handler is enabled. Defaults to true when brainiac.json
-# doesn't exist or doesn't list the handler (backwards compatible — all on).
-def handler_enabled?(name)
-  handlers = BRAINIAC_CONFIG["handlers"]
-  return true unless handlers # No config = everything enabled
-
-  handlers.fetch(name.to_s, true)
-end
-
 LOG_LEVEL = ENV.fetch("LOG_LEVEL", "info").downcase
 LOG = Logger.new($stdout)
 LOG.level = case LOG_LEVEL

@@ -1061,11 +1061,15 @@ The `Brainiac::Plugins` namespace is defined in `lib/brainiac.rb`. Plugin module
 
 | Plugin | Gem | Description |
 |--------|-----|-------------|
+| discord | `brainiac-discord` | Per-agent Discord bots — conversational AI access via @mentions, threads, session supersede |
+| fizzy | `brainiac-fizzy` | Fizzy card management — assignment, comments, @mentions, cross-agent reviews, duplicate detection, planning mode |
+| github | `brainiac-github` | GitHub webhooks — PR reviews, PR comments, PR merges, CI workflow notifications, deploy tracking |
+| zoho | `brainiac-zoho` | Zoho Mail webhooks — rule-based email notifications, AI triage, OAuth for content fetching |
 | whatsapp | `brainiac-whatsapp` | WhatsApp Business API integration |
 
 ### Backward Compatibility
 
-The old `~/.brainiac/handlers/*.rb` drop-in system still works. Custom handler files are loaded before gem plugins. Over time, built-in handlers (Discord, Fizzy, GitHub) may be extracted into their own gems.
+The old `~/.brainiac/handlers/*.rb` drop-in system still works. Custom handler files are loaded before gem plugins.
 
 ## Version Check
 

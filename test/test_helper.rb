@@ -118,11 +118,9 @@ user_data = {
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "users.json"), JSON.generate(user_data))
 
-# Write brainiac.json (handler config)
+# Write brainiac.json
 brainiac_data = {
-  "default_agent" => "Galen",
-  "handlers" => { "github" => true, "discord" => true,
-                  "zoho" => false }
+  "default_agent" => "Galen"
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "brainiac.json"), JSON.generate(brainiac_data))
 

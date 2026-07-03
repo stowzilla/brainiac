@@ -34,11 +34,7 @@ module Brainiac
   end
 end
 
-# --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
-
-# NOTE: GitHub and Zoho handlers have been extracted to plugins:
-#   gem install brainiac-github
-#   gem install brainiac-zoho
+# --- Custom handlers + plugins ---
 
 # Reload hook registry — custom handlers register callbacks here
 module ReloadHooks
@@ -57,15 +53,11 @@ def register_reload_hook(name, &)
   ReloadHooks.register(name, &)
 end
 
-# Load custom handlers from ~/.brainiac/handlers/ (plugin system)
+# Load custom handlers from ~/.brainiac/handlers/ (legacy plugin system)
 CUSTOM_HANDLERS_DIR = File.join(BRAINIAC_DIR, "handlers")
 if Dir.exist?(CUSTOM_HANDLERS_DIR)
   Dir.glob(File.join(CUSTOM_HANDLERS_DIR, "*.rb")).each do |handler|
     handler_name = File.basename(handler, ".rb")
-    unless handler_enabled?(handler_name)
-      LOG.info "[Handlers] Skipping custom handler (disabled): #{handler_name}"
-      next
-    end
     LOG.info "[Handlers] Loading custom handler: #{handler_name}"
     require handler
   end

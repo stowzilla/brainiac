@@ -7,14 +7,6 @@ class TestConfig < Minitest::Test
     assert_equal "Galen", AI_AGENT_NAME
   end
 
-  def test_handler_enabled_github
-    assert handler_enabled?("github")
-  end
-
-  def test_handler_disabled_zoho
-    refute handler_enabled?("zoho")
-  end
-
   def test_projects_loaded
     assert PROJECTS.key?("marketplace")
     assert PROJECTS.key?("brainiac")
