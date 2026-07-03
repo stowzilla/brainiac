@@ -1272,7 +1272,8 @@ when "cron"
     project = nil
     model = nil
     effort = nil
-    discord_channel_id = nil
+    notify_channel = nil
+    notify_target = nil
     forum_title = nil
     repeat_count = nil
     prompt = nil
@@ -1285,10 +1286,11 @@ when "cron"
       opts.on("-p", "--project KEY", "Project key") { |v| project = v }
       opts.on("-m", "--model MODEL", "Model to use (opus, sonnet, haiku, auto)") { |v| model = v }
       opts.on("-e", "--effort LEVEL", "Effort level (low, medium, high, xhigh, max)") { |v| effort = v }
-      opts.on("-d", "--discord CHANNEL_ID", "Discord channel ID to post results") { |v| discord_channel_id = v }
+      opts.on("-d", "--notify TARGET", "Notification target (channel ID, card number, etc.)") { |v| notify_target = v }
+      opts.on("-c", "--channel CHANNEL", "Notification channel (discord, fizzy — default: discord)") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "Forum post title (for forum channels)") { |v| forum_title = v }
       opts.on("-r", "--repeat COUNT", Integer, "Number of times to repeat (for recurring schedules)") { |v| repeat_count = v }
-      opts.on("--script PATH", "Run script directly (no agent, output to Discord)") { |v| script = v }
+      opts.on("--script PATH", "Run script directly (no agent, output posted via notify)") { |v| script = v }
     end.parse!
 
     prompt = ARGV.join(" ") unless script
@@ -1328,7 +1330,9 @@ when "cron"
     payload[:script] = script if script
     payload[:model] = model if model
     payload[:effort] = effort if effort
-    payload[:discord_channel_id] = discord_channel_id if discord_channel_id
+    payload[:discord_channel_id] = notify_target if notify_target && (!notify_channel || notify_channel == "discord")
+    payload[:notify_channel] = notify_channel if notify_channel
+    payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
     payload[:repeat_count] = repeat_count if repeat_count
     req.body = payload.to_json
@@ -1343,8 +1347,8 @@ when "cron"
         puts "  Project: #{project}"
         puts "  Model: #{model || "default"}" unless script
         puts "  Effort: #{effort || "default"}" unless script
-        puts "  Discord: #{discord_channel_id || "none"}"
-        puts "  Forum title: #{forum_title || "auto"}" if discord_channel_id
+        puts "  Notify: #{notify_target ? "#{notify_channel || "discord"} → #{notify_target}" : "none"}"
+        puts "  Forum title: #{forum_title || "auto"}" if notify_target && forum_title
         puts "  Repeat: #{repeat_count ? "#{repeat_count} times" : "unlimited"}"
         puts script ? "  Script: #{script}" : "  Prompt: #{prompt}"
       else
@@ -1388,7 +1392,9 @@ when "cron"
           puts "  #{status} #{id}"
           puts "    Schedule: #{schedule_display}"
           puts "    Agent: #{job["script"] ? "none (script mode)" : job["agent"]} | Project: #{job["project"]}"
-          puts "    Discord: #{job["discord_channel_id"]}" if job["discord_channel_id"]
+          notify_ch = job["notify_channel"] || (job["discord_channel_id"] ? "discord" : nil)
+          notify_tgt = job["notify_target"] || job["discord_channel_id"]
+          puts "    Notify: #{notify_ch} → #{notify_tgt}" if notify_tgt
           puts job["script"] ? "    Script: #{job["script"]}" : "    Prompt: #{job["prompt"]}"
           puts "    Last run: #{last_run}"
           puts
@@ -1477,22 +1483,23 @@ when "cron"
   when "update"
     id = ARGV[0]
     schedule = nil
-    discord_channel_id = nil
+    notify_target = nil
+    notify_channel = nil
     forum_title = nil
 
     OptionParser.new do |opts|
       opts.banner = "Usage: brainiac cron update <job-id> [options]"
       opts.on("-s", "--schedule EXPR", "New cron expression") { |v| schedule = v }
-      opts.on("-c", "--channel CHANNEL_ID", "New Discord channel ID") { |v| discord_channel_id = v }
+      opts.on("-d", "--notify TARGET", "New notification target") { |v| notify_target = v }
+      opts.on("-c", "--channel CHANNEL", "New notification channel (discord, fizzy)") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "New forum post title") { |v| forum_title = v }
     end.parse!
 
-    unless id && (schedule || discord_channel_id || forum_title)
+    unless id && (schedule || notify_target || notify_channel || forum_title)
       puts "Error: Missing required arguments"
       puts "Usage: brainiac cron update <job-id> -s \"42 13 * * 1-5\""
-      puts "   or: brainiac cron update <job-id> -c \"1423854179880927274\""
+      puts "   or: brainiac cron update <job-id> -d \"channel-id\" -c discord"
       puts "   or: brainiac cron update <job-id> -t \"Daily Update\""
-      puts "   or: brainiac cron update <job-id> -s \"42 13 * * 1-5\" -c \"1423854179880927274\""
       exit 1
     end
 
@@ -1500,7 +1507,9 @@ when "cron"
     req = Net::HTTP::Post.new(uri, "Content-Type" => "application/json")
     payload = { id: id }
     payload[:schedule] = schedule if schedule
-    payload[:discord_channel_id] = discord_channel_id if discord_channel_id
+    payload[:discord_channel_id] = notify_target if notify_target
+    payload[:notify_channel] = notify_channel if notify_channel
+    payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
     req.body = payload.to_json
 
@@ -1510,7 +1519,7 @@ when "cron"
       if data["success"]
         puts "✓ Updated cron job: #{id}"
         puts "  New schedule: #{schedule}" if schedule
-        puts "  New Discord channel: #{discord_channel_id}" if discord_channel_id
+        puts "  New notify: #{notify_channel || "discord"} → #{notify_target}" if notify_target
         puts "  New forum title: #{forum_title}" if forum_title
       else
         puts "Error: #{data["error"]}"

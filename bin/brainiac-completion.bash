@@ -8,8 +8,18 @@ _brainiac() {
 
   local brainiac_dir="${BRAINIAC_DIR:-$HOME/.brainiac}"
 
-  # Top-level commands
-  local commands="server stop restart logs status register unregister list show brain discord cron provider role agent config path version help setup projects card-map handler"
+  # Top-level commands (built-in + installed plugins)
+  local commands="server stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects card-map handler plugin install uninstall plugins"
+
+  # Add installed plugin names as top-level commands
+  if [[ -f "$brainiac_dir/plugins.json" ]]; then
+    local plugin_names
+    plugin_names=$(ruby -rjson -e '
+      config = JSON.parse(File.read(ARGV[0]))
+      (config["plugins"] || []).each { |p| puts p.is_a?(Hash) ? p["name"] : p.to_s }
+    ' "$brainiac_dir/plugins.json" 2>/dev/null)
+    commands="$commands $plugin_names"
+  fi
 
   # Helper: list agent keys from registry
   _brainiac_agents() {
@@ -32,6 +42,13 @@ _brainiac() {
     fi
   }
 
+  # Helper: list project keys
+  _brainiac_projects() {
+    if [[ -f "$brainiac_dir/projects.json" ]]; then
+      ruby -rjson -e 'JSON.parse(File.read(ARGV[0])).each_key { |k| puts k }' "$brainiac_dir/projects.json" 2>/dev/null
+    fi
+  }
+
   # Determine position in command
   case $cword in
     1)
@@ -43,6 +60,14 @@ _brainiac() {
   local cmd="${words[1]}"
 
   case "$cmd" in
+    plugin)
+      case $cword in
+        2)
+          COMPREPLY=($(compgen -W "new" -- "$cur"))
+          ;;
+      esac
+      ;;
+
     role)
       case $cword in
         2)
@@ -90,7 +115,6 @@ _brainiac() {
         4)
           local subcmd="${words[3]}"
           if [[ "$subcmd" == "env" ]]; then
-            # Suggest --delete or existing env var names for this agent
             local agent_key="${words[2]}"
             local env_keys=""
             if [[ -f "$brainiac_dir/agents.json" ]]; then
@@ -104,7 +128,6 @@ _brainiac() {
           fi
           ;;
         5)
-          # After --delete, suggest env var names
           if [[ "${words[3]}" == "env" && "${words[4]}" == "--delete" ]]; then
             local agent_key="${words[2]}"
             local env_keys=""
@@ -149,20 +172,6 @@ _brainiac() {
       esac
       ;;
 
-    discord)
-      case $cword in
-        2)
-          COMPREPLY=($(compgen -W "config default map owner token agents status" -- "$cur"))
-          ;;
-        3)
-          local subcmd="${words[2]}"
-          if [[ "$subcmd" == "token" ]]; then
-            COMPREPLY=($(compgen -W "$(_brainiac_agents)" -- "$cur"))
-          fi
-          ;;
-      esac
-      ;;
-
     cron)
       case $cword in
         2)
@@ -176,7 +185,30 @@ _brainiac() {
         2)
           COMPREPLY=($(compgen -W "list default" -- "$cur"))
           ;;
+        3)
+          if [[ "${words[2]}" == "default" ]]; then
+            COMPREPLY=($(compgen -W "$(_brainiac_projects)" -- "$cur"))
+          fi
+          ;;
       esac
+      ;;
+
+    install)
+      # Suggest known plugin names that aren't installed
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "--path --version" -- "$cur"))
+      fi
+      ;;
+
+    uninstall)
+      if [[ $cword -eq 2 && -f "$brainiac_dir/plugins.json" ]]; then
+        local installed
+        installed=$(ruby -rjson -e '
+          config = JSON.parse(File.read(ARGV[0]))
+          (config["plugins"] || []).each { |p| puts p.is_a?(Hash) ? p["name"] : p.to_s }
+        ' "$brainiac_dir/plugins.json" 2>/dev/null)
+        COMPREPLY=($(compgen -W "$installed" -- "$cur"))
+      fi
       ;;
   esac
 }
