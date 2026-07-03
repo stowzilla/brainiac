@@ -2599,6 +2599,11 @@ when "plugin"
             def self.cli(args)
               Cli.run(args)
             end
+
+            # Subcommand names for bash completion.
+            def self.completions
+              %w[config setup status]
+            end
           end
         end
       end

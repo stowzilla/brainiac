@@ -210,6 +210,49 @@ _brainiac() {
         COMPREPLY=($(compgen -W "$installed" -- "$cur"))
       fi
       ;;
+
+    *)
+      # Check if cmd is an installed plugin — delegate completion to it
+      if [[ -f "$brainiac_dir/plugins.json" ]]; then
+        local is_plugin
+        is_plugin=$(ruby -rjson -e '
+          config = JSON.parse(File.read(ARGV[0]))
+          names = (config["plugins"] || []).map { |p| p.is_a?(Hash) ? p["name"] : p.to_s }
+          puts "yes" if names.include?(ARGV[1])
+        ' "$brainiac_dir/plugins.json" "$cmd" 2>/dev/null)
+
+        if [[ "$is_plugin" == "yes" && $cword -eq 2 ]]; then
+          # Get plugin subcommands via its CLI module
+          local subcmds
+          subcmds=$(ruby -rjson -e '
+            brainiac_dir = ENV["BRAINIAC_DIR"] || File.join(Dir.home, ".brainiac")
+            config = JSON.parse(File.read(File.join(brainiac_dir, "plugins.json")))
+            entry = (config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == ARGV[0] }
+            next unless entry
+
+            module Brainiac; module Plugins; end; end
+
+            if entry.is_a?(Hash) && entry["path"]
+              $LOAD_PATH.unshift(File.join(entry["path"], "lib"))
+            end
+
+            cli_file = if entry.is_a?(Hash) && entry["path"]
+                         File.join(entry["path"], "lib", "brainiac", "plugins", ARGV[0], "cli.rb")
+                       end
+
+            if cli_file && File.exist?(cli_file)
+              load cli_file
+              pascal = ARGV[0].split(/[-_]/).map(&:capitalize).join
+              mod = Brainiac::Plugins.const_get(pascal) if Brainiac::Plugins.const_defined?(pascal)
+              if mod&.respond_to?(:completions)
+                puts mod.completions.join("\n")
+              end
+            end
+          ' "$cmd" 2>/dev/null)
+          COMPREPLY=($(compgen -W "$subcmds" -- "$cur"))
+        fi
+      fi
+      ;;
   esac
 }
 
