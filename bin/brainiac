@@ -2277,6 +2277,96 @@ when "completions"
     puts File.read(completion_file)
   end
 
+when "update", "upgrade"
+  name = ARGV.shift
+
+  if name
+    # Update a specific plugin: brainiac update <plugin_name>
+    name = name.sub(/^brainiac-/, "")
+    gem_name = "brainiac-#{name}"
+
+    # Verify plugin is installed
+    plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+    plugins_config = if File.exist?(plugins_file)
+                       JSON.parse(File.read(plugins_file))
+                     else
+                       { "plugins" => [] }
+                     end
+
+    plugin_entry = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
+
+    if plugin_entry && plugin_entry.is_a?(Hash) && plugin_entry["path"]
+      puts "Plugin '#{name}' is installed from a local path: #{plugin_entry["path"]}"
+      puts "Local plugins are updated via git pull in their source directory."
+      exit 0
+    end
+
+    unless plugin_entry
+      puts "Plugin '#{name}' is not installed."
+      puts "  Install it first: brainiac install #{name}"
+      exit 1
+    end
+
+    # Get current version before update
+    current_version = begin
+      spec = Gem::Specification.find_by_name(gem_name)
+      spec.version.to_s
+    rescue Gem::MissingSpecError
+      nil
+    end
+
+    puts "Updating #{gem_name}..."
+    system("gem install #{gem_name}")
+    unless $CHILD_STATUS.success?
+      puts ""
+      puts "Failed to update #{gem_name}."
+      exit 1
+    end
+
+    # Show version change
+    Gem::Specification.reset
+    new_version = begin
+      spec = Gem::Specification.find_by_name(gem_name)
+      spec.version.to_s
+    rescue Gem::MissingSpecError
+      "unknown"
+    end
+
+    if current_version && current_version == new_version
+      puts "✓ #{gem_name} is already at the latest version (#{new_version})"
+    else
+      puts "✓ Updated #{gem_name}: #{current_version || "new"} → #{new_version}"
+      puts "  Restart the server to activate: brainiac restart"
+    end
+  else
+    # Update brainiac itself: brainiac update
+    current_version = BRAINIAC_VERSION
+
+    puts "Updating brainiac gem..."
+    system("gem install brainiac")
+    unless $CHILD_STATUS.success?
+      puts ""
+      puts "Failed to update brainiac."
+      exit 1
+    end
+
+    # Show version change
+    Gem::Specification.reset
+    new_version = begin
+      spec = Gem::Specification.find_by_name("brainiac")
+      spec.version.to_s
+    rescue Gem::MissingSpecError
+      "unknown"
+    end
+
+    if current_version == new_version
+      puts "✓ brainiac is already at the latest version (#{new_version})"
+    else
+      puts "✓ Updated brainiac: #{current_version} → #{new_version}"
+      puts "  Restart the server to apply: brainiac restart"
+    end
+  end
+
 when "install"
   name = ARGV.shift
   unless name
@@ -3004,6 +3094,8 @@ when "help", "--help", "-h", nil
         brainiac projects default <key> Set the default project
         brainiac show <key>             Show project configuration
         brainiac plugin new <name>      Generate a new plugin gem skeleton
+        brainiac update                  Update brainiac to the latest version
+        brainiac update <plugin>        Update an installed plugin to the latest version
         brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
         brainiac uninstall <plugin>     Remove an installed plugin
         brainiac plugins                List installed plugins
@@ -3024,6 +3116,7 @@ when "help", "--help", "-h", nil
         plugin new <name>                Generate a new plugin gem skeleton
         install <name>                   Install a plugin (gem install brainiac-<name>)
         uninstall <name>                 Remove a plugin
+        update [name]                    Update brainiac or a specific plugin
         plugins                          List installed plugins
 
       Card Map Commands:
