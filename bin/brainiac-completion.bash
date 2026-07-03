@@ -228,7 +228,7 @@ _brainiac() {
             brainiac_dir = ENV["BRAINIAC_DIR"] || File.join(Dir.home, ".brainiac")
             config = JSON.parse(File.read(File.join(brainiac_dir, "plugins.json")))
             entry = (config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == ARGV[0] }
-            next unless entry
+            exit unless entry
 
             module Brainiac; module Plugins; end; end
 
