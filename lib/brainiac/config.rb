@@ -172,19 +172,6 @@ DEFAULT_PROJECT = {
   "allowed_efforts" => %w[low medium high xhigh max]
 }.freeze
 
-# --- Discord (optional) ---
-# Discord is enabled when any agent in the registry has a discord_bot_token
-# Requires the websocket-client-simple gem.
-
-DISCORD_ENABLED = begin
-  require "websocket-client-simple"
-  true
-rescue LoadError
-  warn "WARNING: websocket-client-simple gem not found. Discord bot disabled."
-  warn "Install with: gem install websocket-client-simple"
-  false
-end
-
 # --- Version check ---
 
 # Check if local brainiac is behind origin/master.

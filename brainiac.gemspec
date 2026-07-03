@@ -4,7 +4,8 @@ Gem::Specification.new do |s|
   s.name        = "brainiac"
   s.version     = Brainiac::VERSION
   s.summary     = "AI agent webhook receiver and dispatcher"
-  s.description = "Webhook receiver that listens for Fizzy, GitHub, Discord, and Zoho Mail events, then dispatches work to AI agent CLIs."
+  s.description = "Webhook receiver that listens for GitHub and Zoho Mail events, then dispatches work to AI agent CLIs. " \
+                  "Additional channels (Discord, Fizzy) available via plugins."
   s.authors     = ["Andy Davis"]
   s.homepage    = "https://github.com/stowzilla/brainiac"
   s.license     = "MIT"
@@ -16,7 +17,6 @@ Gem::Specification.new do |s|
   s.add_dependency "puma", "~> 7.2"
   s.add_dependency "rackup", "~> 2.3"
   s.add_dependency "sinatra", "~> 4.1"
-  s.add_dependency "websocket-client-simple", "~> 0.8.0"
 
   s.add_development_dependency "minitest", "~> 5.25"
   s.add_development_dependency "rake", "~> 13.0"
