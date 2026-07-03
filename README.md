@@ -1,26 +1,39 @@
 # Brainiac
 
-Brainiac is a multi-agent orchestration layer for developer workflows. It connects your tools (Fizzy, GitHub, Discord, Zoho) to a team of autonomous AI agents. By managing personas, shared knowledge, and collaborative workflows via @mentions, Brainiac allows you to deploy and manage a unified fleet of AI experts directly from your CLI.
+Brainiac is a multi-agent orchestration layer for developer workflows. It manages agent identity, long-term memory, and prompt construction — then delegates communication channels to plugins. By managing personas, shared knowledge, and collaborative workflows via @mentions, Brainiac allows you to deploy and manage a unified fleet of AI experts directly from your CLI.
 
 ## How It Works
 
-Brainiac listens for incoming events and automatically spawns the appropriate AI agent CLI to handle the request. Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through ~/.kiro/agents/. Project tracking is handled via ~/.brainiac/projects.json, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
+Brainiac is a core engine plus plugins. The core handles agent identity, brain (long-term memory), prompt construction, and dispatch. Plugins provide the communication channels — each one connects a different tool (Fizzy, GitHub, Discord, Zoho) to your agent fleet.
 
-### Events
+Install only the plugins you need:
 
-| Source    | Event               | What Happens                                                                                      |
-| --------- | ------------------- | ------------------------------------------------------------------------------------------------- |
-| Fizzy     | Card assigned       | Creates worktree, maps card to branch, spawns assigned agent                                      |
-| Fizzy     | Card published      | Duplicate detection via trigram similarity + semantic search                                       |
-| Fizzy     | @mention in comment | Routes to the mentioned agent (even on another agent's card)                                      |
-| Fizzy     | Follow-up comment   | Runs card's assigned agent in existing worktree                                                   |
-| GitHub    | PR review submitted | Agent addresses review feedback                                                                   |
-| GitHub    | PR comment          | Agent responds to PR feedback                                                                     |
-| GitHub    | PR merged to main   | Comments PR link on Fizzy card, closes card, cleans up worktree                                   |
-| GitHub    | Issue opened        | Logged for tracking (no agent dispatch)                                                           |
-| GitHub    | Workflow run        | Notifies on CI failures via Discord                                                               |
-| Discord   | @bot mention        | Each agent has its own bot — @mention routes directly to that agent, no worktree — conversational |
-| Zoho Mail | Incoming email      | Rule-based matching, notifies via Discord                                                         |
+```bash
+brainiac install fizzy       # Card management
+brainiac install discord     # Conversational bots
+brainiac install github      # PR reviews, CI notifications
+brainiac install zoho        # Email notifications and triage
+```
+
+Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through `~/.kiro/agents/`. Project tracking is handled via `~/.brainiac/projects.json`, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
+
+### Events (via plugins)
+
+Each plugin adds its own webhook routes and event handling. Here's what's available when plugins are installed:
+
+| Source    | Event               | Plugin Required | What Happens                                                              |
+| --------- | ------------------- | --------------- | ------------------------------------------------------------------------- |
+| Fizzy     | Card assigned       | `brainiac-fizzy` | Creates worktree, maps card to branch, spawns assigned agent             |
+| Fizzy     | Card published      | `brainiac-fizzy` | Duplicate detection via trigram similarity + semantic search              |
+| Fizzy     | @mention in comment | `brainiac-fizzy` | Routes to the mentioned agent (even on another agent's card)             |
+| Fizzy     | Follow-up comment   | `brainiac-fizzy` | Runs card's assigned agent in existing worktree                          |
+| GitHub    | PR review submitted | `brainiac-github` | Agent addresses review feedback                                         |
+| GitHub    | PR comment          | `brainiac-github` | Agent responds to PR feedback                                           |
+| GitHub    | PR merged to main   | `brainiac-github` | Cleans up worktree, emits hooks for card plugins                        |
+| GitHub    | Issue opened        | `brainiac-github` | Logged for tracking (no agent dispatch)                                 |
+| GitHub    | Workflow run        | `brainiac-github` | Notifies on CI failures and deploys                                     |
+| Discord   | @bot mention        | `brainiac-discord` | Each agent has its own bot — @mention routes directly, conversational   |
+| Zoho Mail | Incoming email      | `brainiac-zoho` | Rule-based matching, notifies via Discord or triages to card             |
 
 ### Inline Tags
 
@@ -134,17 +147,19 @@ After installing the gem:
 brainiac setup
 ```
 
-This creates the `~/.brainiac/` directory structure and copies example config files. Then edit the configs with your actual secrets and IDs (see below).
+This creates the `~/.brainiac/` directory structure, detects existing agents in `~/.kiro/agents/`, and sets your default agent. If no agents exist, it offers to create your first one.
 
-Optionally, install handler plugins for additional integrations:
+Then install the plugins you need:
 
 ```bash
-brainiac install whatsapp      # WhatsApp Business API
-brainiac install slack         # Slack (when available)
-brainiac restart               # Restart to activate
+brainiac install discord     # Discord bots
+brainiac install fizzy       # Fizzy card management
+brainiac install github      # GitHub webhooks
+brainiac install zoho        # Zoho Mail
+brainiac restart             # Restart to activate
 ```
 
-See [Plugins](#plugins-gem-based-handlers) for details.
+Each plugin has its own setup command (e.g. `brainiac discord setup`, `brainiac github setup`) that creates the necessary config files.
 
 ### Prerequisites
 
@@ -152,10 +167,10 @@ See [Plugins](#plugins-gem-based-handlers) for details.
 |------------|----------|---------|
 | Ruby 3.4+ | Yes | [mise](https://mise.jdx.dev), rbenv, or system |
 | [Kiro CLI](https://kiro.dev) | Yes | Agent dispatch |
-| [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For Fizzy | Card management |
-| [GitHub CLI](https://cli.github.com) (`gh`) | For GitHub | PR/issue operations |
 | [ngrok](https://ngrok.com) | Yes | Webhook tunneling |
 | [qmd](https://github.com/tobi/qmd) | For brain | `npm install -g @tobilu/qmd` (Node.js >= 22) |
+| [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For `brainiac-fizzy` | Card management |
+| [GitHub CLI](https://cli.github.com) (`gh`) | For `brainiac-github` | PR/issue operations |
 | [gum](https://github.com/charmbracelet/gum) | Optional | Manual worktree cleanup |
 
 ### Directory Structure
@@ -164,21 +179,21 @@ After setup, `~/.brainiac/` looks like:
 
 ```
 ~/.brainiac/
+├── brainiac.json        # Core config (default_agent)
 ├── agents.json          # Agent registry (tokens, display names, local flag)
 ├── projects.json        # Registered projects
-├── github.json          # GitHub webhook secret
-├── fizzy.json           # Fizzy board config, authorized users
-├── discord.json         # Discord channel mappings, auth
 ├── users.json           # Cross-platform user identity registry
-├── zoho.json            # Zoho Mail rules (optional)
+├── plugins.json         # Installed plugins
 ├── brain/
 │   ├── knowledge/       # Shared technical knowledge (all agents)
 │   ├── persona/         # Per-agent personality files
 │   └── memory/          # Per-agent session memory
-├── handlers/            # Custom webhook handlers (plugin system)
+├── handlers/            # Legacy custom webhook handlers
 ├── plans/               # Planning mode output
 └── tmp/                 # Temp files, drafts, posted responses
 ```
+
+Plugins add their own config files when installed (e.g. `discord.json`, `fizzy.json`, `github.json`, `zoho.json`).
 
 ### Step-by-Step Configuration
 
@@ -210,51 +225,7 @@ kiro-cli agent create    # Interactive
 # Or manually create ~/.kiro/agents/galen.json
 ```
 
-#### 3. GitHub (`~/.brainiac/github.json`)
-
-```json
-{
-  "webhook_secret": "your-github-webhook-secret",
-  "repos": {}
-}
-```
-
-The `webhook_secret` verifies incoming GitHub webhook requests. Generate one with `ruby -rsecurerandom -e 'puts SecureRandom.hex(20)'`.
-
-`GITHUB_WEBHOOK_SECRET` env var works as fallback.
-
-#### 4. Fizzy (`~/.brainiac/fizzy.json`)
-
-Defines authorized users, flags humans, and configures boards:
-
-```json
-{
-  "authorized_users": [
-    { "id": "user-id-1", "name": "Andy", "human": true },
-    { "id": "user-id-2", "name": "Adam", "human": true },
-    { "id": "agent-id-1", "name": "Galen", "human": false }
-  ],
-  "boards": {
-    "development": {
-      "board_id": "your-board-id",
-      "webhook_secret": "secret-for-this-board",
-      "columns": {
-        "right_now": "column-id",
-        "needs_review": "column-id",
-        "uat": "column-id"
-      }
-    }
-  }
-}
-```
-
-Each board gets its own webhook secret and column IDs. The board key (e.g., `development`) is used in the webhook URL.
-
-When a human is @mentioned on a card assigned to an agent, the agent will skip that comment — allowing human-to-human conversation without agent interference.
-
-**Legacy:** `FIZZY_WEBHOOK_SECRET` and `AUTHORIZED_USER_IDS` env vars work as fallbacks.
-
-#### 5. Environment Variables
+#### 3. Environment Variables
 
 Most config lives in JSON files now. The default agent is set in `brainiac.json`:
 
@@ -268,7 +239,7 @@ Or via environment variable (takes precedence):
 export AI_AGENT_NAME="Galen"
 ```
 
-#### 6. Register Projects
+#### 4. Register Projects
 
 ```bash
 cd ~/Code/marketplace && brainiac register
@@ -284,7 +255,7 @@ Set a default project (used as fallback when no tags match):
 brainiac projects default myproject
 ```
 
-#### 7. Initialize Brain
+#### 5. Initialize Brain
 
 ```bash
 brainiac brain init Galen
@@ -292,13 +263,26 @@ brainiac brain init Galen
 
 This creates the directory structure, sets up qmd collections, and indexes everything.
 
-#### 8. Configure Webhooks
+#### 6. Install Plugins
 
-**Fizzy:** Board settings → Webhooks → URL: `https://your-ngrok.ngrok-free.app/fizzy/development` (where `development` is the board key from `fizzy.json`), Secret: the board's `webhook_secret`
+```bash
+brainiac install discord     # Discord bots
+brainiac install fizzy       # Fizzy card management
+brainiac install github      # GitHub webhooks
+brainiac install zoho        # Zoho Mail
+```
 
-**GitHub:** Repo settings → Webhooks → URL: `https://your-ngrok.ngrok-free.app/github`, Content type: `application/json`, Secret: from `github.json`, Events: Pull requests, Pull request reviews, Issue comments, Issues
+Each plugin has its own setup command (e.g. `brainiac github setup`) and documentation. See [Plugins](#plugins-gem-based-handlers) for details.
 
-#### 9. Start
+#### 7. Configure Webhooks
+
+Each plugin provides its own webhook endpoint. Point your tools at your ngrok URL:
+
+- **Fizzy:** `https://your-ngrok.ngrok-free.app/fizzy/<board-key>` (see `brainiac fizzy setup`)
+- **GitHub:** `https://your-ngrok.ngrok-free.app/github` (see `brainiac github setup`)
+- **Zoho:** `https://your-ngrok.ngrok-free.app/zoho` (see `brainiac zoho setup`)
+
+#### 8. Start
 
 ```bash
 brainiac server    # Start and tail logs (Ctrl+C to detach, server keeps running)

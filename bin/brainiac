@@ -912,29 +912,75 @@ when "setup"
     end
   end
 
-  # Core config
+  # Agent setup
+  kiro_agents_dir = File.join(Dir.home, ".kiro", "agents")
+  existing_agents = if Dir.exist?(kiro_agents_dir)
+                      Dir.glob(File.join(kiro_agents_dir, "*.json")).map { |f| File.basename(f, ".json") }
+                    else
+                      []
+                    end
+
+  puts ""
+  if existing_agents.empty?
+    puts "No agents found in ~/.kiro/agents/"
+    print "Create your first agent? Name: "
+    agent_name = $stdin.gets&.strip
+    if agent_name && !agent_name.empty?
+      FileUtils.mkdir_p(kiro_agents_dir)
+      agent_file = File.join(kiro_agents_dir, "#{agent_name.downcase}.json")
+      unless File.exist?(agent_file)
+        File.write(agent_file, JSON.pretty_generate({ "name" => agent_name }))
+        puts "✓ Created #{agent_file}"
+      end
+      existing_agents = [agent_name.downcase]
+    else
+      agent_name = "Galen"
+      puts "  Skipped — you can create one later with: kiro-cli agent create"
+    end
+  else
+    puts "Found #{existing_agents.size} agent(s) in ~/.kiro/agents/: #{existing_agents.join(", ")}"
+  end
+
+  # Default agent selection
   brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
   puts ""
   if File.exist?(brainiac_config_path)
-    puts "✓ Config already exists at ~/.brainiac/brainiac.json"
+    current = begin
+      JSON.parse(File.read(brainiac_config_path)).fetch("default_agent", nil)
+    rescue StandardError
+      nil
+    end
+    puts "✓ Config already exists at ~/.brainiac/brainiac.json (default_agent: #{current})"
   else
-    print "Default agent name: "
-    agent_name = $stdin.gets&.strip
-    agent_name = "Galen" if agent_name.nil? || agent_name.empty?
+    default_agent = if existing_agents.size == 1
+                      name = existing_agents.first.capitalize
+                      print "Set #{name} as default agent? [Y/n] "
+                      answer = $stdin.gets&.strip&.downcase
+                      answer == "n" ? nil : name
+                    elsif existing_agents.size > 1
+                      puts "Choose default agent:"
+                      existing_agents.each_with_index { |a, i| puts "  #{i + 1}) #{a}" }
+                      print "Enter number [1]: "
+                      choice = $stdin.gets&.strip
+                      idx = choice.to_i - 1
+                      idx = 0 if idx.negative? || idx >= existing_agents.size
+                      existing_agents[idx].capitalize
+                    else
+                      agent_name || "Galen"
+                    end
 
-    config = { "default_agent" => agent_name }
+    default_agent ||= existing_agents.first&.capitalize || "Galen"
+    config = { "default_agent" => default_agent }
     File.write(brainiac_config_path, JSON.pretty_generate(config))
-    puts "✓ Wrote config to ~/.brainiac/brainiac.json (default_agent: #{agent_name})"
+    puts "✓ Wrote config to ~/.brainiac/brainiac.json (default_agent: #{default_agent})"
   end
 
   puts ""
   puts "Next steps:"
-  puts "  1. Edit config files in ~/.brainiac/ with your secrets and IDs"
-  puts "  2. Create agent configs in ~/.kiro/agents/"
-  puts "  3. Register projects: cd ~/Code/myproject && brainiac register"
-  puts "  4. Initialize brain: brainiac brain init"
-  puts "  5. Install plugins: brainiac install discord / fizzy / github / zoho"
-  puts "  6. Start server: brainiac server"
+  puts "  1. Register projects: cd ~/Code/myproject && brainiac register"
+  puts "  2. Initialize brain: brainiac brain init"
+  puts "  3. Install plugins: brainiac install discord / fizzy / github / zoho"
+  puts "  4. Start server: brainiac server"
 
   # Shell completion setup
   puts ""
