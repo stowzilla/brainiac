@@ -270,15 +270,22 @@ def collect_plugin_help_lines
 end
 
 def load_plugin_help(pname, pentry)
-  gem_name = "brainiac-#{pname}"
   if pentry.is_a?(Hash) && pentry["path"]
     lib_path = File.join(pentry["path"], "lib")
     $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
   end
-  begin
-    require gem_name
-  rescue LoadError
-    require gem_name.tr("-", "_")
+
+  # Try to load just the metadata file (lightweight, no runtime deps)
+  metadata_loaded = try_require_metadata(pname, pentry)
+
+  # Fall back to loading the full plugin if metadata file doesn't exist
+  unless metadata_loaded
+    gem_name = "brainiac-#{pname}"
+    begin
+      require gem_name
+    rescue LoadError
+      require gem_name.tr("-", "_")
+    end
   end
 
   mod = resolve_plugin_module_for(pname)
@@ -291,6 +298,24 @@ rescue LoadError
   "    #{pname.ljust(28)} (could not load — reinstall with: brainiac install #{pname})"
 rescue StandardError
   nil
+end
+
+def try_require_metadata(pname, pentry)
+  if pentry.is_a?(Hash) && pentry["path"]
+    metadata_file = File.join(pentry["path"], "lib", "brainiac", "plugins", pname, "metadata.rb")
+    if File.exist?(metadata_file)
+      require metadata_file
+      return true
+    end
+  end
+
+  # Try gem path via standard require
+  begin
+    require "brainiac/plugins/#{pname}/metadata"
+    true
+  rescue LoadError
+    false
+  end
 end
 
 def resolve_plugin_module_for(name)
