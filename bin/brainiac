@@ -2339,6 +2339,475 @@ when "plugins"
     puts "  brainiac plugins              List installed plugins"
   end
 
+when "plugin"
+  plugin_cmd = ARGV.shift
+
+  case plugin_cmd
+  when "new"
+    plugin_name = ARGV.shift
+    unless plugin_name
+      puts "Usage: brainiac plugin new <name>"
+      puts ""
+      puts "Generates a new Brainiac plugin gem skeleton."
+      puts ""
+      puts "Example:"
+      puts "  brainiac plugin new slack"
+      puts "  → Creates ~/Code/brainiac-slack/ with full gem structure"
+      exit 1
+    end
+
+    plugin_name = plugin_name.downcase.gsub(/[^a-z0-9-]/, "-").sub(/^brainiac-/, "")
+    gem_name = "brainiac-#{plugin_name}"
+    pascal_name = plugin_name.split(/[-_]/).map(&:capitalize).join
+    snake_name = plugin_name.tr("-", "_")
+
+    # Determine output directory
+    output_dir = ARGV.shift || File.join(Dir.pwd, gem_name)
+    output_dir = File.expand_path(output_dir)
+
+    if Dir.exist?(output_dir) && !Dir.empty?(output_dir)
+      puts "Error: Directory already exists and is not empty: #{output_dir}"
+      exit 1
+    end
+
+    puts "Creating #{gem_name} at #{output_dir}..."
+
+    # Create directory structure
+    dirs = [
+      "lib/brainiac/plugins/#{plugin_name}",
+      "test"
+    ]
+    dirs.each { |d| FileUtils.mkdir_p(File.join(output_dir, d)) }
+
+    # version.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "version.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            VERSION = "0.0.1"
+          end
+        end
+      end
+    RUBY
+
+    # metadata.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "metadata.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      # Lightweight metadata — loaded by `brainiac help` without the full plugin runtime.
+
+      require_relative "version"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            def self.configured?
+              # TODO: Return true when the plugin has been configured
+              false
+            end
+
+            def self.help_text
+              "    brainiac #{plugin_name} <command>#{" " * [1, 20 - plugin_name.length].max}Manage #{pascal_name} integration"
+            end
+          end
+        end
+      end
+    RUBY
+
+    # cli.rb
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", plugin_name, "cli.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "json"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            module Cli
+              BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
+
+              class << self
+                def run(args)
+                  command = args.shift
+
+                  case command
+                  when "config"
+                    cmd_config
+                  when "setup"
+                    cmd_setup
+                  when "status"
+                    cmd_status
+                  else
+                    print_help
+                  end
+                end
+
+                private
+
+                def cmd_config
+                  puts "TODO: Show #{plugin_name} configuration"
+                end
+
+                def cmd_setup
+                  puts "#{pascal_name} Setup"
+                  puts "#{"=" * (pascal_name.length + 6)}"
+                  puts ""
+                  puts "TODO: Walk user through configuration"
+                end
+
+                def cmd_status
+                  puts "TODO: Show #{plugin_name} status"
+                end
+
+                def print_help
+                  puts <<~HELP
+                    Usage: brainiac #{plugin_name} <command>
+
+                    Commands:
+                      config                              Show #{pascal_name} config
+                      setup                               Interactive setup guide
+                      status                              Check #{pascal_name} status via server API
+
+                    Config file: #{File.join("~/.brainiac", "#{plugin_name}.json")}
+                  HELP
+                end
+              end
+            end
+
+            def self.cli(args)
+              Cli.run(args)
+            end
+          end
+        end
+      end
+    RUBY
+
+    # Main plugin module
+    File.write(File.join(output_dir, "lib", "brainiac", "plugins", "#{plugin_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "#{plugin_name}/version"
+      require_relative "#{plugin_name}/metadata"
+      require_relative "#{plugin_name}/cli"
+
+      module Brainiac
+        module Plugins
+          module #{pascal_name}
+            class << self
+              # Called by Brainiac plugin system during server startup.
+              #
+              # @param app [Sinatra::Application] The running Brainiac server
+              def register(app)
+                # TODO: Load config, register hooks, define routes, start threads
+                setup_routes(app)
+
+                LOG.info "[#{pascal_name}] Plugin registered"
+              end
+
+              private
+
+              def setup_routes(app)
+                app.get "/api/#{plugin_name}" do
+                  content_type :json
+                  { enabled: true }.to_json
+                end
+
+                # TODO: Define webhook route
+                # app.post "/#{plugin_name}" do
+                #   content_type :json
+                #   { status: "received" }.to_json
+                # end
+              end
+            end
+          end
+        end
+      end
+    RUBY
+
+    # Entry point (loaded by RubyGems)
+    File.write(File.join(output_dir, "lib", "brainiac_#{snake_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      # Brainiac #{pascal_name} Plugin — entry point loaded by RubyGems.
+      require_relative "brainiac/plugins/#{plugin_name}"
+    RUBY
+
+    # Gemspec
+    File.write(File.join(output_dir, "#{gem_name}.gemspec"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "lib/brainiac/plugins/#{plugin_name}/version"
+
+      Gem::Specification.new do |s|
+        s.name        = "#{gem_name}"
+        s.version     = Brainiac::Plugins::#{pascal_name}::VERSION
+        s.summary     = "#{pascal_name} plugin for Brainiac"
+        s.description = "#{pascal_name} integration for Brainiac — TODO: describe what this plugin does."
+        s.authors     = ["Your Name"]
+        s.homepage    = "https://github.com/yourorg/#{gem_name}"
+        s.license     = "MIT"
+        s.required_ruby_version = ">= 3.4"
+
+        s.files = Dir["lib/**/*.rb", "README.md", "LICENSE"]
+        s.require_paths = ["lib"]
+
+        s.add_dependency "brainiac", ">= #{BRAINIAC_VERSION}"
+
+        s.add_development_dependency "minitest", "~> 5.25"
+        s.add_development_dependency "rake", "~> 13.0"
+        s.add_development_dependency "rubocop", "~> 1.75"
+        s.add_development_dependency "rubocop-performance", "~> 1.25"
+
+        s.metadata["rubygems_mfa_required"] = "true"
+      end
+    RUBY
+
+    # Gemfile
+    File.write(File.join(output_dir, "Gemfile"), <<~RUBY)
+      # frozen_string_literal: true
+
+      source "https://rubygems.org"
+
+      gemspec
+    RUBY
+
+    # Rakefile
+    File.write(File.join(output_dir, "Rakefile"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "rake/testtask"
+      require "rubocop/rake_task"
+
+      Rake::TestTask.new(:test) do |t|
+        t.libs << "test"
+        t.libs << "lib"
+        t.test_files = FileList["test/**/test_*.rb"]
+      end
+
+      RuboCop::RakeTask.new(:rubocop)
+
+      task default: %i[test rubocop]
+    RUBY
+
+    # .rubocop.yml
+    File.write(File.join(output_dir, ".rubocop.yml"), <<~YAML)
+      plugins:
+        - rubocop-performance
+
+      AllCops:
+        TargetRubyVersion: 3.4
+        NewCops: enable
+        SuggestExtensions: false
+        Exclude:
+          - "vendor/**/*"
+          - "tmp/**/*"
+
+      Metrics/MethodLength:
+        Max: 75
+
+      Metrics/AbcSize:
+        Max: 90
+
+      Metrics/ModuleLength:
+        Max: 600
+
+      Metrics/ParameterLists:
+        Max: 10
+        CountKeywordArgs: false
+
+      Metrics/BlockLength:
+        Exclude:
+          - "test/**/*"
+          - "*.gemspec"
+
+      Style/TopLevelMethodDefinition:
+        Enabled: false
+
+      Style/StringLiterals:
+        EnforcedStyle: double_quotes
+
+      Style/FrozenStringLiteralComment:
+        Enabled: false
+
+      Style/ClassAndModuleChildren:
+        Enabled: false
+
+      Style/Documentation:
+        Enabled: false
+
+      Gemspec/DevelopmentDependencies:
+        Enabled: false
+
+      Layout/LineLength:
+        Max: 150
+
+      Naming/PredicateMethod:
+        Enabled: false
+
+      Naming/FileName:
+        Exclude:
+          - "lib/brainiac/plugins/**/*"
+    YAML
+
+    # Test helper
+    File.write(File.join(output_dir, "test", "test_helper.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require "minitest/autorun"
+      require "json"
+      require "fileutils"
+      require "tmpdir"
+
+      TEST_BRAINIAC_DIR = Dir.mktmpdir("brainiac-#{plugin_name}-test")
+      ENV["BRAINIAC_DIR"] = TEST_BRAINIAC_DIR
+
+      unless defined?(LOG)
+        LOG = Class.new do
+          def info(_msg) = nil
+          def warn(_msg) = nil
+          def error(_msg) = nil
+          def debug(_msg) = nil
+          def debug? = false
+        end.new
+      end
+
+      module Brainiac
+        @hooks = Hash.new { |h, k| h[k] = [] }
+        @channel_prompts = {}
+        @channel_pre_post_checks = {}
+
+        class << self
+          def on(event, &block) = @hooks[event] << block
+
+          def emit(event, **ctx)
+            @hooks[event].filter_map do |h|
+              h.call(ctx)
+            rescue StandardError
+              nil
+            end
+          end
+
+          def register_channel_prompt(channel, prompt, pre_post_check: nil)
+            @channel_prompts[channel] = prompt
+            @channel_pre_post_checks[channel] = pre_post_check if pre_post_check
+          end
+
+          attr_reader :hooks, :channel_prompts, :channel_pre_post_checks
+
+          def reset_hooks!
+            @hooks = Hash.new { |h, k| h[k] = [] }
+            @channel_prompts = {}
+            @channel_pre_post_checks = {}
+          end
+        end
+
+        module Plugins; end
+      end
+
+      AGENT_REGISTRY = {}.freeze
+      PROJECTS = {}.freeze
+
+      require_relative "../lib/brainiac_#{snake_name}"
+
+      Minitest.after_run { FileUtils.rm_rf(TEST_BRAINIAC_DIR) }
+    RUBY
+
+    # Test file
+    File.write(File.join(output_dir, "test", "test_#{snake_name}.rb"), <<~RUBY)
+      # frozen_string_literal: true
+
+      require_relative "test_helper"
+
+      class Test#{pascal_name}Plugin < Minitest::Test
+        def test_register_method_exists
+          assert_respond_to Brainiac::Plugins::#{pascal_name}, :register
+        end
+
+        def test_version_defined
+          assert_match(/\\A\\d+\\.\\d+\\.\\d+\\z/, Brainiac::Plugins::#{pascal_name}::VERSION)
+        end
+
+        def test_cli_method_exists
+          assert_respond_to Brainiac::Plugins::#{pascal_name}, :cli
+        end
+
+        def test_configured_returns_boolean
+          result = Brainiac::Plugins::#{pascal_name}.configured?
+          assert_includes [true, false], result
+        end
+
+        def test_help_text_defined
+          text = Brainiac::Plugins::#{pascal_name}.help_text
+          assert_kind_of String, text
+          assert_includes text, "brainiac #{plugin_name}"
+        end
+      end
+    RUBY
+
+    # README
+    File.write(File.join(output_dir, "README.md"), <<~MD)
+      # #{gem_name}
+
+      #{pascal_name} plugin for [Brainiac](https://github.com/stowzilla/brainiac).
+
+      ## Installation
+
+      ```bash
+      brainiac install #{plugin_name}
+      brainiac restart
+      ```
+
+      Or for local development:
+
+      ```bash
+      brainiac install #{plugin_name} --path #{output_dir}
+      brainiac restart
+      ```
+
+      ## Configuration
+
+      ```bash
+      brainiac #{plugin_name} setup
+      ```
+
+      ## Development
+
+      ```bash
+      bundle install
+      rake test
+      rake rubocop
+      ```
+
+      ## License
+
+      MIT
+    MD
+
+    puts ""
+    puts "✓ Created #{gem_name} at #{output_dir}"
+    puts ""
+    puts "Next steps:"
+    puts "  cd #{output_dir}"
+    puts "  bundle install"
+    puts "  rake test                    # Verify scaffold works"
+    puts "  # Edit lib/brainiac/plugins/#{plugin_name}.rb to add your logic"
+    puts "  brainiac install #{plugin_name} --path #{output_dir}"
+    puts "  brainiac restart"
+
+  else
+    puts "Usage: brainiac plugin <command>"
+    puts ""
+    puts "Commands:"
+    puts "  new <name>                   Generate a new plugin gem skeleton"
+    puts ""
+    puts "Managing installed plugins:"
+    puts "  brainiac install <name>      Install a plugin"
+    puts "  brainiac uninstall <name>    Remove a plugin"
+    puts "  brainiac plugins             List installed plugins"
+  end
+
 when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
@@ -2368,6 +2837,7 @@ when "help", "--help", "-h", nil
         brainiac projects list          List all registered projects (alias)
         brainiac projects default <key> Set the default project
         brainiac show <key>             Show project configuration
+        brainiac plugin new <name>      Generate a new plugin gem skeleton
         brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
         brainiac uninstall <plugin>     Remove an installed plugin
         brainiac plugins                List installed plugins
@@ -2385,6 +2855,7 @@ when "help", "--help", "-h", nil
         -d, --daemon                     Run server in background (detached)
 
       Plugin Commands:
+        plugin new <name>                Generate a new plugin gem skeleton
         install <name>                   Install a plugin (gem install brainiac-<name>)
         uninstall <name>                 Remove a plugin
         plugins                          List installed plugins
