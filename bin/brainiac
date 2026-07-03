@@ -318,6 +318,32 @@ def try_require_metadata(pname, pentry)
   end
 end
 
+# Load only the plugin's CLI module (metadata + cli) without the full server runtime.
+# Returns true if successfully loaded, false if no CLI file exists.
+def try_require_plugin_cli(pname, pentry)
+  plugin_dir = (File.join(pentry["path"], "lib", "brainiac", "plugins", pname) if pentry.is_a?(Hash) && pentry["path"])
+
+  # Load metadata first (defines module + help_text/configured?)
+  try_require_metadata(pname, pentry)
+
+  # Load CLI file
+  if plugin_dir
+    cli_file = File.join(plugin_dir, "cli.rb")
+    if File.exist?(cli_file)
+      load cli_file
+      return true
+    end
+  end
+
+  # Try gem path
+  begin
+    require "brainiac/plugins/#{pname}/cli"
+    true
+  rescue LoadError
+    false
+  end
+end
+
 def resolve_plugin_module_for(name)
   return nil unless defined?(Brainiac::Plugins)
 
@@ -2439,10 +2465,16 @@ else
         $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
       end
 
-      begin
-        require gem_name
-      rescue LoadError
-        require gem_name.tr("-", "_")
+      # Try lightweight CLI loading first (metadata + cli only, no server runtime)
+      cli_loaded = try_require_plugin_cli(subcommand, plugin_entry)
+
+      # Fall back to full gem load if no standalone CLI file exists
+      unless cli_loaded
+        begin
+          require gem_name
+        rescue LoadError
+          require gem_name.tr("-", "_")
+        end
       end
 
       # Resolve the plugin module and call .cli(ARGV)
