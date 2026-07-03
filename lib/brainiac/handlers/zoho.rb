@@ -164,27 +164,21 @@ def format_zoho_notification(email, rule)
   parts.join("\n")
 end
 
-# Send the notification to the configured Discord channel.
+# Send the notification to the configured channel.
 def notify_zoho_match(email, rule)
-  channel_id = rule["discord_channel_id"] || ZOHO_CONFIG["default_discord_channel_id"]
-  unless channel_id
-    LOG.warn "[Zoho] No discord_channel_id configured for rule '#{rule["label"]}' and no default set"
+  target = rule["notify_target"] || rule["discord_channel_id"] || ZOHO_CONFIG["default_notify_target"] || ZOHO_CONFIG["default_discord_channel_id"]
+  channel = rule["notify_channel"] || ZOHO_CONFIG["notify_channel"] || "discord"
+
+  unless target
+    LOG.warn "[Zoho] No notify_target configured for rule '#{rule["label"]}' and no default set"
     return
   end
 
   message = format_zoho_notification(email, rule)
+  agent = rule["notify_as"] || ZOHO_CONFIG["notify_as"]
 
-  tokens = discord_bot_tokens
-  bot_name = rule["notify_as"] || ZOHO_CONFIG["notify_as"] || tokens.keys.first
-  token = tokens[bot_name&.downcase] || tokens.values.first
-
-  unless token
-    LOG.warn "[Zoho] No Discord bot token available to send notification"
-    return
-  end
-
-  LOG.info "[Zoho] Sending notification to channel #{channel_id} (bot: #{bot_name})"
-  send_discord_message(channel_id, message, token: token)
+  LOG.info "[Zoho] Sending notification via #{channel} to #{target}"
+  send_notification(:zoho_email, message, channel: channel, target: target, agent: agent)
 end
 
 # ---------------------------------------------------------------------------
@@ -360,20 +354,20 @@ end
 
 # Act on the triage decision
 def execute_zoho_triage_decision(decision, email, rule)
-  channel_id = rule["discord_channel_id"] || ZOHO_CONFIG["default_discord_channel_id"]
-  tokens = discord_bot_tokens
-  bot_name = rule["notify_as"] || ZOHO_CONFIG["notify_as"] || tokens.keys.first
-  token = tokens[bot_name&.downcase] || tokens.values.first
+  channel_id = rule["notify_target"] || rule["discord_channel_id"] ||
+               ZOHO_CONFIG["default_notify_target"] || ZOHO_CONFIG["default_discord_channel_id"]
+  notify_channel = rule["notify_channel"] || ZOHO_CONFIG["notify_channel"] || "discord"
+  bot_name = rule["notify_as"] || ZOHO_CONFIG["notify_as"]
 
   case decision["decision"]
   when "create_card"
-    create_zoho_triage_card(decision, email, channel_id, token)
+    create_zoho_triage_card(decision, email, channel_id, notify_channel, bot_name)
   when "skip"
     msg = "📧 **Support Email — No Card Needed**\n"
     msg += "**Subject:** #{email["subject"]}\n"
     msg += "**From:** #{email["fromAddress"]}\n"
     msg += "**Reason:** #{decision["reason"]}"
-    send_discord_message(channel_id, msg, token: token) if channel_id && token
+    send_notification(:zoho_triage, msg, channel: notify_channel, target: channel_id, agent: bot_name)
     LOG.info "[Zoho:Triage] Skipped card: #{decision["reason"]}"
   when "borderline"
     msg = "⚠️ **Support Email — Needs Human Decision**\n"
@@ -382,8 +376,8 @@ def execute_zoho_triage_decision(decision, email, rule)
     msg += "**Why borderline:** #{decision["reason"]}\n"
     summary = (email["summary"] || "").to_s[0..300]
     msg += "```\n#{summary}\n```" unless summary.empty?
-    send_discord_message(channel_id, msg, token: token) if channel_id && token
-    LOG.info "[Zoho:Triage] Borderline — posted to Discord for human decision"
+    send_notification(:zoho_triage, msg, channel: notify_channel, target: channel_id, agent: bot_name)
+    LOG.info "[Zoho:Triage] Borderline — posted for human decision"
   else
     LOG.warn "[Zoho:Triage] Unknown decision: #{decision["decision"]}"
     notify_zoho_match(email, rule)
@@ -391,7 +385,7 @@ def execute_zoho_triage_decision(decision, email, rule)
 end
 
 # Create a card from the triage decision
-def create_zoho_triage_card(decision, email, channel_id, token)
+def create_zoho_triage_card(decision, email, channel_id, notify_channel, bot_name)
   board_id = ZOHO_CONFIG["triage_board_id"]
   unless board_id
     LOG.error "[Zoho:Triage] No triage_board_id configured in zoho.json"
@@ -418,15 +412,13 @@ def create_zoho_triage_card(decision, email, channel_id, token)
     card_url = card_info[:url]
     LOG.info "[Zoho:Triage] Created card ##{card_number}: #{title}"
 
-    # Notify Discord
-    if channel_id && token
-      msg = "🎫 **Support Card Created: [##{card_number}](#{card_url})**\n"
-      msg += "**Title:** #{title}\n"
-      msg += "**Assigned to:** #{decision["assign_to"] || "unassigned"}\n"
-      msg += "**Tags:** #{tags.join(", ")}\n"
-      msg += "**From:** #{email["fromAddress"]}"
-      send_discord_message(channel_id, msg, token: token)
-    end
+    # Notify configured channel
+    msg = "🎫 **Support Card Created: [##{card_number}](#{card_url})**\n"
+    msg += "**Title:** #{title}\n"
+    msg += "**Assigned to:** #{decision["assign_to"] || "unassigned"}\n"
+    msg += "**Tags:** #{tags.join(", ")}\n"
+    msg += "**From:** #{email["fromAddress"]}"
+    send_notification(:zoho_triage, msg, channel: notify_channel, target: channel_id, agent: bot_name)
   else
     LOG.warn "[Zoho:Triage] No work item plugin handled card creation"
     notify_zoho_match(email, { "label" => "Support Email (no card plugin)", "emoji" => "⚠️" }.merge(rule_defaults(nil)))

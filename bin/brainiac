@@ -880,7 +880,7 @@ when "setup"
   puts ""
 
   # Create directory structure
-  dirs = %w[brain/knowledge brain/persona brain/memory handlers plans tmp/discord/draft tmp/discord/posted]
+  dirs = %w[brain/knowledge brain/persona brain/memory handlers plans tmp/notify/draft tmp/notify/posted]
   dirs.each do |dir|
     path = File.join(BRAINIAC_DIR, dir)
     FileUtils.mkdir_p(path)
@@ -923,9 +923,7 @@ when "setup"
     puts ""
 
     available_handlers = {
-
       "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
-      "discord" => "Discord (conversational agent access via bot)",
       "zoho" => "Zoho Mail (email notifications and triage)"
     }
 
@@ -1033,7 +1031,7 @@ when "handler", "handlers"
     handlers = config["handlers"] || {}
 
     # Built-in handlers
-    builtins = %w[github discord zoho]
+    builtins = %w[github zoho]
     puts "Built-in handlers:"
     builtins.each do |name|
       enabled = handlers.fetch(name, true)

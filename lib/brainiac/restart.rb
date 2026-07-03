@@ -23,23 +23,8 @@ def queue_brainiac_restart(agent_name)
 end
 
 # Send a notification about brainiac restart/startup.
-# Uses Discord bot tokens when the Discord plugin is loaded.
 def send_restart_notification(message)
-  return unless respond_to?(:discord_bot_tokens) && respond_to?(:send_discord_message)
-
-  discord_config_file = File.join(BRAINIAC_DIR, "discord.json")
-  return unless File.exist?(discord_config_file)
-
-  config = JSON.parse(File.read(discord_config_file))
-  channel_id = config["notification_channel_id"]
-  return unless channel_id
-
-  tokens = discord_bot_tokens
-  triggered_by = BRAINIAC_RESTART_MUTEX.synchronize { BRAINIAC_RESTART_STATE[:triggered_by] }
-  token = tokens[triggered_by&.downcase] || tokens.values.first
-  return unless token
-
-  send_discord_message(channel_id, message, token: token)
+  notify_restart(message)
 rescue StandardError => e
   LOG.warn "[Brainiac] Failed to send restart notification: #{e.message}"
 end
