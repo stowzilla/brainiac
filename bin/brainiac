@@ -896,148 +896,6 @@ when "status"
 when "path"
   puts BRAINIAC_DIR
 
-when "discord"
-  discord_cmd = ARGV.shift
-  discord_config_file = File.join(BRAINIAC_DIR, "discord.json")
-  agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
-
-  case discord_cmd
-  when "config"
-    if File.exist?(discord_config_file)
-      puts File.read(discord_config_file)
-    else
-      puts "No Discord config found at #{discord_config_file}"
-      puts "Create one with: brainiac discord map <channel-id> <project>"
-      puts "Or copy discord.json.example to #{discord_config_file}"
-    end
-
-  when "map"
-    channel_id = ARGV[0]
-    project_key = ARGV[1]
-
-    unless channel_id && project_key
-      puts "Usage: brainiac discord map <channel-id> <project-key>"
-      exit 1
-    end
-
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : { "channel_mappings" => {} }
-    config["channel_mappings"] ||= {}
-    config["channel_mappings"][channel_id] = { "project" => project_key }
-
-    ensure_brainiac_dir
-    File.write(discord_config_file, JSON.pretty_generate(config))
-    puts "✓ Mapped channel #{channel_id} → project '#{project_key}'"
-
-  when "default"
-    project_key = ARGV[0]
-
-    unless project_key
-      puts "Usage: brainiac discord default <project-key>"
-      exit 1
-    end
-
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : { "channel_mappings" => {} }
-    config["default_project"] = project_key
-
-    ensure_brainiac_dir
-    File.write(discord_config_file, JSON.pretty_generate(config))
-    puts "✓ Default project: #{project_key}"
-
-  when "token"
-    agent_key = ARGV[0]
-    token = ARGV[1]
-
-    unless agent_key && token
-      puts "Usage: brainiac discord token <agent-key> <bot-token>"
-      puts "  Sets the DISCORD_BOT_TOKEN env var for an agent in the registry."
-      puts "  Example: brainiac discord token galen Bot_TOKEN_HERE"
-      exit 1
-    end
-
-    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
-    registry[agent_key] ||= {}
-    registry[agent_key]["env"] ||= {}
-    registry[agent_key]["env"]["DISCORD_BOT_TOKEN"] = token
-
-    ensure_brainiac_dir
-    File.write(agent_registry_file, JSON.pretty_generate(registry))
-    puts "✓ Set DISCORD_BOT_TOKEN for '#{agent_key}'"
-
-  when "status"
-    config = load_config
-    server_url = config["server_url"] || "http://localhost:4567"
-    begin
-      uri = URI("#{server_url}/api/discord")
-      response = Net::HTTP.get_response(uri)
-      data = JSON.parse(response.body)
-      if data["enabled"]
-        bots = data["bots"] || {}
-        if bots.empty?
-          puts "Discord: enabled but no bots configured"
-        else
-          puts "Discord bots:"
-          bots.each do |agent, info|
-            puts "  #{agent}: #{info["status"]} (user_id: #{info["user_id"] || "n/a"})"
-          end
-        end
-        puts "Default project: #{data.dig("config", "default_project") || "none"}"
-        puts "Channel mappings: #{data.dig("config", "channel_mappings")}"
-      else
-        puts "Discord: disabled (#{data["reason"]})"
-      end
-    rescue StandardError => e
-      puts "Could not reach server at #{server_url}: #{e.message}"
-      puts "Is the server running? Check with: brainiac status"
-    end
-
-  when "owner"
-    discord_id = ARGV[0]
-    config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : {}
-    if discord_id
-      config["owner_discord_id"] = discord_id
-      ensure_brainiac_dir
-      File.write(discord_config_file, JSON.pretty_generate(config))
-      puts "✓ Owner set to #{discord_id}"
-    elsif config["owner_discord_id"]
-      puts "Owner: #{config["owner_discord_id"]}"
-    else
-      puts "No owner set."
-      puts "Usage: brainiac discord owner <discord-user-id>"
-    end
-
-  else
-    puts <<~HELP
-      Usage: brainiac discord <command>
-
-      Commands:
-        config                              Show Discord config
-        default <project>                   Set default project for all channels
-        map <channel-id> <project>          Map a specific channel to a project
-        owner [<discord-user-id>]           Set/show machine owner (for version notifications)
-        token <agent-key> <bot-token>       Set Discord bot token for an agent
-        status                              Check Discord bot status (via server API)
-
-      Each agent gets its own Discord bot. Users @mention @Galen or @GLaDOS
-      directly in Discord — no shared bot needed.
-
-      Setup:
-        1. Create a Discord bot per agent at https://discord.com/developers/applications
-        2. Enable MESSAGE CONTENT intent in each bot's settings
-        3. Invite each bot with permissions: Send Messages, Create Public Threads,
-           Send Messages in Threads, Add Reactions, Read Message History
-        4. Register each bot token:
-           brainiac discord token galen "BOT_TOKEN_FOR_GALEN"
-           brainiac discord token glados "BOT_TOKEN_FOR_GLADOS"
-        5. Set a default project:
-           brainiac discord default marketplace
-        6. Start the server (all bots connect automatically):
-           brainiac server
-
-      Config file: #{discord_config_file}
-      Agent registry: #{agent_registry_file}
-    HELP
-  end
-
 when "work-items", "card-map"
   work_items_file = File.join(BRAINIAC_DIR, "work_items.json")
   cm_cmd = ARGV.shift
@@ -2483,7 +2341,49 @@ when "help", "--help", "-h", nil
   HELP
 
 else
-  puts "Unknown command: #{subcommand}"
-  puts "Run 'brainiac help' for usage information."
-  exit 1
+  # Check if the subcommand matches an installed plugin (e.g. "brainiac discord ...")
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  plugins_config = File.exist?(plugins_file) ? JSON.parse(File.read(plugins_file)) : { "plugins" => [] }
+  (plugins_config["plugins"] || []).map { |p| p.is_a?(Hash) ? p["name"] : p.to_s }
+  plugin_entry = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == subcommand }
+
+  if plugin_entry
+    # Delegate to the plugin's CLI module
+    gem_name = "brainiac-#{subcommand}"
+    begin
+      if plugin_entry.is_a?(Hash) && plugin_entry["path"]
+        lib_path = File.join(plugin_entry["path"], "lib")
+        $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+      end
+
+      begin
+        require gem_name
+      rescue LoadError
+        require gem_name.tr("-", "_")
+      end
+
+      # Resolve the plugin module and call .cli(ARGV)
+      pascal = subcommand.split(/[-_]/).map(&:capitalize).join
+      mod = if defined?(Brainiac::Plugins) && Brainiac::Plugins.const_defined?(pascal)
+              Brainiac::Plugins.const_get(pascal)
+            else
+              Brainiac::Plugins.constants.find { |c| c.to_s.downcase == subcommand.downcase }&.then { |c| Brainiac::Plugins.const_get(c) }
+            end
+
+      if mod.respond_to?(:cli)
+        mod.cli(ARGV)
+      else
+        puts "Plugin '#{subcommand}' is installed but does not provide CLI commands."
+        puts "It runs as a server plugin — use 'brainiac server' to activate it."
+      end
+    rescue LoadError => e
+      puts "Plugin '#{subcommand}' is registered but could not be loaded: #{e.message}"
+      puts "Try reinstalling: brainiac uninstall #{subcommand} && brainiac install #{subcommand}"
+      exit 1
+    end
+  else
+    puts "Unknown command: #{subcommand}"
+    puts "Run 'brainiac help' for usage information."
+    exit 1
+  end
 end
