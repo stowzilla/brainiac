@@ -4,7 +4,7 @@ require_relative "test_helper"
 
 class TestConfig < Minitest::Test
   def test_ai_agent_name
-    assert_equal "Galen", AI_AGENT_NAME
+    assert_equal "Sherlock", AI_AGENT_NAME
   end
 
   def test_projects_loaded

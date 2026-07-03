@@ -26,7 +26,7 @@ class TestUsers < Minitest::Test
   end
 
   def test_find_user_by_canonical_name
-    user = find_user_by_canonical_name("Galen")
+    user = find_user_by_canonical_name("Sherlock")
     assert user
     assert_equal "1475925968584573181", user.dig("identities", "discord", "user_id")
   end

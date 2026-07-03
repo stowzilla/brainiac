@@ -57,7 +57,7 @@ class TestSessions < Minitest::Test
 
   def test_register_session_and_check_active
     pid = spawn("sleep", "30")
-    register_session("card-123", pid, log_file: "/tmp/test.log", agent_name: "Galen")
+    register_session("card-123", pid, log_file: "/tmp/test.log", agent_name: "Sherlock")
     assert session_active?("card-123")
   ensure
     begin
@@ -73,25 +73,25 @@ class TestSessions < Minitest::Test
   end
 
   def test_session_active_cleans_up_dead_process
-    register_session("card-456", 999_999_999, agent_name: "Galen")
+    register_session("card-456", 999_999_999, agent_name: "Sherlock")
     refute session_active?("card-456")
   end
 
   def test_archive_session_adds_to_recent
-    info = { agent_name: "Galen", log_file: "/tmp/x.log", started_at: Time.now }
+    info = { agent_name: "Sherlock", log_file: "/tmp/x.log", started_at: Time.now }
     ACTIVE_SESSIONS_MUTEX.synchronize { archive_session("card-1", info) }
     assert_equal 1, RECENT_SESSIONS.size
-    assert_equal "Galen", RECENT_SESSIONS.first[:agent_name]
+    assert_equal "Sherlock", RECENT_SESSIONS.first[:agent_name]
   end
 
   def test_recently_completed_true_within_window
-    info = { agent_name: "Galen", log_file: "/tmp/x.log", started_at: Time.now }
+    info = { agent_name: "Sherlock", log_file: "/tmp/x.log", started_at: Time.now }
     ACTIVE_SESSIONS_MUTEX.synchronize { archive_session("card-5", info) }
     assert recently_completed?("card-5", window: 120)
   end
 
   def test_recently_completed_false_outside_window
-    info = { agent_name: "Galen", log_file: "/tmp/x.log", started_at: Time.now }
+    info = { agent_name: "Sherlock", log_file: "/tmp/x.log", started_at: Time.now }
     ACTIVE_SESSIONS_MUTEX.synchronize { archive_session("card-5", info) }
     RECENT_SESSIONS.first[:finished_at] = Time.now - 200
     refute recently_completed?("card-5", window: 120)
@@ -101,7 +101,7 @@ class TestSessions < Minitest::Test
 
   def test_kill_session_terminates_process
     pid = spawn("sleep", "30")
-    register_session("card-kill-test", pid, agent_name: "Galen")
+    register_session("card-kill-test", pid, agent_name: "Sherlock")
     assert kill_session("card-kill-test")
     sleep 0.2
     refute session_active?("card-kill-test")
@@ -188,14 +188,14 @@ class TestSessions < Minitest::Test
   # --- Session supersede ---
 
   def test_find_supersedable_session_returns_nil_when_empty
-    assert_nil find_supersedable_session("discord-galen-channel1")
+    assert_nil find_supersedable_session("discord-sherlock-channel1")
   end
 
   def test_find_supersedable_session_finds_active_within_window
     pid = spawn("sleep", "30")
-    register_session("discord-galen-ch1-msg1", pid,
-                     supersede_key: "discord-galen-ch1", agent_name: "Galen")
-    result = find_supersedable_session("discord-galen-ch1")
+    register_session("discord-sherlock-ch1-msg1", pid,
+                     supersede_key: "discord-sherlock-ch1", agent_name: "Sherlock")
+    result = find_supersedable_session("discord-sherlock-ch1")
     assert result
     assert_equal pid, result[:pid]
   ensure
@@ -213,10 +213,10 @@ class TestSessions < Minitest::Test
 
   def test_find_supersedable_session_ignores_old_sessions
     pid = spawn("sleep", "30")
-    register_session("discord-galen-ch1-msg1", pid,
-                     supersede_key: "discord-galen-ch1", agent_name: "Galen")
-    ACTIVE_SESSIONS["discord-galen-ch1-msg1"][:started_at] = Time.now - (SUPERSEDE_WINDOW + 10)
-    assert_nil find_supersedable_session("discord-galen-ch1")
+    register_session("discord-sherlock-ch1-msg1", pid,
+                     supersede_key: "discord-sherlock-ch1", agent_name: "Sherlock")
+    ACTIVE_SESSIONS["discord-sherlock-ch1-msg1"][:started_at] = Time.now - (SUPERSEDE_WINDOW + 10)
+    assert_nil find_supersedable_session("discord-sherlock-ch1")
   ensure
     begin
       Process.kill("KILL", pid)

@@ -16,16 +16,16 @@ TEST_BRAINIAC_DIR = Dir.mktmpdir("brainiac-test")
 
 # Set env vars BEFORE loading any brainiac modules
 ENV["BRAINIAC_DIR"] = TEST_BRAINIAC_DIR
-ENV["AI_AGENT_NAME"] = "Galen"
+ENV["AI_AGENT_NAME"] = "Sherlock"
 ENV["LOG_LEVEL"] = "error"
 
 # Create the full directory structure
 [
   File.join(TEST_BRAINIAC_DIR, "brain", "knowledge"),
-  File.join(TEST_BRAINIAC_DIR, "brain", "persona", "galen"),
-  File.join(TEST_BRAINIAC_DIR, "brain", "persona", "glados"),
-  File.join(TEST_BRAINIAC_DIR, "brain", "memory", "galen"),
-  File.join(TEST_BRAINIAC_DIR, "brain", "memory", "glados"),
+  File.join(TEST_BRAINIAC_DIR, "brain", "persona", "sherlock"),
+  File.join(TEST_BRAINIAC_DIR, "brain", "persona", "robin"),
+  File.join(TEST_BRAINIAC_DIR, "brain", "memory", "sherlock"),
+  File.join(TEST_BRAINIAC_DIR, "brain", "memory", "robin"),
   File.join(TEST_BRAINIAC_DIR, "roles"),
   File.join(TEST_BRAINIAC_DIR, "cli-providers"),
   File.join(TEST_BRAINIAC_DIR, "plans")
@@ -33,15 +33,13 @@ ENV["LOG_LEVEL"] = "error"
 
 # Write agent registry
 agent_data = {
-  "galen" => { "display_name" => "Galen", "local" => true,
-               "env" => { "SERVICE_TOKEN" => "token_galen", "DISCORD_BOT_TOKEN" => "Bot_galen" } },
-  "glados" => { "display_name" => "GLaDOS", "local" => true,
-                "env" => { "SERVICE_TOKEN" => "token_glados", "DISCORD_BOT_TOKEN" => "Bot_glados" } },
-  "kaylee" => { "display_name" => "Kaylee", "local" => false,
-                "env" => { "SERVICE_TOKEN" => "token_kaylee" } },
-  "sleeper-service" => { "display_name" => "Sleeper Service", "local" => false,
-                         "env" => {} },
-  "threepio" => { "display_name" => "Threepio", "local" => false, "env" => {} }
+  "sherlock" => { "display_name" => "Sherlock", "local" => true,
+                  "env" => { "SERVICE_TOKEN" => "token_sherlock", "DISCORD_BOT_TOKEN" => "Bot_sherlock" } },
+  "robin" => { "display_name" => "Robin", "local" => true,
+               "env" => { "SERVICE_TOKEN" => "token_robin", "DISCORD_BOT_TOKEN" => "Bot_robin" } },
+  "merlin" => { "display_name" => "Merlin", "local" => false,
+                "env" => { "SERVICE_TOKEN" => "token_merlin" } },
+  "robin-hood" => { "display_name" => "Robin Hood", "local" => false, "env" => {} }
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "agents.json"), JSON.generate(agent_data))
 
@@ -108,8 +106,8 @@ user_data = {
       "aliases" => []
     },
     {
-      "canonical_name" => "Galen",
-      "identities" => { "discord" => { "username" => "galen-bot",
+      "canonical_name" => "Sherlock",
+      "identities" => { "discord" => { "username" => "sherlock-bot",
                                        "user_id" => "1475925968584573181" } },
       "aliases" => []
     }
@@ -120,7 +118,7 @@ File.write(File.join(TEST_BRAINIAC_DIR, "users.json"), JSON.generate(user_data))
 
 # Write brainiac.json
 brainiac_data = {
-  "default_agent" => "Galen"
+  "default_agent" => "Sherlock"
 }
 File.write(File.join(TEST_BRAINIAC_DIR, "brainiac.json"), JSON.generate(brainiac_data))
 

@@ -10,39 +10,19 @@ This file configures how agents appear in the status bar — waybar on Linux, xb
 {
   "agents": [
     {
-      "name": "GLaDOS",
-      "emoji": "🤖",
-      "color": "blue"
-    },
-    {
-      "name": "Galen",
-      "emoji": "🛠️",
+      "name": "Sherlock",
+      "emoji": "🔍",
       "color": "green"
     },
     {
-      "name": "Threepio",
-      "emoji": "📝",
-      "color": "yellow"
+      "name": "Robin",
+      "emoji": "🏹",
+      "color": "blue"
     },
     {
-      "name": "Sheogorath",
-      "emoji": "🎭",
+      "name": "Merlin",
+      "emoji": "🧙",
       "color": "purple"
-    },
-    {
-      "name": "Kaylee",
-      "emoji": "🔧",
-      "color": "pink"
-    },
-    {
-      "name": "Avon",
-      "emoji": "🔐",
-      "color": "red"
-    },
-    {
-      "name": "Sleeper Service",
-      "emoji": "💤",
-      "color": "cyan"
     }
   ],
   "default_emoji": "❓",

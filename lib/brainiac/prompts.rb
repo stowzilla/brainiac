@@ -112,7 +112,7 @@ PROMPT_CORE = <<~PROMPT
   - Be specific in your query — tell the subagent exactly what to find and where to look
   - Include relevant file paths and repo locations in the query
   - Use `relevant_context` to pass information the subagent needs
-  - You can specify `agent_name` to use a specialized agent (e.g., "sheogorath" for Android research)
+  - You can specify `agent_name` to use a specialized agent (e.g., "robin" for Android research)
   - Run `ListAgents` first if you want to see available specialized agents
   - Up to 4 subagents can run in parallel
   - To discover project locations for cross-repo work, run: `brainiac list`
