@@ -2488,7 +2488,7 @@ when "plugin"
     dirs = [
       "lib/brainiac/plugins/#{plugin_name}",
       "test",
-      ".kiro/skills/#{plugin_name}"
+      "skills/#{plugin_name}"
     ]
     dirs.each { |d| FileUtils.mkdir_p(File.join(output_dir, d)) }
 
@@ -2900,7 +2900,7 @@ when "plugin"
 
     # Plugin development SKILL.md — stamped into the scaffold so agents
     # working on this plugin know the contract without needing brain access.
-    File.write(File.join(output_dir, ".kiro", "skills", plugin_name, "SKILL.md"),
+    File.write(File.join(output_dir, "skills", plugin_name, "SKILL.md"),
                generate_plugin_skill_md(plugin_name, pascal_name))
 
     puts ""
