@@ -173,7 +173,7 @@ def detect_mentioned_agent(text)
   all_agent_names.each do |name|
     return name if downcased.include?("@#{name.downcase}")
 
-    # Some systems render mentions using first name only (e.g. "@Sleeper" not "@Robin Hood").
+    # Some systems render mentions using first name only (e.g. "@Robin" not "@Robin Hood").
     # Fall back to matching the first word of multi-word agent names.
     first_word = name.split.first.downcase
     next if first_word == name.downcase # already checked above

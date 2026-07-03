@@ -976,10 +976,10 @@ when "setup"
                       idx = 0 if idx.negative? || idx >= display_names.size
                       display_names[idx]
                     else
-                      agent_name || "Galen"
+                      agent_name
                     end
 
-    default_agent ||= existing_agents.first&.capitalize || "Galen"
+    default_agent ||= existing_agents.first&.capitalize
     config = { "default_agent" => default_agent }
     File.write(brainiac_config_path, JSON.pretty_generate(config))
     puts "✓ Wrote config to ~/.brainiac/brainiac.json (default_agent: #{default_agent})"
@@ -1643,7 +1643,7 @@ when "cron"
       Examples:
         # Recurring
         brainiac cron add -s "0 9 * * *" -p marketplace "Summarize yesterday's work"
-        brainiac cron add -s "@daily" -p brainiac -a GLaDOS "Run security audit"
+        brainiac cron add -s "@daily" -p brainiac -a Robin "Run security audit"
       #{"  "}
         # One-time
         brainiac cron add -s "tomorrow at 9am" -p marketplace "Reminder about priorities"
@@ -1826,10 +1826,10 @@ when "agent"
       puts "If no options are given and stdin is a terminal, interactive mode is used."
       puts ""
       puts "Examples:"
+      puts "  brainiac agent create MyAgent   # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
       puts "  brainiac agent create Jane --role general-engineer --cli grok"
-      puts "  brainiac agent create Avon --persona \"Dry wit, sardonic, brilliant\""
-      puts "  brainiac agent create MyAgent   # interactive"
+      puts "  brainiac agent create Merlin --persona \"Wise, enigmatic, helpful\""
       exit 1
     end
 
@@ -1980,16 +1980,16 @@ when "agent"
 
       Examples:
         brainiac agent list
-        brainiac agent default Galen
+        brainiac agent default Sherlock
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
         brainiac agent remove SecurityBot
-        brainiac agent galen set local true
-        brainiac agent galen set persona "Dry, sardonic"
-        brainiac agent galen set role code-reviewer,general-engineer
-        brainiac agent galen env MY_TOKEN abc123
-        brainiac agent galen show
+        brainiac agent sherlock set local true
+        brainiac agent sherlock set persona "Dry, sardonic"
+        brainiac agent sherlock set role code-reviewer,general-engineer
+        brainiac agent sherlock env MY_TOKEN abc123
+        brainiac agent sherlock show
     HELP
 
   else
