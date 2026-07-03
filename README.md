@@ -15,7 +15,7 @@ brainiac install github      # PR reviews, CI notifications
 brainiac install zoho        # Email notifications and triage
 ```
 
-Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through `~/.kiro/agents/`. Project tracking is handled via `~/.brainiac/projects.json`, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
+Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through `~/.brainiac/agents.json`. Project tracking is handled via `~/.brainiac/projects.json`, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
 
 ### Events (via plugins)
 
@@ -147,7 +147,7 @@ After installing the gem:
 brainiac setup
 ```
 
-This creates the `~/.brainiac/` directory structure, detects existing agents in `~/.kiro/agents/`, and sets your default agent. If no agents exist, it offers to create your first one.
+This creates the `~/.brainiac/` directory structure, detects existing agents in `~/.brainiac/agents.json`, and sets your default agent. If no agents exist, it offers to create your first one.
 
 Then install the plugins you need:
 
@@ -166,12 +166,14 @@ Each plugin has its own setup command (e.g. `brainiac discord setup`, `brainiac 
 | Dependency | Required | Install |
 |------------|----------|---------|
 | Ruby 3.4+ | Yes | [mise](https://mise.jdx.dev), rbenv, or system |
-| [Kiro CLI](https://kiro.dev) | Yes | Agent dispatch |
+| An AI agent CLI | Yes | [Kiro CLI](https://kiro.dev), [Grok CLI](https://x.ai), or any CLI that accepts prompts on stdin |
 | [ngrok](https://ngrok.com) | Yes | Webhook tunneling |
 | [qmd](https://github.com/tobi/qmd) | For brain | `npm install -g @tobilu/qmd` (Node.js >= 22) |
 | [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For `brainiac-fizzy` | Card management |
 | [GitHub CLI](https://cli.github.com) (`gh`) | For `brainiac-github` | PR/issue operations |
 | [gum](https://github.com/charmbracelet/gum) | Optional | Manual worktree cleanup |
+
+Brainiac is CLI-agnostic — configure your preferred agent CLI in `~/.brainiac/cli-providers/`. The project config determines which CLI provider to use per-project.
 
 ### Directory Structure
 
@@ -216,14 +218,19 @@ Maps agents to their identity and environment. Every agent that should dispatch 
 
 See [Multi-Agent Setup](#multi-agent-setup) for full details.
 
-#### 2. Kiro Agent Configs (`~/.kiro/agents/<name>.json`)
+#### 2. CLI Providers (`~/.brainiac/cli-providers/`)
 
-Each agent also needs a kiro-cli config. The filename becomes the agent name:
+Configure which AI CLI to use for dispatching agents. Each provider is a JSON file:
 
-```bash
-kiro-cli agent create    # Interactive
-# Or manually create ~/.kiro/agents/galen.json
+```json
+{
+  "agent_cli": "kiro-cli",
+  "agent_cli_args": "chat --trust-all-tools --no-interactive",
+  "agent_model_flag": "--model"
+}
 ```
+
+Brainiac ships with example providers during setup. Your project config references which provider to use.
 
 #### 3. Environment Variables
 
@@ -300,33 +307,21 @@ Andy's Linux box                    Adam's macOS
 ┌─────────────────────┐            ┌─────────────────────┐
 │ brainiac server     │            │ brainiac server     │
 │                      │            │                      │
-│ ~/.kiro/agents/:     │            │ ~/.kiro/agents/:     │
-│   galen.json         │            │   kaylee.json        │
-│   glados.json        │            │   jane.json          │
-│                      │            │                      │
 │ ~/.brainiac/        │            │ ~/.brainiac/        │
 │   agents.json        │            │   agents.json        │
+│   (galen, glados)    │            │   (kaylee, jane)     │
+│   cli-providers/     │            │   cli-providers/     │
+│     kiro.json        │            │     kiro.json        │
 └─────────────────────┘            └─────────────────────┘
          │                                   │
          └──── same Fizzy board + GitHub ────┘
 ```
 
-Both machines receive the same webhooks. The receiver discovers available agents by scanning `~/.kiro/agents/*.json` — only agents with a config on that machine will be dispatched, preventing duplicates.
+Both machines receive the same webhooks. The agent registry (`~/.brainiac/agents.json`) controls which agents are local — only agents marked `"local": true` will be dispatched on that machine.
 
-### Step 1: Create Kiro CLI Agent Configs
+### Step 1: Agent Registry
 
-Each agent needs a kiro-cli config at `~/.kiro/agents/<name>.json`. This is the only registry — no separate config file needed.
-
-```bash
-kiro-cli agent create    # Interactive
-# Or manually create ~/.kiro/agents/galen.json, ~/.kiro/agents/glados.json
-```
-
-The receiver scans this directory to discover which agents it can dispatch. The filename becomes the agent name (e.g. `galen.json` → Galen). Tool permissions, model, and resources are all defined in the kiro-cli config.
-
-### Step 2: Agent Registry
-
-The agent registry at `~/.brainiac/agents.json` maps each agent to its identity and environment. This serves four purposes:
+The agent registry at `~/.brainiac/agents.json` is the authority for agent identity. This serves four purposes:
 
 1. **Per-agent environment variables** — any env var can be set per-agent via the `env` hash (e.g. `FIZZY_TOKEN`, `DISCORD_BOT_TOKEN`, custom vars)
 2. **Display name mapping** — agents know the exact spelling for @mentions (e.g. `GLaDOS` not `glados`)
@@ -358,7 +353,7 @@ The agent registry at `~/.brainiac/agents.json` maps each agent to its identity 
 
 Keys are lowercase lookup keys (normalized: non-alphanumeric chars become hyphens). `fizzy_name` is the exact Fizzy account display name. The `env` hash is injected into the spawned agent process — every key/value pair becomes an environment variable.
 
-The `local` flag controls which agents pick up card assignments on this machine. Agents without `"local": true` are still known for mention detection, display names, tokens, and cross-agent interactions — they just won't pick up card assignments. Agents discovered from `~/.kiro/agents/` configs and the default `AI_AGENT_NAME` are always considered local.
+The `local` flag controls which agents pick up card assignments on this machine. Agents without `"local": true` are still known for mention detection, display names, tokens, and cross-agent interactions — they just won't pick up card assignments. The default agent (from `AI_AGENT_NAME` or `brainiac.json`) is always considered local.
 
 Agents without an `env` block (like Kaylee above on a Linux box) still appear in the agent roster so local agents spell @mentions correctly.
 
@@ -422,17 +417,17 @@ This creates the directory structure, sets up qmd collections, and indexes every
 
 When a webhook arrives:
 
-1. **Card assigned** — the receiver checks if any assignee matches a local agent name. Only agents marked `local` (or discovered from `~/.kiro/agents/`) pick up assignments — this prevents multiple machines from dispatching the same card.
+1. **Card assigned** — the receiver checks if any assignee matches a local agent name. Only agents marked `local` pick up assignments — this prevents multiple machines from dispatching the same card.
 2. **@mention in comment** — the receiver detects which agent is mentioned (e.g. `@Galen`, `@SecurityBot`). If the mentioned agent differs from the card's assigned agent, it's a cross-agent review — the mentioned agent reviews without a worktree. Non-local agent mentions are ignored.
 3. **Follow-up comment (no mention)** — the card's assigned agent handles it.
 
-The command dispatched looks like:
+The command dispatched is determined by your project's `agent_cli` config (from `cli-providers/`). For example with kiro-cli:
 
 ```bash
 kiro-cli --agent galen chat --trust-all-tools --no-interactive
 ```
 
-The `--agent` flag goes before the `chat` subcommand, pointing kiro-cli to the agent's config.
+The exact command structure depends on your CLI provider configuration.
 
 ## Brain (Long-Term Memory)
 
@@ -1234,9 +1229,9 @@ ls brainiac receiver.rb lib/brainiac/*.rb lib/brainiac/handlers/*.rb | entr -r b
 
 **Card not matching a project:** Verify the Fizzy card has a tag matching `fizzy_tags` in the project config. If no tags match, the default project is used (set with `brainiac projects default`).
 
-**Agent not dispatching:** Check that `~/.kiro/agents/<name>.json` exists for the agent. The receiver discovers agents by scanning that directory. For registry-only agents, ensure `"local": true` is set.
+**Agent not dispatching:** Check that the agent is in `~/.brainiac/agents.json` with `"local": true`. The registry determines which agents can be dispatched on this machine.
 
-**Cross-agent mention ignored:** Both machines receive webhooks. Only the machine with the agent's kiro-cli config in `~/.kiro/agents/` (or `"local": true` in the registry) will dispatch it.
+**Cross-agent mention ignored:** Both machines receive webhooks. Only the machine with the agent marked `"local": true` in `~/.brainiac/agents.json` will dispatch it.
 
 **Agent commenting as wrong user:** Check `~/.brainiac/agents.json` has the correct `FIZZY_TOKEN` in the agent's `env` hash. The env is injected into the spawned agent process — verify with `curl http://localhost:4567/api/agents` to see the roster.
 
