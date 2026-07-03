@@ -30,16 +30,10 @@ def format_active_sessions
   end
 end
 
-def resolve_session_agent_name(card_key, info)
+def resolve_session_agent_name(_card_key, info)
   return info[:agent_name] if info[:agent_name]
 
-  parts = card_key.split("-")
-  agent_key = if parts[0] == "discord" && parts.size >= 4
-                parts[1]
-              else
-                "Unknown"
-              end
-  agent_display_name(agent_key)
+  agent_display_name("Unknown")
 end
 
 def format_recent_sessions
@@ -68,20 +62,6 @@ rescue Errno::ESRCH
   halt 404, { error: "process not found" }.to_json
 rescue Errno::EPERM
   halt 403, { error: "permission denied" }.to_json
-end
-
-def search_giphy(query, api_key)
-  uri = URI("https://api.giphy.com/v1/gifs/search")
-  uri.query = URI.encode_www_form(api_key: api_key, q: query, limit: 5, rating: "pg-13")
-  response = Net::HTTP.get_response(uri)
-
-  if response.code.to_i == 200
-    results = JSON.parse(response.body)["data"] || []
-    results.map { |g| { url: g.dig("images", "original", "url") || g["url"], title: g["title"] } }
-  else
-    LOG.warn "[GIF] Giphy API returned #{response.code}: #{response.body[0..200]}"
-    nil
-  end
 end
 
 # --- Projects ---
@@ -280,13 +260,6 @@ get "/api/logs" do
 
   all_lines = File.readlines(log_file).last(lines)
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
-end
-
-# --- GIF (handled by discord plugin when installed) ---
-
-get "/api/gif" do
-  content_type :json
-  halt 503, { error: "brainiac-discord plugin not installed (provides GIF API)" }.to_json
 end
 
 # --- Cron ---

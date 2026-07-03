@@ -175,7 +175,6 @@ end
 def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_context:, project_config:)
   agent_display = agent_name || "Agent"
   snippet = extract_crash_snippet(log_file)
-  snippet_block = snippet ? "\n```\n#{snippet[-1500..]}\n```" : ""
 
   # Emit to plugins — they handle their own channel-specific delivery
   handled = Brainiac.emit(:agent_crashed,
@@ -183,24 +182,8 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
                           source: source, source_context: source_context, project_config: project_config,
                           snippet: snippet)
 
-  # If a plugin handled it, we're done
-  return if handled.any?
-
-  # Built-in: GitHub crash comment (doesn't need a plugin)
-  if source == :github
-    pr_number = source_context[:pr_number]
-    repo_name = source_context[:repo_name]
-    return unless pr_number && repo_name
-
-    work_dir = source_context[:work_dir] || Dir.pwd
-    comment_body = "💥 **#{agent_display} crashed** (exit code #{exit_status})\n\nLog: `#{log_file}`#{snippet_block}"
-    begin
-      run_cmd("gh", "pr", "comment", pr_number.to_s, "--repo", repo_name, "--body", comment_body, chdir: work_dir)
-      LOG.info "[CrashNotify] Posted crash comment on GitHub PR ##{pr_number}"
-    rescue StandardError => e
-      LOG.error "[CrashNotify] Failed to post GitHub crash comment: #{e.message}"
-    end
-  end
+  # If no plugin handled it, log a warning
+  LOG.warn "[CrashNotify] Agent crashed but no plugin handled notification (source: #{source})" unless handled.any?
 rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
 end

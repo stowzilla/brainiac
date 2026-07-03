@@ -199,16 +199,15 @@ def reload_cron_jobs!(force: false)
 end
 
 # Add a new cron job
-def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, enabled: true, model: nil, effort: nil, discord_channel_id: nil,
-                 notify_channel: nil, notify_target: nil,
+def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, enabled: true, model: nil, effort: nil,
+                 notify_channel: nil, notify_target: nil, discord_channel_id: nil,
                  forum_title: nil, forum_reply_to_latest: false, repeat_count: nil)
   parsed = parse_cron_expression(schedule)
   return { error: "Invalid cron expression" } unless parsed
   return { error: "Must provide either prompt or script, not both" } if prompt && script
   return { error: "Must provide either prompt or script" } unless prompt || script
 
-  # Normalize: discord_channel_id is legacy shorthand for notify_channel: discord, notify_target: <id>
-  notify_channel ||= :discord if discord_channel_id
+  # Legacy compat: discord_channel_id is shorthand for notify_target
   notify_target ||= discord_channel_id
 
   job = {
@@ -224,7 +223,6 @@ def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, ena
     enabled: enabled,
     notify_channel: notify_channel&.to_s,
     notify_target: notify_target,
-    discord_channel_id: discord_channel_id,
     forum_title: forum_title,
     forum_reply_to_latest: forum_reply_to_latest,
     repeat_count: repeat_count,
@@ -269,9 +267,11 @@ def toggle_cron_job(id, enabled)
   end
 end
 
-# Update a cron job's schedule, discord channel, and/or forum title
-def update_cron_job(id, schedule: nil, discord_channel_id: nil, forum_title: nil, forum_reply_to_latest: nil)
-  return { error: "No updates provided" } if schedule.nil? && discord_channel_id.nil? && forum_title.nil? && forum_reply_to_latest.nil?
+# Update a cron job's schedule, notification target, and/or forum title
+def update_cron_job(id, schedule: nil, notify_target: nil, discord_channel_id: nil, forum_title: nil, forum_reply_to_latest: nil)
+  # Legacy compat
+  notify_target ||= discord_channel_id
+  return { error: "No updates provided" } if schedule.nil? && notify_target.nil? && forum_title.nil? && forum_reply_to_latest.nil?
 
   if schedule
     parsed = parse_cron_expression(schedule)
@@ -287,7 +287,7 @@ def update_cron_job(id, schedule: nil, discord_channel_id: nil, forum_title: nil
       job[:schedule] = schedule
       job[:parsed] = parsed
     end
-    job[:discord_channel_id] = discord_channel_id if discord_channel_id
+    job[:notify_target] = notify_target if notify_target
     job[:forum_title] = forum_title if forum_title
     job[:forum_reply_to_latest] = forum_reply_to_latest unless forum_reply_to_latest.nil?
     jobs[id.to_sym] = job
@@ -343,7 +343,7 @@ def prepare_script_notification_draft(job, timestamp)
 
   script_agent_key = job[:agent]&.downcase&.gsub(/[^a-z0-9-]/, "-")
   meta = {
-    notify_channel: (job[:notify_channel] || "discord").to_s,
+    notify_channel: job[:notify_channel]&.to_s,
     notify_target: job[:notify_target] || job[:discord_channel_id],
     agent_key: script_agent_key,
     agent_name: job[:agent] || "Script",
@@ -389,7 +389,7 @@ def build_cron_prompt(job, project)
     meta_file = "#{draft_file}.meta.json"
 
     agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
-    notify_channel = (job[:notify_channel] || "discord").to_s
+    notify_channel = job[:notify_channel]&.to_s
     notify_target = job[:notify_target] || job[:discord_channel_id]
 
     meta = {

@@ -5,9 +5,6 @@
 # When an agent works on brainiac itself (modifies code), a restart is queued.
 # A background thread checks every 30s and only restarts when no other agents
 # are running, preventing mid-session kills.
-#
-# This is NOT Discord-specific — it was previously in the Discord handler
-# because Discord agents trigger restarts most often, but any source can queue one.
 
 BRAINIAC_RESTART_STATE = { queued: false, triggered_by: nil }
 BRAINIAC_RESTART_MUTEX = Mutex.new

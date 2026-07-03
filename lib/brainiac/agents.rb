@@ -11,7 +11,7 @@
 #       "local": true,
 #       "env": {
 #         "SOME_TOKEN": "token_abc...",
-#         "DISCORD_BOT_TOKEN": "Bot_abc..."
+#         "OTHER_TOKEN": "Bot_abc..."
 #       }
 #     }
 #   }

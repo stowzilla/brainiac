@@ -122,34 +122,8 @@ PROMPT_CORE = <<~PROMPT
   They're excellent researchers — use them as such.
 
   ## Image Reading Limits
-  Read at most 4–5 images per tool call. Summarize what you saw before reading more.
+  Read at most 4-5 images per tool call. Summarize what you saw before reading more.
   Loading too many images at once can exceed the API request size limit and crash your session.
-
-PROMPT
-
-# ---------------------------------------------------------------------------
-# PROMPT_PRE_POST_CHECK — inserted before PROMPT_REFLECTION so the agent
-# re-checks for new comments/messages before posting its response.
-# Channel-specific: plugins register pre-post checks, Discord skips.
-# ---------------------------------------------------------------------------
-
-PROMPT_PRE_POST_CHECK_GITHUB = <<~PROMPT
-  ## Pre-Post Comment Check (MANDATORY — do this BEFORE posting your comment)
-
-  Your session may have been running for a while. Before you post your final comment,
-  re-check the PR for new comments that arrived while you were working:
-
-  ```bash
-  gh pr view {{PR_NUMBER}} --comments --json comments
-  ```
-
-  If there are **new comments** that weren't in your original context:
-
-  1. **Read them carefully** — a reviewer may have added feedback or changed direction
-  2. **Adjust your work or response** to account for the new information
-  3. **Do NOT ignore new comments** — avoid posting a response that's already outdated
-
-  If no new comments appeared, proceed normally.
 
 PROMPT
 
@@ -201,7 +175,7 @@ CHANNEL_PROMPTS = {}.freeze
 # ---------------------------------------------------------------------------
 
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :discord, board_key: nil)
+def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: nil, board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
   result += card_context unless card_context.empty?
@@ -213,16 +187,12 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
 
   result += template
 
-  # Pre-post comment check: plugin-registered or built-in
+  # Pre-post comment check: plugin-registered
   plugin_pre_post = Brainiac.channel_pre_post_checks[channel]
-  if plugin_pre_post
-    result += plugin_pre_post
-  elsif channel == :github
-    result += PROMPT_PRE_POST_CHECK_GITHUB
-  end
+  result += plugin_pre_post if plugin_pre_post
 
-  # Reflection prompt — skip for Discord (causes crashes in post-task phase)
-  result += PROMPT_REFLECTION unless channel == :discord
+  # Reflection prompt — skip for now
+  # result += PROMPT_REFLECTION
 
   vars["KNOWLEDGE_DIR"] ||= KNOWLEDGE_DIR
   vars["MEMORY_DIR"] ||= memory_dir_for(agent_name)
@@ -277,33 +247,6 @@ def render_resume_prompt(comment_body:, comment_creator:, comment_id:, card_numb
   lines << ""
   lines << "---"
   lines << "Respond to this comment. All your previous instructions still apply."
-
-  lines.join("\n")
-end
-
-# Lean resume prompt for Discord threads. The previous session has full context
-# (role, persona, knowledge, instructions). We only send the new message + channel history.
-def render_discord_resume_prompt(message_body:, discord_user:, response_file:, agent_name: AI_AGENT_NAME, card_id: nil)
-  memory_dir = memory_dir_for(agent_name)
-  if card_id
-    memory_file = File.join(memory_dir, "card-#{card_id}.md")
-    FileUtils.mkdir_p(memory_dir)
-    FileUtils.touch(memory_file)
-  end
-
-  lines = []
-  lines << "## Resumed Session — New Discord Message"
-  lines << ""
-  lines << "This is a continuation of your previous session in this thread."
-  lines << "All prior context, instructions, and your previous work are still in this conversation."
-  lines << ""
-  lines << "### New Message from #{discord_user}"
-  lines << ""
-  lines << message_body
-  lines << ""
-  lines << "---"
-  lines << "**IMPORTANT: Write your response to `#{response_file}`. Do NOT reply via stdout.**"
-  lines << "All your previous instructions still apply (memory, persona, one message per session, etc.)."
 
   lines.join("\n")
 end

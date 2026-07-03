@@ -122,8 +122,6 @@ end
 before "/api/*" do
   # Skip auth for all localhost requests (CLI, waybar, daemon, etc.)
   pass if localhost_request?
-  # Skip auth for webhook-related routes that have their own verification
-  pass if request.path_info == "/api/discord"
   authenticate_dashboard!
 end
 
@@ -148,15 +146,6 @@ end
 get "/dashboard" do
   content_type :html
   erb :dashboard, layout: false
-end
-
-# --- Discord fallback (plugin handles startup when installed) ---
-
-unless Brainiac.channel_prompts[:discord]
-  get "/api/discord" do
-    content_type :json
-    { enabled: false, reason: "brainiac-discord plugin not installed" }.to_json
-  end
 end
 
 start_brainiac_restart_monitor

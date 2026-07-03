@@ -203,23 +203,6 @@ def stop_server
   end
 end
 
-def update_handler_config(name, enabled)
-  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
-  config = if File.exist?(brainiac_config_path)
-             JSON.parse(File.read(brainiac_config_path))
-           else
-             {}
-           end
-
-  config["handlers"] ||= {}
-  config["handlers"][name] = enabled
-  File.write(brainiac_config_path, JSON.pretty_generate(config))
-
-  action = enabled ? "enabled" : "disabled"
-  puts "✓ Handler '#{name}' #{action}"
-  puts "  Restart the server for changes to take effect: brainiac restart"
-end
-
 # After installing a plugin, load it and run its setup if it provides one.
 # Only runs if the plugin defines .cli and responds to a "setup" subcommand via .configured?
 def run_plugin_setup(name, local_path: nil)
@@ -1092,64 +1075,6 @@ when "show"
     exit 1
   end
   show_project(ARGV[0])
-
-when "handler", "handlers"
-  handler_cmd = ARGV.shift
-  case handler_cmd
-  when "list", "ls", nil
-    brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
-    config = if File.exist?(brainiac_config_path)
-               JSON.parse(File.read(brainiac_config_path))
-             else
-               {}
-             end
-    handlers = config["handlers"] || {}
-
-    # Built-in handlers
-    builtins = %w[github zoho]
-    puts "Built-in handlers:"
-    builtins.each do |name|
-      enabled = handlers.fetch(name, true)
-      status = enabled ? "✓ enabled" : "✗ disabled"
-      puts "  #{name.ljust(10)} #{status}"
-    end
-
-    # Custom handlers
-    custom_dir = File.join(BRAINIAC_DIR, "handlers")
-    if Dir.exist?(custom_dir)
-      custom_files = Dir.glob(File.join(custom_dir, "*.rb"))
-      if custom_files.any?
-        puts ""
-        puts "Custom handlers (#{custom_dir}):"
-        custom_files.each do |f|
-          name = File.basename(f, ".rb")
-          enabled = handlers.fetch(name, true)
-          status = enabled ? "✓ enabled" : "✗ disabled"
-          puts "  #{name.ljust(10)} #{status}"
-        end
-      end
-    end
-
-  when "enable"
-    name = ARGV.shift
-    unless name
-      puts "Usage: brainiac handler enable <name>"
-      exit 1
-    end
-    update_handler_config(name, true)
-
-  when "disable"
-    name = ARGV.shift
-    unless name
-      puts "Usage: brainiac handler disable <name>"
-      exit 1
-    end
-    update_handler_config(name, false)
-
-  else
-    puts "Usage: brainiac handler <list|enable|disable> [name]"
-    exit 1
-  end
 
 when "config"
   OptionParser.new do |opts|
