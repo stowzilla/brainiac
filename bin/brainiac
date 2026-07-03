@@ -990,22 +990,6 @@ when "discord"
       puts "Is the server running? Check with: brainiac status"
     end
 
-  when "agents"
-    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
-    agents_with_tokens = registry.select { |_k, v| v.is_a?(Hash) && (v.dig("env", "DISCORD_BOT_TOKEN") || v["discord_bot_token"]) }
-    if agents_with_tokens.empty?
-      puts "No agents have Discord bot tokens configured."
-      puts "Add one with: brainiac discord token <agent-key> <bot-token>"
-    else
-      puts "Agents with Discord bots:"
-      agents_with_tokens.each do |key, entry|
-        display = entry["display_name"] || key.capitalize
-        token = entry.dig("env", "DISCORD_BOT_TOKEN") || entry["discord_bot_token"]
-        token_preview = "#{token[0..10]}..."
-        puts "  #{display} (#{key}): #{token_preview}"
-      end
-    end
-
   when "owner"
     discord_id = ARGV[0]
     config = File.exist?(discord_config_file) ? JSON.parse(File.read(discord_config_file)) : {}
@@ -1031,7 +1015,6 @@ when "discord"
         map <channel-id> <project>          Map a specific channel to a project
         owner [<discord-user-id>]           Set/show machine owner (for version notifications)
         token <agent-key> <bot-token>       Set Discord bot token for an agent
-        agents                              List agents with Discord bot tokens
         status                              Check Discord bot status (via server API)
 
       Each agent gets its own Discord bot. Users @mention @Galen or @GLaDOS
