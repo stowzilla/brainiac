@@ -304,7 +304,7 @@ def try_require_metadata(pname, pentry)
   if pentry.is_a?(Hash) && pentry["path"]
     metadata_file = File.join(pentry["path"], "lib", "brainiac", "plugins", pname, "metadata.rb")
     if File.exist?(metadata_file)
-      require metadata_file
+      load metadata_file
       return true
     end
   end
