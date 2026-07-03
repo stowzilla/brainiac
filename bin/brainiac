@@ -220,6 +220,91 @@ def update_handler_config(name, enabled)
   puts "  Restart the server for changes to take effect: brainiac restart"
 end
 
+# After installing a plugin, load it and run its setup if it provides one.
+# Only runs if the plugin defines .cli and responds to a "setup" subcommand via .configured?
+def run_plugin_setup(name, local_path: nil)
+  gem_name = "brainiac-#{name}"
+  begin
+    if local_path
+      lib_path = File.join(local_path, "lib")
+      $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+    end
+
+    begin
+      require gem_name
+    rescue LoadError
+      require gem_name.tr("-", "_")
+    end
+
+    pascal = name.split(/[-_]/).map(&:capitalize).join
+    mod = if defined?(Brainiac::Plugins) && Brainiac::Plugins.const_defined?(pascal)
+            Brainiac::Plugins.const_get(pascal)
+          else
+            Brainiac::Plugins.constants.find { |c| c.to_s.downcase == name.downcase }&.then { |c| Brainiac::Plugins.const_get(c) }
+          end
+
+    return unless mod
+
+    # If plugin reports it's not configured, run setup automatically
+    if mod.respond_to?(:configured?) && !mod.configured? && mod.respond_to?(:cli)
+      puts ""
+      mod.cli(["setup"])
+    end
+  rescue LoadError
+    # Plugin couldn't be loaded — skip setup (will be caught on first use)
+    nil
+  rescue StandardError => e
+    puts "  Note: Auto-setup skipped (#{e.message})"
+  end
+end
+
+# Collect help text from installed plugins for the help command.
+def collect_plugin_help_lines
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  plugins_config = File.exist?(plugins_file) ? JSON.parse(File.read(plugins_file)) : { "plugins" => [] }
+
+  (plugins_config["plugins"] || []).filter_map do |pentry|
+    pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
+    load_plugin_help(pname, pentry)
+  end
+end
+
+def load_plugin_help(pname, pentry)
+  gem_name = "brainiac-#{pname}"
+  if pentry.is_a?(Hash) && pentry["path"]
+    lib_path = File.join(pentry["path"], "lib")
+    $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+  end
+  begin
+    require gem_name
+  rescue LoadError
+    require gem_name.tr("-", "_")
+  end
+
+  mod = resolve_plugin_module_for(pname)
+  if mod.respond_to?(:help_text)
+    mod.help_text
+  elsif mod.respond_to?(:cli)
+    "    #{pname.ljust(28)} Run 'brainiac #{pname} help' for commands"
+  end
+rescue LoadError
+  "    #{pname.ljust(28)} (could not load — reinstall with: brainiac install #{pname})"
+rescue StandardError
+  nil
+end
+
+def resolve_plugin_module_for(name)
+  return nil unless defined?(Brainiac::Plugins)
+
+  pascal = name.split(/[-_]/).map(&:capitalize).join
+  if Brainiac::Plugins.const_defined?(pascal)
+    Brainiac::Plugins.const_get(pascal)
+  else
+    match = Brainiac::Plugins.constants.find { |c| c.to_s.downcase == name.downcase }
+    match ? Brainiac::Plugins.const_get(match) : nil
+  end
+end
+
 def start_server(daemon: false)
   # Resolve the real path of the brainiac script (follows symlinks)
   receiver_path = File.join(BRAINIAC_ROOT, "receiver.rb")
@@ -2070,6 +2155,9 @@ when "install"
     puts "✓ Registered plugin '#{name}' from #{local_path}"
     puts "  Restart the server to activate: brainiac restart"
     puts "  Note: Source changes take effect on next server restart."
+
+    # Auto-run setup if plugin defines it and isn't already configured
+    run_plugin_setup(name, local_path: local_path)
   else
     # RubyGems mode
     puts "Installing #{gem_name}..."
@@ -2100,6 +2188,9 @@ when "install"
     puts ""
     puts "✓ Installed plugin '#{name}' (#{gem_name})"
     puts "  Restart the server to activate: brainiac restart"
+
+    # Auto-run setup if plugin defines it and isn't already configured
+    run_plugin_setup(name)
   end
 
 when "uninstall"
@@ -2201,143 +2292,110 @@ when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
 when "help", "--help", "-h", nil
+  # Load installed plugin help dynamically
+  plugin_help_lines = collect_plugin_help_lines
+
+  plugin_section = if plugin_help_lines.any?
+                     "\n    Installed Plugins:\n#{plugin_help_lines.join("\n")}\n"
+                   else
+                     ""
+                   end
+
   puts <<~HELP
-    Brainiac CLI - Manage projects with Brainiac server
+      Brainiac CLI - Manage projects with Brainiac server
 
-    Usage:
-      brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
-      brainiac server [options]       Start the Brainiac webhook server (foreground)
-      brainiac stop                   Stop the running server
-      brainiac restart                Restart the server
-      brainiac logs                   Tail the server log
-      brainiac status                 Check if server is running
-      brainiac register [options]     Register current directory as a project
-      brainiac unregister <key>       Unregister a project
-      brainiac list                   List all registered projects
-      brainiac projects list          List all registered projects (alias)
-      brainiac projects default <key> Set the default project
-      brainiac show <key>             Show project configuration
-      brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
-      brainiac uninstall <plugin>     Remove an installed plugin
-      brainiac plugins                List installed plugins
-      brainiac brain <command>        Manage agent long-term memory (brain)
-      brainiac discord <command>      Manage the Discord bot
-      brainiac cron <command>         Manage scheduled agent tasks
-      brainiac provider <command>     Manage CLI providers
-      brainiac role <command>         Manage agent roles
-      brainiac agent <command>        Manage agent registry (env, list, show)
-      brainiac config                 Configure Brainiac CLI
-      brainiac path                   Show Brainiac config directory
-      brainiac version                Show version
-      brainiac help                   Show this help message
+      Usage:
+        brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
+        brainiac server [options]       Start the Brainiac webhook server (foreground)
+        brainiac stop                   Stop the running server
+        brainiac restart                Restart the server
+        brainiac logs                   Tail the server log
+        brainiac status                 Check if server is running
+        brainiac register [options]     Register current directory as a project
+        brainiac unregister <key>       Unregister a project
+        brainiac list                   List all registered projects
+        brainiac projects list          List all registered projects (alias)
+        brainiac projects default <key> Set the default project
+        brainiac show <key>             Show project configuration
+        brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
+        brainiac uninstall <plugin>     Remove an installed plugin
+        brainiac plugins                List installed plugins
+        brainiac brain <command>        Manage agent long-term memory (brain)
+        brainiac cron <command>         Manage scheduled agent tasks
+        brainiac provider <command>     Manage CLI providers
+        brainiac role <command>         Manage agent roles
+        brainiac agent <command>        Manage agent registry (env, list, show)
+        brainiac config                 Configure Brainiac CLI
+        brainiac path                   Show Brainiac config directory
+        brainiac version                Show version
+        brainiac help                   Show this help message
+    #{plugin_section}
+      Server Options:
+        -d, --daemon                     Run server in background (detached)
 
-    Server Options:
-      -d, --daemon                     Run server in background (detached)
+      Plugin Commands:
+        install <name>                   Install a plugin (gem install brainiac-<name>)
+        uninstall <name>                 Remove a plugin
+        plugins                          List installed plugins
 
-    Plugin Commands:
-      install <name>                   Install a plugin (gem install brainiac-<name>)
-      uninstall <name>                 Remove a plugin
-      plugins                          List installed plugins
+      Card Map Commands:
+        card-map list                    Show all card map entries
+        card-map clean                   Remove stale entries (missing worktrees)
 
-    Card Map Commands:
-      card-map list                    Show all card map entries
-      card-map clean                   Remove stale entries (missing worktrees)
+      Brain Commands:
+        brain init [agent]               Initialize brain (knowledge + persona)
+        brain status [agent]             Show brain status and files
+        brain search [--persona] <q>     Search knowledge or persona
+        brain list                       List knowledge and all personas
+        brain path                       Show knowledge directory
 
-    Brain Commands:
-      brain init [agent]               Initialize brain (knowledge + persona)
-      brain status [agent]             Show brain status and files
-      brain search [--persona] <q>     Search knowledge or persona
-      brain list                       List knowledge and all personas
-      brain path                       Show knowledge directory
+      Cron Commands:
+        cron add -s <schedule> -p <project> "<prompt>"
+                                         Add a scheduled task
+        cron list                        List all cron jobs
+        cron remove <job-id>             Remove a cron job
+        cron enable <job-id>             Enable a cron job
+        cron disable <job-id>            Disable a cron job
+        cron update <job-id> -s <schedule>
+                                         Update a cron job's schedule
 
-    Cron Commands:
-      cron add -s <schedule> -p <project> "<prompt>"
-                                       Add a scheduled task
-      cron list                        List all cron jobs
-      cron remove <job-id>             Remove a cron job
-      cron enable <job-id>             Enable a cron job
-      cron disable <job-id>            Disable a cron job
-      cron update <job-id> -s <schedule>
-                                       Update a cron job's schedule
+      Provider Commands:
+        provider list                    List configured CLI providers
+        provider show <name>             Show provider configuration
+        provider add <name>              Create a new provider config
 
-    Discord Commands:
-      discord config                   Show Discord config
-      discord default <proj>           Set default project for all channels
-      discord map <ch> <proj>          Map a channel to a project
-      discord owner [<id>]             Set/show machine owner (version notifications)
-      discord token <agent> <token>    Set Discord bot token for an agent
-      discord agents                   List agents with Discord bot tokens
-      discord status                   Check bot status via server API
+      Role Commands:
+        role list                        List configured roles and assignments
+        role show <name>                 Show role definition
+        role create <name>               Create a new role file
+        role assign <agent> <role>       Assign a role to an agent (additive)
+        role unassign <agent> <role>     Remove a role from an agent
 
-    Provider Commands:
-      provider list                    List configured CLI providers
-      provider show <name>             Show provider configuration
-      provider add <name>              Create a new provider config
+      Agent Commands:
+        agent list                         List all agents in the registry
+        agent <name> show                  Show agent configuration (tokens redacted)
+        agent <name> env <KEY> <VALUE>     Set an env var for an agent
+        agent <name> env                   List env vars for an agent
+        agent <name> env --delete <KEY>    Remove an env var from an agent
 
-    Role Commands:
-      role list                        List configured roles and assignments
-      role show <name>                 Show role definition
-      role create <name>               Create a new role file
-      role assign <agent> <role>       Assign a role to an agent (additive)
-      role unassign <agent> <role>     Remove a role from an agent
+      Examples:
+        # Start the server in the foreground (like rails server)
+        brainiac server
+        brainiac s
+      #{"  "}
+        # Register current directory
+        cd ~/Code/my-project && brainiac register
+      #{"  "}
+        # Install a plugin
+        brainiac install discord
+      #{"  "}
+        # List all projects
+        brainiac list
 
-    Agent Commands:
-      agent list                         List all agents in the registry
-      agent <name> show                  Show agent configuration (tokens redacted)
-      agent <name> env <KEY> <VALUE>     Set an env var for an agent
-      agent <name> env                   List env vars for an agent
-      agent <name> env --delete <KEY>    Remove an env var from an agent
-
-    Examples:
-      # Start the server in the foreground (like rails server)
-      brainiac server
-      brainiac s
-    #{"  "}
-      # Start the server in background (detached)
-      brainiac server --daemon
-      brainiac server -d
-    #{"  "}
-      # Tail the server logs
-      brainiac logs
-    #{"  "}
-      # Restart the server
-      brainiac restart
-    #{"  "}
-      # Stop the server
-      brainiac stop
-    #{"  "}
-      # Check server status
-      brainiac status
-    #{"  "}
-      # Register current directory
-      cd ~/Code/my-project && brainiac register
-    #{"  "}
-      # Register with specific path
-      brainiac register --path ~/Code/my-project
-    #{"  "}
-      # List all projects
-      brainiac list
-      brainiac projects list  # alternative syntax
-    #{"  "}
-      # Set default project
-      brainiac projects default my-project
-    #{"  "}
-      # Unregister a project
-      brainiac unregister my-project
-    #{"  "}
-      # Show project details
-      brainiac show my-project
-    #{"  "}
-      # Initialize brain for your agent
-      brainiac brain init Galen
-    #{"  "}
-      # Search the brain
-      brainiac brain search "ruby conventions"
-
-    Configuration:
-      Projects are stored in: #{BRAINIAC_DIR}/projects.json
-      Server config: #{BRAINIAC_DIR}/config.json
-      Brain storage: #{BRAINIAC_DIR}/brain/
+      Configuration:
+        Projects are stored in: #{BRAINIAC_DIR}/projects.json
+        Server config: #{BRAINIAC_DIR}/config.json
+        Brain storage: #{BRAINIAC_DIR}/brain/
   HELP
 
 else
@@ -2363,12 +2421,7 @@ else
       end
 
       # Resolve the plugin module and call .cli(ARGV)
-      pascal = subcommand.split(/[-_]/).map(&:capitalize).join
-      mod = if defined?(Brainiac::Plugins) && Brainiac::Plugins.const_defined?(pascal)
-              Brainiac::Plugins.const_get(pascal)
-            else
-              Brainiac::Plugins.constants.find { |c| c.to_s.downcase == subcommand.downcase }&.then { |c| Brainiac::Plugins.const_get(c) }
-            end
+      mod = resolve_plugin_module_for(subcommand)
 
       if mod.respond_to?(:cli)
         mod.cli(ARGV)

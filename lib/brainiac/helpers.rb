@@ -358,7 +358,7 @@ def handle_agent_completion(**ctx)
   end
 
   brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
-  check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+  # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
 end
 
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
