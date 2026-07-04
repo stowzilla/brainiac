@@ -13,7 +13,6 @@
 | sinatra ~> 4.1 | HTTP webhook receiver |
 | puma ~> 7.2 | Web server |
 | rackup ~> 2.3 | Rack integration |
-| websocket-client-simple ~> 0.8 | Discord gateway connections |
 
 ## Dev Dependencies
 
@@ -24,25 +23,14 @@
 | rubocop ~> 1.75 | Linter |
 | rubocop-performance ~> 1.25 | Performance cops |
 
-## Plugin Gems
-
-Plugins extend Brainiac via separate gems:
-
-| Gem | Purpose |
-|-----|---------|
-| brainiac-fizzy | Fizzy card management (extracted from core) |
-| brainiac-whatsapp | WhatsApp Business API handler |
-
-Install plugins: `brainiac install <name>` or `brainiac install <name> --path <dir>` for local dev.
-
 ## External Tools
 
 | Tool | Purpose |
 |------|---------|
-| kiro-cli | Agent dispatch (spawned as subprocess) |
-| gh (GitHub CLI) | PR/issue operations |
 | qmd | Brain semantic search and indexing |
 | ngrok | Webhook tunneling |
+
+Note: Brainiac is CLI-agnostic. The agent CLI (kiro-cli, grok, etc.) is configured per-project in `~/.brainiac/cli-providers/`. No specific CLI is a hard dependency of core.
 
 ## Common Commands
 
@@ -59,7 +47,10 @@ rake
 # Start the server
 brainiac server
 
-# Install a plugin
+# Install a plugin (from rubygems)
+brainiac install discord
+
+# Install a plugin (local dev)
 brainiac install fizzy --path ~/Code/brainiac-fizzy
 
 # List plugins
@@ -79,12 +70,13 @@ brainiac plugins
 Plugins follow this contract:
 
 1. Gem named `brainiac-<name>`
-2. Entry file at `lib/brainiac-<name>.rb`
+2. Entry file at `lib/brainiac_<name>.rb` (underscore in filename)
 3. Module at `Brainiac::Plugins::<Name>`
 4. `.register(app)` receives `Sinatra::Application` — define routes, subscribe to hooks
 5. `Brainiac.register_channel_prompt(:channel, prompt)` for channel-specific prompts
-6. Subscribe to hooks: `:agent_completed`, `:agent_crashed`, `:pre_dispatch`, etc.
+6. Subscribe to hooks: `:agent_completed`, `:agent_crashed`, `:notify`, `:pre_dispatch`, etc.
 7. Plugin state tracked in `~/.brainiac/plugins.json`
-8. Plugin config in its own file (e.g., `~/.brainiac/fizzy.json`)
+8. Plugin config in its own file (e.g., `~/.brainiac/discord.json`)
+9. Optional CLI: `.cli(args)`, `.completions`, `.configured?`, `.help_text`
 
-Reference implementation: `~/Code/brainiac-fizzy`
+Use `brainiac plugin new <name>` to scaffold a new plugin.

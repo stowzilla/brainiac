@@ -6,7 +6,7 @@ Gem::Specification.new do |s|
   s.summary     = "Multi-agent orchestration layer for developer workflows"
   s.description = "Core orchestration engine that manages AI agent identity, long-term memory (brain), " \
                   "prompt construction, and dispatch. Communication channels are provided by plugins: " \
-                  "brainiac-discord, brainiac-fizzy, brainiac-github, brainiac-zoho, and more."
+                  "brainiac-discord, brainiac-fizzy, brainiac-github, and more."
   s.authors     = ["Andy Davis"]
   s.homepage    = "https://github.com/stowzilla/brainiac"
   s.license     = "MIT"
