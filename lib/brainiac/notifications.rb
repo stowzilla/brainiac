@@ -77,7 +77,7 @@ end
 # Convenience: send a notification for cron job output.
 def notify_cron_output(job, message, agent_name: nil)
   send_notification(:cron, message,
-                    target: job[:notify_target] || job[:discord_channel_id],
+                    target: job[:notify_target],
                     channel: job[:notify_channel],
                     agent: agent_name || job[:agent],
                     job_id: job[:id],

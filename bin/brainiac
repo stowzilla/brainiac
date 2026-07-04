@@ -1392,7 +1392,7 @@ when "cron"
           puts "    Schedule: #{schedule_display}"
           puts "    Agent: #{job["script"] ? "none (script mode)" : job["agent"]} | Project: #{job["project"]}"
           notify_ch = job["notify_channel"]
-          notify_tgt = job["notify_target"] || job["discord_channel_id"]
+          notify_tgt = job["notify_target"]
           puts "    Notify: #{notify_ch || "default"} → #{notify_tgt}" if notify_tgt
           puts job["script"] ? "    Script: #{job["script"]}" : "    Prompt: #{job["prompt"]}"
           puts "    Last run: #{last_run}"

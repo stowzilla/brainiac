@@ -312,7 +312,7 @@ def execute_script_job(job, project)
   log_file = File.join(project["repo_path"], "tmp/cron-script-#{job[:id]}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  draft_file = prepare_script_notification_draft(job, timestamp) if job[:notify_target] || job[:discord_channel_id]
+  draft_file = prepare_script_notification_draft(job, timestamp) if job[:notify_target]
 
   LOG.info "[Cron] Running script #{script_path} for job #{job[:id]}, tail -f #{log_file}"
 
@@ -341,7 +341,7 @@ def prepare_script_notification_draft(job, timestamp)
   script_agent_key = job[:agent]&.downcase&.gsub(/[^a-z0-9-]/, "-")
   meta = {
     notify_channel: job[:notify_channel]&.to_s,
-    notify_target: job[:notify_target] || job[:discord_channel_id],
+    notify_target: job[:notify_target],
     agent_key: script_agent_key,
     agent_name: job[:agent] || "Script",
     cron_job_id: job[:id],
@@ -358,7 +358,7 @@ def deliver_script_output(job, log_file, draft_file)
   return unless File.exist?(log_file)
 
   output = File.read(log_file).strip
-  has_notify = job[:notify_target] || job[:discord_channel_id]
+  has_notify = job[:notify_target]
 
   if has_notify && draft_file && !output.empty?
     LOG.warn "[Cron] Job #{job[:id]} has notify_target but no notify_channel — notification may not be delivered" unless job[:notify_channel]
@@ -378,7 +378,7 @@ def build_cron_prompt(job, project)
   prompt = job[:prompt]
   agent_name = job[:agent]
   timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
-  has_notify = job[:notify_target] || job[:discord_channel_id]
+  has_notify = job[:notify_target]
 
   if has_notify
     notify_dir = File.join(BRAINIAC_DIR, "tmp", "notify", "draft")
@@ -388,7 +388,7 @@ def build_cron_prompt(job, project)
 
     agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
     notify_channel = job[:notify_channel]&.to_s
-    notify_target = job[:notify_target] || job[:discord_channel_id]
+    notify_target = job[:notify_target]
 
     meta = {
       notify_channel: notify_channel,
