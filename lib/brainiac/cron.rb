@@ -200,15 +200,13 @@ end
 
 # Add a new cron job
 def add_cron_job(id:, schedule:, agent:, project:, prompt: nil, script: nil, enabled: true, model: nil, effort: nil,
-                 notify_channel: nil, notify_target: nil, discord_channel_id: nil,
+                 notify_channel: nil, notify_target: nil,
                  forum_title: nil, forum_reply_to_latest: false, repeat_count: nil)
   parsed = parse_cron_expression(schedule)
   return { error: "Invalid cron expression" } unless parsed
   return { error: "Must provide either prompt or script, not both" } if prompt && script
   return { error: "Must provide either prompt or script" } unless prompt || script
-
-  # Legacy compat: discord_channel_id is shorthand for notify_target
-  notify_target ||= discord_channel_id
+  return { error: "notify_target requires notify_channel (e.g. -c discord)" } if notify_target && !notify_channel
 
   job = {
     id: id,
@@ -268,9 +266,7 @@ def toggle_cron_job(id, enabled)
 end
 
 # Update a cron job's schedule, notification target, and/or forum title
-def update_cron_job(id, schedule: nil, notify_target: nil, discord_channel_id: nil, forum_title: nil, forum_reply_to_latest: nil)
-  # Legacy compat
-  notify_target ||= discord_channel_id
+def update_cron_job(id, schedule: nil, notify_target: nil, notify_channel: nil, forum_title: nil, forum_reply_to_latest: nil)
   return { error: "No updates provided" } if schedule.nil? && notify_target.nil? && forum_title.nil? && forum_reply_to_latest.nil?
 
   if schedule
@@ -288,6 +284,7 @@ def update_cron_job(id, schedule: nil, notify_target: nil, discord_channel_id: n
       job[:parsed] = parsed
     end
     job[:notify_target] = notify_target if notify_target
+    job[:notify_channel] = notify_channel if notify_channel
     job[:forum_title] = forum_title if forum_title
     job[:forum_reply_to_latest] = forum_reply_to_latest unless forum_reply_to_latest.nil?
     jobs[id.to_sym] = job
@@ -364,6 +361,7 @@ def deliver_script_output(job, log_file, draft_file)
   has_notify = job[:notify_target] || job[:discord_channel_id]
 
   if has_notify && draft_file && !output.empty?
+    LOG.warn "[Cron] Job #{job[:id]} has notify_target but no notify_channel — notification may not be delivered" unless job[:notify_channel]
     File.write(draft_file, output)
     # Deliver via notification system
     notify_cron_output(job, output, agent_name: job[:agent])

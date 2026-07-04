@@ -304,7 +304,8 @@ post "/api/cron/add" do
     script: payload["script"],
     model: payload["model"],
     effort: payload["effort"],
-    discord_channel_id: payload["discord_channel_id"],
+    notify_channel: payload["notify_channel"],
+    notify_target: payload["notify_target"] || payload["discord_channel_id"],
     forum_title: payload["forum_title"],
     forum_reply_to_latest: payload["forum_reply_to_latest"] || false,
     repeat_count: payload["repeat_count"]
@@ -339,7 +340,8 @@ post "/api/cron/update" do
   result = update_cron_job(
     payload["id"],
     schedule: payload["schedule"],
-    discord_channel_id: payload["discord_channel_id"],
+    notify_target: payload["notify_target"] || payload["discord_channel_id"],
+    notify_channel: payload["notify_channel"],
     forum_title: payload["forum_title"],
     forum_reply_to_latest: payload["forum_reply_to_latest"]
   )
