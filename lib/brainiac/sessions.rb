@@ -179,8 +179,7 @@ def register_session(card_key, pid, log_file: nil, message_id: nil, channel_id: 
   end
 end
 
-# --- Session supersede (Discord follow-up within window kills previous run) ---
-
+# --- Session supersede (Channel follow-up within window kills previous run) ---
 SUPERSEDE_WINDOW = 60 # seconds
 
 # Find an active session for the same supersede key (agent+channel) started within the window.

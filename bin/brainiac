@@ -912,46 +912,85 @@ when "setup"
     end
   end
 
-  # Handler configuration
+  # Agent setup — agents.json is the authority
+  agents_file = File.join(BRAINIAC_DIR, "agents.json")
+  existing_agents = if File.exist?(agents_file)
+                      registry = JSON.parse(File.read(agents_file))
+                      registry.keys
+                    else
+                      []
+                    end
+
+  puts ""
+  if existing_agents.empty?
+    puts "No agents found in ~/.brainiac/agents.json"
+    print "Create your first agent? Name: "
+    agent_name = $stdin.gets&.strip
+    if agent_name && !agent_name.empty?
+      agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+      registry = { agent_key => { "display_name" => agent_name, "local" => true, "env" => {} } }
+      File.write(agents_file, JSON.pretty_generate(registry))
+      puts "✓ Created #{agents_file} with agent '#{agent_name}'"
+      existing_agents = [agent_key]
+    else
+      agent_name = nil
+      puts "  Skipped — add agents to ~/.brainiac/agents.json later"
+    end
+  else
+    puts "Found #{existing_agents.size} agent(s): #{existing_agents.join(", ")}"
+  end
+
+  # Default agent selection
   brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
   puts ""
   if File.exist?(brainiac_config_path)
-    puts "✓ Handler config already exists at ~/.brainiac/brainiac.json"
-  else
-    puts "Which integrations do you want to enable?"
-    puts "(You can change this later in ~/.brainiac/brainiac.json)"
-    puts ""
-
-    available_handlers = {
-      "github" => "GitHub (PR reviews, CI failure handling, deploy tracking)",
-      "zoho" => "Zoho Mail (email notifications and triage)"
-    }
-
-    enabled_handlers = {}
-    available_handlers.each do |key, description|
-      print "  Enable #{description}? [Y/n] "
-      answer = $stdin.gets&.strip&.downcase
-      enabled_handlers[key] = answer != "n"
+    current = begin
+      JSON.parse(File.read(brainiac_config_path)).fetch("default_agent", nil)
+    rescue StandardError
+      nil
     end
+    puts "✓ Config already exists at ~/.brainiac/brainiac.json (default_agent: #{current})"
+  else
+    default_agent = if existing_agents.size == 1
+                      name = existing_agents.first
+                      # Look up display name if available
+                      display = begin
+                        JSON.parse(File.read(agents_file)).dig(name, "display_name") || name.capitalize
+                      rescue StandardError
+                        name.capitalize
+                      end
+                      print "Set #{display} as default agent? [Y/n] "
+                      answer = $stdin.gets&.strip&.downcase
+                      answer == "n" ? nil : display
+                    elsif existing_agents.size > 1
+                      puts "Choose default agent:"
+                      display_names = existing_agents.map do |key|
+                        JSON.parse(File.read(agents_file)).dig(key, "display_name") || key.capitalize
+                      rescue StandardError
+                        key.capitalize
+                      end
+                      display_names.each_with_index { |a, i| puts "  #{i + 1}) #{a}" }
+                      print "Enter number [1]: "
+                      choice = $stdin.gets&.strip
+                      idx = choice.to_i - 1
+                      idx = 0 if idx.negative? || idx >= display_names.size
+                      display_names[idx]
+                    else
+                      agent_name
+                    end
 
-    config = { "handlers" => enabled_handlers }
+    default_agent ||= existing_agents.first&.capitalize
+    config = { "default_agent" => default_agent }
     File.write(brainiac_config_path, JSON.pretty_generate(config))
-    puts ""
-    puts "✓ Wrote handler config to ~/.brainiac/brainiac.json"
-
-    enabled_list = enabled_handlers.select { |_, v| v }.keys
-    disabled_list = enabled_handlers.reject { |_, v| v }.keys
-    puts "  Enabled: #{enabled_list.join(", ")}" if enabled_list.any?
-    puts "  Disabled: #{disabled_list.join(", ")}" if disabled_list.any?
+    puts "✓ Wrote config to ~/.brainiac/brainiac.json (default_agent: #{default_agent})"
   end
 
   puts ""
   puts "Next steps:"
-  puts "  1. Edit config files in ~/.brainiac/ with your secrets and IDs"
-  puts "  2. Create agent configs in ~/.kiro/agents/"
-  puts "  3. Register projects: cd ~/Code/myproject && brainiac register"
-  puts "  4. Initialize brain: brainiac brain init"
-  puts "  5. Start server: brainiac server"
+  puts "  1. Register projects: cd ~/Code/myproject && brainiac register"
+  puts "  2. Initialize brain: brainiac brain init"
+  puts "  3. Install plugins: brainiac install discord / fizzy / github / zoho"
+  puts "  4. Start server: brainiac server"
 
   # Shell completion setup
   puts ""
@@ -1053,64 +1092,6 @@ when "show"
     exit 1
   end
   show_project(ARGV[0])
-
-when "handler", "handlers"
-  handler_cmd = ARGV.shift
-  case handler_cmd
-  when "list", "ls", nil
-    brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
-    config = if File.exist?(brainiac_config_path)
-               JSON.parse(File.read(brainiac_config_path))
-             else
-               {}
-             end
-    handlers = config["handlers"] || {}
-
-    # Built-in handlers
-    builtins = %w[github zoho]
-    puts "Built-in handlers:"
-    builtins.each do |name|
-      enabled = handlers.fetch(name, true)
-      status = enabled ? "✓ enabled" : "✗ disabled"
-      puts "  #{name.ljust(10)} #{status}"
-    end
-
-    # Custom handlers
-    custom_dir = File.join(BRAINIAC_DIR, "handlers")
-    if Dir.exist?(custom_dir)
-      custom_files = Dir.glob(File.join(custom_dir, "*.rb"))
-      if custom_files.any?
-        puts ""
-        puts "Custom handlers (#{custom_dir}):"
-        custom_files.each do |f|
-          name = File.basename(f, ".rb")
-          enabled = handlers.fetch(name, true)
-          status = enabled ? "✓ enabled" : "✗ disabled"
-          puts "  #{name.ljust(10)} #{status}"
-        end
-      end
-    end
-
-  when "enable"
-    name = ARGV.shift
-    unless name
-      puts "Usage: brainiac handler enable <name>"
-      exit 1
-    end
-    update_handler_config(name, true)
-
-  when "disable"
-    name = ARGV.shift
-    unless name
-      puts "Usage: brainiac handler disable <name>"
-      exit 1
-    end
-    update_handler_config(name, false)
-
-  else
-    puts "Usage: brainiac handler <list|enable|disable> [name]"
-    exit 1
-  end
 
 when "config"
   OptionParser.new do |opts|
@@ -1322,8 +1303,8 @@ when "cron"
       opts.on("-p", "--project KEY", "Project key") { |v| project = v }
       opts.on("-m", "--model MODEL", "Model to use (opus, sonnet, haiku, auto)") { |v| model = v }
       opts.on("-e", "--effort LEVEL", "Effort level (low, medium, high, xhigh, max)") { |v| effort = v }
-      opts.on("-d", "--notify TARGET", "Notification target (channel ID, card number, etc.)") { |v| notify_target = v }
-      opts.on("-c", "--channel CHANNEL", "Notification channel (discord, fizzy — default: discord)") { |v| notify_channel = v }
+      opts.on("-d", "--notify TARGET", "Notification target (channel ID, webhook URL, etc.)") { |v| notify_target = v }
+      opts.on("-c", "--channel CHANNEL", "Notification channel name (provided by plugins)") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "Forum post title (for forum channels)") { |v| forum_title = v }
       opts.on("-r", "--repeat COUNT", Integer, "Number of times to repeat (for recurring schedules)") { |v| repeat_count = v }
       opts.on("--script PATH", "Run script directly (no agent, output posted via notify)") { |v| script = v }
@@ -1366,7 +1347,6 @@ when "cron"
     payload[:script] = script if script
     payload[:model] = model if model
     payload[:effort] = effort if effort
-    payload[:discord_channel_id] = notify_target if notify_target && (!notify_channel || notify_channel == "discord")
     payload[:notify_channel] = notify_channel if notify_channel
     payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
@@ -1383,7 +1363,7 @@ when "cron"
         puts "  Project: #{project}"
         puts "  Model: #{model || "default"}" unless script
         puts "  Effort: #{effort || "default"}" unless script
-        puts "  Notify: #{notify_target ? "#{notify_channel || "discord"} → #{notify_target}" : "none"}"
+        puts "  Notify: #{notify_target ? "#{notify_channel || "default"} → #{notify_target}" : "none"}"
         puts "  Forum title: #{forum_title || "auto"}" if notify_target && forum_title
         puts "  Repeat: #{repeat_count ? "#{repeat_count} times" : "unlimited"}"
         puts script ? "  Script: #{script}" : "  Prompt: #{prompt}"
@@ -1428,9 +1408,9 @@ when "cron"
           puts "  #{status} #{id}"
           puts "    Schedule: #{schedule_display}"
           puts "    Agent: #{job["script"] ? "none (script mode)" : job["agent"]} | Project: #{job["project"]}"
-          notify_ch = job["notify_channel"] || (job["discord_channel_id"] ? "discord" : nil)
-          notify_tgt = job["notify_target"] || job["discord_channel_id"]
-          puts "    Notify: #{notify_ch} → #{notify_tgt}" if notify_tgt
+          notify_ch = job["notify_channel"]
+          notify_tgt = job["notify_target"]
+          puts "    Notify: #{notify_ch || "default"} → #{notify_tgt}" if notify_tgt
           puts job["script"] ? "    Script: #{job["script"]}" : "    Prompt: #{job["prompt"]}"
           puts "    Last run: #{last_run}"
           puts
@@ -1527,14 +1507,14 @@ when "cron"
       opts.banner = "Usage: brainiac cron update <job-id> [options]"
       opts.on("-s", "--schedule EXPR", "New cron expression") { |v| schedule = v }
       opts.on("-d", "--notify TARGET", "New notification target") { |v| notify_target = v }
-      opts.on("-c", "--channel CHANNEL", "New notification channel (discord, fizzy)") { |v| notify_channel = v }
+      opts.on("-c", "--channel CHANNEL", "New notification channel") { |v| notify_channel = v }
       opts.on("-t", "--title TITLE", "New forum post title") { |v| forum_title = v }
     end.parse!
 
     unless id && (schedule || notify_target || notify_channel || forum_title)
       puts "Error: Missing required arguments"
       puts "Usage: brainiac cron update <job-id> -s \"42 13 * * 1-5\""
-      puts "   or: brainiac cron update <job-id> -d \"channel-id\" -c discord"
+      puts "   or: brainiac cron update <job-id> -d \"channel-id\" -c channel-name"
       puts "   or: brainiac cron update <job-id> -t \"Daily Update\""
       exit 1
     end
@@ -1543,7 +1523,6 @@ when "cron"
     req = Net::HTTP::Post.new(uri, "Content-Type" => "application/json")
     payload = { id: id }
     payload[:schedule] = schedule if schedule
-    payload[:discord_channel_id] = notify_target if notify_target
     payload[:notify_channel] = notify_channel if notify_channel
     payload[:notify_target] = notify_target if notify_target
     payload[:forum_title] = forum_title if forum_title
@@ -1555,7 +1534,7 @@ when "cron"
       if data["success"]
         puts "✓ Updated cron job: #{id}"
         puts "  New schedule: #{schedule}" if schedule
-        puts "  New notify: #{notify_channel || "discord"} → #{notify_target}" if notify_target
+        puts "  New notify: #{notify_channel || "default"} → #{notify_target}" if notify_target
         puts "  New forum title: #{forum_title}" if forum_title
       else
         puts "Error: #{data["error"]}"
@@ -1604,7 +1583,7 @@ when "cron"
       Examples:
         # Recurring
         brainiac cron add -s "0 9 * * *" -p marketplace "Summarize yesterday's work"
-        brainiac cron add -s "@daily" -p brainiac -a GLaDOS "Run security audit"
+        brainiac cron add -s "@daily" -p brainiac -a Robin "Run security audit"
       #{"  "}
         # One-time
         brainiac cron add -s "tomorrow at 9am" -p marketplace "Reminder about priorities"
@@ -1787,10 +1766,10 @@ when "agent"
       puts "If no options are given and stdin is a terminal, interactive mode is used."
       puts ""
       puts "Examples:"
+      puts "  brainiac agent create MyAgent   # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
       puts "  brainiac agent create Jane --role general-engineer --cli grok"
-      puts "  brainiac agent create Avon --persona \"Dry wit, sardonic, brilliant\""
-      puts "  brainiac agent create MyAgent   # interactive"
+      puts "  brainiac agent create Merlin --persona \"Wise, enigmatic, helpful\""
       exit 1
     end
 
@@ -1941,16 +1920,16 @@ when "agent"
 
       Examples:
         brainiac agent list
-        brainiac agent default Galen
+        brainiac agent default Sherlock
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
         brainiac agent remove SecurityBot
-        brainiac agent galen set local true
-        brainiac agent galen set persona "Dry, sardonic"
-        brainiac agent galen set role code-reviewer,general-engineer
-        brainiac agent galen env MY_TOKEN abc123
-        brainiac agent galen show
+        brainiac agent sherlock set local true
+        brainiac agent sherlock set persona "Dry, sardonic"
+        brainiac agent sherlock set role code-reviewer,general-engineer
+        brainiac agent sherlock env MY_TOKEN abc123
+        brainiac agent sherlock show
     HELP
 
   else
@@ -2295,7 +2274,7 @@ when "update", "upgrade"
 
     plugin_entry = (plugins_config["plugins"] || []).find { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == name }
 
-    if plugin_entry && plugin_entry.is_a?(Hash) && plugin_entry["path"]
+    if plugin_entry.is_a?(Hash) && plugin_entry["path"]
       puts "Plugin '#{name}' is installed from a local path: #{plugin_entry["path"]}"
       puts "Local plugins are updated via git pull in their source directory."
       exit 0

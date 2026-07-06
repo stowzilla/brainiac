@@ -125,15 +125,6 @@ def slugify(title, max_length: 40)
   title.downcase.gsub(/[^a-z0-9\s-]/, "").strip.gsub(/\s+/, "-").slice(0, max_length).chomp("-")
 end
 
-def verify_github_signature!(request, payload_body)
-  signature = request.env["HTTP_X_HUB_SIGNATURE_256"]
-  halt 403, { error: "Missing GitHub signature" }.to_json unless signature
-  secret = github_webhook_secret
-  halt 500, { error: "GitHub webhook secret not configured" }.to_json unless secret
-  computed = "sha256=#{OpenSSL::HMAC.hexdigest("sha256", secret, payload_body)}"
-  halt 403, { error: "Invalid GitHub signature" }.to_json unless Rack::Utils.secure_compare(signature, computed)
-end
-
 def run_cmd(*cmd, chdir:, env: {})
   LOG.info "Running: #{cmd.join(" ")} (in #{chdir})"
   stdout, stderr, status = Open3.capture3(env, *cmd, chdir: chdir)
@@ -184,7 +175,6 @@ end
 def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_context:, project_config:)
   agent_display = agent_name || "Agent"
   snippet = extract_crash_snippet(log_file)
-  snippet_block = snippet ? "\n```\n#{snippet[-1500..]}\n```" : ""
 
   # Emit to plugins — they handle their own channel-specific delivery
   handled = Brainiac.emit(:agent_crashed,
@@ -192,26 +182,64 @@ def notify_agent_crash(exit_status:, log_file:, agent_name:, source:, source_con
                           source: source, source_context: source_context, project_config: project_config,
                           snippet: snippet)
 
-  # If a plugin handled it, we're done
-  return if handled.any?
-
-  # Built-in: GitHub crash comment (doesn't need a plugin)
-  if source == :github
-    pr_number = source_context[:pr_number]
-    repo_name = source_context[:repo_name]
-    return unless pr_number && repo_name
-
-    work_dir = source_context[:work_dir] || Dir.pwd
-    comment_body = "💥 **#{agent_display} crashed** (exit code #{exit_status})\n\nLog: `#{log_file}`#{snippet_block}"
-    begin
-      run_cmd("gh", "pr", "comment", pr_number.to_s, "--repo", repo_name, "--body", comment_body, chdir: work_dir)
-      LOG.info "[CrashNotify] Posted crash comment on GitHub PR ##{pr_number}"
-    rescue StandardError => e
-      LOG.error "[CrashNotify] Failed to post GitHub crash comment: #{e.message}"
-    end
-  end
+  # If no plugin handled it, log a warning
+  LOG.warn "[CrashNotify] Agent crashed but no plugin handled notification (source: #{source})" unless handled.any?
 rescue StandardError => e
   LOG.error "[CrashNotify] Unexpected error: #{e.message}"
+end
+
+# Check if a prior CLI session exists in the given directory for the specified CLI binary.
+# This prevents resume attempts when the CLI provider changed (e.g., [cli:grok] in a thread
+# started by kiro-cli) or when the session was started on a different machine.
+def prior_session_exists?(chdir, agent_cli)
+  return false unless chdir && agent_cli
+
+  cli_name = File.basename(agent_cli)
+
+  # Check for CLI-specific session markers:
+  # - grok uses .grok/ directory for session state
+  # - kiro-cli uses .kiro-cli/ or similar
+  # - Generic fallback: check tmp/ for agent logs from this CLI
+  session_dir = File.join(chdir, ".#{cli_name}")
+  return true if File.directory?(session_dir)
+
+  # Fallback: look for recent session logs in tmp/ that suggest this CLI ran here before.
+  # This covers CLIs that don't leave a dotdir but do leave logs via brainiac.
+  tmp_dir = File.join(chdir, "tmp")
+  return false unless File.directory?(tmp_dir)
+
+  Dir.glob(File.join(tmp_dir, "agent-*.log")).any? do |log|
+    # Only count logs from the last 24 hours as valid "resumable" sessions
+    File.mtime(log) > Time.now - 86_400
+  end
+rescue StandardError
+  false
+end
+
+# Public helper: check if resume is viable for a given project + CLI provider combo.
+# Plugins should call this BEFORE building the prompt to decide between
+# render_resume_prompt (lean) and render_prompt (full context).
+#
+# Returns true if the CLI supports resume AND a prior session exists in the working directory.
+# When this returns false, plugins should use render_prompt with thread history as card_context
+# so the agent gets full context even though this is a follow-up message.
+def resume_viable?(project_config:, cli_provider: nil, agent_name: nil, chdir: nil)
+  resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
+  chdir ||= resolved["repo_path"]
+  return false unless resolved["resume_flag"]
+
+  prior_session_exists?(chdir, resolved["agent_cli"])
+end
+
+# Determine whether a session resume should actually happen.
+# Returns truthy (the resume flag string) if viable, false otherwise.
+# Logs a message when resume was requested but isn't possible.
+def resolve_resume(resume, resolved, chdir)
+  return false unless resume && resolved["resume_flag"]
+  return resolved["resume_flag"] if prior_session_exists?(chdir, resolved["agent_cli"])
+
+  LOG.info "[Dispatch] Resume requested but not viable for #{resolved["agent_cli"]} in #{chdir} — starting fresh session"
+  false
 end
 
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
@@ -222,9 +250,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   effort ||= resolved["agent_effort"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
 
-  # Auto-resume: if the provider supports session resume and we're in a worktree
-  # that has had a previous session, resume it. Only applies to follow-ups (not first dispatch).
-  should_resume = resume && resolved["resume_flag"]
+  # Auto-resume: only if the provider supports it AND a prior session exists for this CLI here.
+  should_resume = resolve_resume(resume, resolved, chdir)
 
   # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
   Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)

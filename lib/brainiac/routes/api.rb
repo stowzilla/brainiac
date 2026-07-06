@@ -30,16 +30,10 @@ def format_active_sessions
   end
 end
 
-def resolve_session_agent_name(card_key, info)
+def resolve_session_agent_name(_card_key, info)
   return info[:agent_name] if info[:agent_name]
 
-  parts = card_key.split("-")
-  agent_key = if parts[0] == "discord" && parts.size >= 4
-                parts[1]
-              else
-                "Unknown"
-              end
-  agent_display_name(agent_key)
+  agent_display_name("Unknown")
 end
 
 def format_recent_sessions
@@ -70,20 +64,6 @@ rescue Errno::EPERM
   halt 403, { error: "permission denied" }.to_json
 end
 
-def search_giphy(query, api_key)
-  uri = URI("https://api.giphy.com/v1/gifs/search")
-  uri.query = URI.encode_www_form(api_key: api_key, q: query, limit: 5, rating: "pg-13")
-  response = Net::HTTP.get_response(uri)
-
-  if response.code.to_i == 200
-    results = JSON.parse(response.body)["data"] || []
-    results.map { |g| { url: g.dig("images", "original", "url") || g["url"], title: g["title"] } }
-  else
-    LOG.warn "[GIF] Giphy API returned #{response.code}: #{response.body[0..200]}"
-    nil
-  end
-end
-
 # --- Projects ---
 
 get "/api/projects" do
@@ -108,7 +88,6 @@ post "/api/reload" do
   reload_projects!(force: true)
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
-  reload_github_config!(force: true)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
     users: USER_REGISTRY["users"].size }.to_json
@@ -283,13 +262,6 @@ get "/api/logs" do
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
 end
 
-# --- GIF (handled by discord plugin when installed) ---
-
-get "/api/gif" do
-  content_type :json
-  halt 503, { error: "brainiac-discord plugin not installed (provides GIF API)" }.to_json
-end
-
 # --- Cron ---
 
 get "/api/cron/script" do
@@ -332,7 +304,8 @@ post "/api/cron/add" do
     script: payload["script"],
     model: payload["model"],
     effort: payload["effort"],
-    discord_channel_id: payload["discord_channel_id"],
+    notify_channel: payload["notify_channel"],
+    notify_target: payload["notify_target"],
     forum_title: payload["forum_title"],
     forum_reply_to_latest: payload["forum_reply_to_latest"] || false,
     repeat_count: payload["repeat_count"]
@@ -367,7 +340,8 @@ post "/api/cron/update" do
   result = update_cron_job(
     payload["id"],
     schedule: payload["schedule"],
-    discord_channel_id: payload["discord_channel_id"],
+    notify_target: payload["notify_target"],
+    notify_channel: payload["notify_channel"],
     forum_title: payload["forum_title"],
     forum_reply_to_latest: payload["forum_reply_to_latest"]
   )

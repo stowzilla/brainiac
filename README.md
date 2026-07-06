@@ -1,26 +1,39 @@
 # Brainiac
 
-Brainiac is a multi-agent orchestration layer for developer workflows. It connects your tools (Fizzy, GitHub, Discord, Zoho) to a team of autonomous AI agents. By managing personas, shared knowledge, and collaborative workflows via @mentions, Brainiac allows you to deploy and manage a unified fleet of AI experts directly from your CLI.
+Brainiac is a multi-agent orchestration layer for developer workflows. It manages agent identity, long-term memory, and prompt construction — then delegates communication channels to plugins. By managing personas, shared knowledge, and collaborative workflows via @mentions, Brainiac allows you to deploy and manage a unified fleet of AI experts directly from your CLI.
 
 ## How It Works
 
-Brainiac listens for incoming events and automatically spawns the appropriate AI agent CLI to handle the request. Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through ~/.kiro/agents/. Project tracking is handled via ~/.brainiac/projects.json, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
+Brainiac is a core engine plus plugins. The core handles agent identity, brain (long-term memory), prompt construction, and dispatch. Plugins provide the communication channels — each one connects a different tool (Fizzy, GitHub, Discord, Zoho) to your agent fleet.
 
-### Events
+Install only the plugins you need:
 
-| Source    | Event               | What Happens                                                                                      |
-| --------- | ------------------- | ------------------------------------------------------------------------------------------------- |
-| Fizzy     | Card assigned       | Creates worktree, maps card to branch, spawns assigned agent                                      |
-| Fizzy     | Card published      | Duplicate detection via trigram similarity + semantic search                                       |
-| Fizzy     | @mention in comment | Routes to the mentioned agent (even on another agent's card)                                      |
-| Fizzy     | Follow-up comment   | Runs card's assigned agent in existing worktree                                                   |
-| GitHub    | PR review submitted | Agent addresses review feedback                                                                   |
-| GitHub    | PR comment          | Agent responds to PR feedback                                                                     |
-| GitHub    | PR merged to main   | Comments PR link on Fizzy card, closes card, cleans up worktree                                   |
-| GitHub    | Issue opened        | Logged for tracking (no agent dispatch)                                                           |
-| GitHub    | Workflow run        | Notifies on CI failures via Discord                                                               |
-| Discord   | @bot mention        | Each agent has its own bot — @mention routes directly to that agent, no worktree — conversational |
-| Zoho Mail | Incoming email      | Rule-based matching, notifies via Discord                                                         |
+```bash
+brainiac install fizzy       # Card management
+brainiac install discord     # Conversational bots
+brainiac install github      # PR reviews, CI notifications
+brainiac install zoho        # Email notifications and triage
+```
+
+Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through `~/.brainiac/agents.json`. Project tracking is handled via `~/.brainiac/projects.json`, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
+
+### Events (via plugins)
+
+Each plugin adds its own webhook routes and event handling. Here's what's available when plugins are installed:
+
+| Source    | Event               | Plugin Required | What Happens                                                              |
+| --------- | ------------------- | --------------- | ------------------------------------------------------------------------- |
+| Fizzy     | Card assigned       | `brainiac-fizzy` | Creates worktree, maps card to branch, spawns assigned agent             |
+| Fizzy     | Card published      | `brainiac-fizzy` | Duplicate detection via trigram similarity + semantic search              |
+| Fizzy     | @mention in comment | `brainiac-fizzy` | Routes to the mentioned agent (even on another agent's card)             |
+| Fizzy     | Follow-up comment   | `brainiac-fizzy` | Runs card's assigned agent in existing worktree                          |
+| GitHub    | PR review submitted | `brainiac-github` | Agent addresses review feedback                                         |
+| GitHub    | PR comment          | `brainiac-github` | Agent responds to PR feedback                                           |
+| GitHub    | PR merged to main   | `brainiac-github` | Cleans up worktree, emits hooks for card plugins                        |
+| GitHub    | Issue opened        | `brainiac-github` | Logged for tracking (no agent dispatch)                                 |
+| GitHub    | Workflow run        | `brainiac-github` | Notifies on CI failures and deploys                                     |
+| Discord   | @bot mention        | `brainiac-discord` | Each agent has its own bot — @mention routes directly, conversational   |
+| Zoho Mail | Incoming email      | `brainiac-zoho` | Rule-based matching, notifies via Discord or triages to card             |
 
 ### Inline Tags
 
@@ -48,29 +61,29 @@ The agent stays read-only during planning — no code changes, no commits. Once 
 
 ### Cross-Agent Mentions
 
-Any agent can be tagged on any card. If Kaylee is working card #42 and someone comments "@Galen what do you think?", Galen reviews the card and PR without touching Kaylee's worktree. This enables patterns like:
+Any agent can be tagged on any card. If Merlin is working card #42 and someone comments "@Sherlock what do you think?", Sherlock reviews the card and PR without touching Merlin's worktree. This enables patterns like:
 
 - Engineer agent does the work, security agent reviews it
 - One agent asks another for a second opinion
-- A read-only agent (e.g. GLaDOS) that reviews and comments but doesn't take over the card
+- A read-only agent (e.g. Robin) that reviews and comments but doesn't take over the card
 
 #### Display Name Accuracy
 
-Agents need to spell @mentions exactly as they appear in Fizzy (e.g. `@GLaDOS` not `@glados`). The agent registry's `fizzy_name` field handles this — every prompt includes an agent roster with the correct spelling:
+Agents need to spell @mentions exactly as they appear in Fizzy (e.g. `@Robin` not `@robin`). The agent registry's `fizzy_name` field handles this — every prompt includes an agent roster with the correct spelling:
 
 ```
 ## Agent Roster
 When @mentioning other agents in Fizzy comments, use the EXACT spelling below.
-  - @Galen
-  - @GLaDOS
-  - @Kaylee
+  - @Sherlock
+  - @Robin
+  - @Merlin
 ```
 
-Detection is case-insensitive (inbound `@glados` still matches GLaDOS), but outbound mentions use the exact `fizzy_name` from the registry.
+Detection is case-insensitive (inbound `@robin` still matches Robin), but outbound mentions use the exact `fizzy_name` from the registry.
 
 #### Agent-to-Agent Loop Prevention
 
-When agents can tag each other, infinite loops become possible (Galen tags GLaDOS, GLaDOS tags Galen back, forever). Brainiac prevents this with layered defenses:
+When agents can tag each other, infinite loops become possible (Sherlock tags Robin, Robin tags Sherlock back, forever). Brainiac prevents this with layered defenses:
 
 1. **Dispatch depth limit** — a per-card counter tracks agent-to-agent hops since the last human comment. Default max depth is 10: Human → Agent A → Agent B → ... is allowed up to the limit. The counter resets when a human comments on the card, and expires after 1 hour of no human activity.
 
@@ -134,29 +147,33 @@ After installing the gem:
 brainiac setup
 ```
 
-This creates the `~/.brainiac/` directory structure and copies example config files. Then edit the configs with your actual secrets and IDs (see below).
+This creates the `~/.brainiac/` directory structure, detects existing agents in `~/.brainiac/agents.json`, and sets your default agent. If no agents exist, it offers to create your first one.
 
-Optionally, install handler plugins for additional integrations:
+Then install the plugins you need:
 
 ```bash
-brainiac install whatsapp      # WhatsApp Business API
-brainiac install slack         # Slack (when available)
-brainiac restart               # Restart to activate
+brainiac install discord     # Discord bots
+brainiac install fizzy       # Fizzy card management
+brainiac install github      # GitHub webhooks
+brainiac install zoho        # Zoho Mail
+brainiac restart             # Restart to activate
 ```
 
-See [Plugins](#plugins-gem-based-handlers) for details.
+Each plugin has its own setup command (e.g. `brainiac discord setup`, `brainiac github setup`) that creates the necessary config files.
 
 ### Prerequisites
 
 | Dependency | Required | Install |
 |------------|----------|---------|
 | Ruby 3.4+ | Yes | [mise](https://mise.jdx.dev), rbenv, or system |
-| [Kiro CLI](https://kiro.dev) | Yes | Agent dispatch |
-| [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For Fizzy | Card management |
-| [GitHub CLI](https://cli.github.com) (`gh`) | For GitHub | PR/issue operations |
+| An AI agent CLI | Yes | [Kiro CLI](https://kiro.dev), [Grok CLI](https://x.ai), or any CLI that accepts prompts on stdin |
 | [ngrok](https://ngrok.com) | Yes | Webhook tunneling |
 | [qmd](https://github.com/tobi/qmd) | For brain | `npm install -g @tobilu/qmd` (Node.js >= 22) |
+| [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For `brainiac-fizzy` | Card management |
+| [GitHub CLI](https://cli.github.com) (`gh`) | For `brainiac-github` | PR/issue operations |
 | [gum](https://github.com/charmbracelet/gum) | Optional | Manual worktree cleanup |
+
+Brainiac is CLI-agnostic — configure your preferred agent CLI in `~/.brainiac/cli-providers/`. The project config determines which CLI provider to use per-project.
 
 ### Directory Structure
 
@@ -164,21 +181,21 @@ After setup, `~/.brainiac/` looks like:
 
 ```
 ~/.brainiac/
+├── brainiac.json        # Core config (default_agent)
 ├── agents.json          # Agent registry (tokens, display names, local flag)
 ├── projects.json        # Registered projects
-├── github.json          # GitHub webhook secret
-├── fizzy.json           # Fizzy board config, authorized users
-├── discord.json         # Discord channel mappings, auth
 ├── users.json           # Cross-platform user identity registry
-├── zoho.json            # Zoho Mail rules (optional)
+├── plugins.json         # Installed plugins
 ├── brain/
 │   ├── knowledge/       # Shared technical knowledge (all agents)
 │   ├── persona/         # Per-agent personality files
 │   └── memory/          # Per-agent session memory
-├── handlers/            # Custom webhook handlers (plugin system)
+├── handlers/            # Legacy custom webhook handlers
 ├── plans/               # Planning mode output
 └── tmp/                 # Temp files, drafts, posted responses
 ```
+
+Plugins add their own config files when installed (e.g. `discord.json`, `fizzy.json`, `github.json`, `zoho.json`).
 
 ### Step-by-Step Configuration
 
@@ -188,8 +205,8 @@ Maps agents to their identity and environment. Every agent that should dispatch 
 
 ```json
 {
-  "galen": {
-    "fizzy_name": "Galen",
+  "sherlock": {
+    "fizzy_name": "Sherlock",
     "local": true,
     "env": {
       "FIZZY_TOKEN": "fizzy_abc...",
@@ -201,74 +218,35 @@ Maps agents to their identity and environment. Every agent that should dispatch 
 
 See [Multi-Agent Setup](#multi-agent-setup) for full details.
 
-#### 2. Kiro Agent Configs (`~/.kiro/agents/<name>.json`)
+#### 2. CLI Providers (`~/.brainiac/cli-providers/`)
 
-Each agent also needs a kiro-cli config. The filename becomes the agent name:
-
-```bash
-kiro-cli agent create    # Interactive
-# Or manually create ~/.kiro/agents/galen.json
-```
-
-#### 3. GitHub (`~/.brainiac/github.json`)
+Configure which AI CLI to use for dispatching agents. Each provider is a JSON file:
 
 ```json
 {
-  "webhook_secret": "your-github-webhook-secret",
-  "repos": {}
+  "agent_cli": "kiro-cli",
+  "agent_cli_args": "chat --trust-all-tools --no-interactive",
+  "agent_model_flag": "--model"
 }
 ```
 
-The `webhook_secret` verifies incoming GitHub webhook requests. Generate one with `ruby -rsecurerandom -e 'puts SecureRandom.hex(20)'`.
+Brainiac ships with example providers during setup. Your project config references which provider to use.
 
-`GITHUB_WEBHOOK_SECRET` env var works as fallback.
-
-#### 4. Fizzy (`~/.brainiac/fizzy.json`)
-
-Defines authorized users, flags humans, and configures boards:
-
-```json
-{
-  "authorized_users": [
-    { "id": "user-id-1", "name": "Andy", "human": true },
-    { "id": "user-id-2", "name": "Adam", "human": true },
-    { "id": "agent-id-1", "name": "Galen", "human": false }
-  ],
-  "boards": {
-    "development": {
-      "board_id": "your-board-id",
-      "webhook_secret": "secret-for-this-board",
-      "columns": {
-        "right_now": "column-id",
-        "needs_review": "column-id",
-        "uat": "column-id"
-      }
-    }
-  }
-}
-```
-
-Each board gets its own webhook secret and column IDs. The board key (e.g., `development`) is used in the webhook URL.
-
-When a human is @mentioned on a card assigned to an agent, the agent will skip that comment — allowing human-to-human conversation without agent interference.
-
-**Legacy:** `FIZZY_WEBHOOK_SECRET` and `AUTHORIZED_USER_IDS` env vars work as fallbacks.
-
-#### 5. Environment Variables
+#### 3. Environment Variables
 
 Most config lives in JSON files now. The default agent is set in `brainiac.json`:
 
 ```json
-{ "default_agent": "Galen" }
+{ "default_agent": "Sherlock" }
 ```
 
 Or via environment variable (takes precedence):
 
 ```bash
-export AI_AGENT_NAME="Galen"
+export AI_AGENT_NAME="Sherlock"
 ```
 
-#### 6. Register Projects
+#### 4. Register Projects
 
 ```bash
 cd ~/Code/marketplace && brainiac register
@@ -284,21 +262,34 @@ Set a default project (used as fallback when no tags match):
 brainiac projects default myproject
 ```
 
-#### 7. Initialize Brain
+#### 5. Initialize Brain
 
 ```bash
-brainiac brain init Galen
+brainiac brain init Sherlock
 ```
 
 This creates the directory structure, sets up qmd collections, and indexes everything.
 
-#### 8. Configure Webhooks
+#### 6. Install Plugins
 
-**Fizzy:** Board settings → Webhooks → URL: `https://your-ngrok.ngrok-free.app/fizzy/development` (where `development` is the board key from `fizzy.json`), Secret: the board's `webhook_secret`
+```bash
+brainiac install discord     # Discord bots
+brainiac install fizzy       # Fizzy card management
+brainiac install github      # GitHub webhooks
+brainiac install zoho        # Zoho Mail
+```
 
-**GitHub:** Repo settings → Webhooks → URL: `https://your-ngrok.ngrok-free.app/github`, Content type: `application/json`, Secret: from `github.json`, Events: Pull requests, Pull request reviews, Issue comments, Issues
+Each plugin has its own setup command (e.g. `brainiac github setup`) and documentation. See [Plugins](#plugins-gem-based-handlers) for details.
 
-#### 9. Start
+#### 7. Configure Webhooks
+
+Each plugin provides its own webhook endpoint. Point your tools at your ngrok URL:
+
+- **Fizzy:** `https://your-ngrok.ngrok-free.app/fizzy/<board-key>` (see `brainiac fizzy setup`)
+- **GitHub:** `https://your-ngrok.ngrok-free.app/github` (see `brainiac github setup`)
+- **Zoho:** `https://your-ngrok.ngrok-free.app/zoho` (see `brainiac zoho setup`)
+
+#### 8. Start
 
 ```bash
 brainiac server    # Start and tail logs (Ctrl+C to detach, server keeps running)
@@ -316,67 +307,55 @@ Andy's Linux box                    Adam's macOS
 ┌─────────────────────┐            ┌─────────────────────┐
 │ brainiac server     │            │ brainiac server     │
 │                      │            │                      │
-│ ~/.kiro/agents/:     │            │ ~/.kiro/agents/:     │
-│   galen.json         │            │   kaylee.json        │
-│   glados.json        │            │   jane.json          │
-│                      │            │                      │
 │ ~/.brainiac/        │            │ ~/.brainiac/        │
 │   agents.json        │            │   agents.json        │
+│   (sherlock, robin)    │            │   (merlin, jane)     │
+│   cli-providers/     │            │   cli-providers/     │
+│     kiro.json        │            │     kiro.json        │
 └─────────────────────┘            └─────────────────────┘
          │                                   │
          └──── same Fizzy board + GitHub ────┘
 ```
 
-Both machines receive the same webhooks. The receiver discovers available agents by scanning `~/.kiro/agents/*.json` — only agents with a config on that machine will be dispatched, preventing duplicates.
+Both machines receive the same webhooks. The agent registry (`~/.brainiac/agents.json`) controls which agents are local — only agents marked `"local": true` will be dispatched on that machine.
 
-### Step 1: Create Kiro CLI Agent Configs
+### Step 1: Agent Registry
 
-Each agent needs a kiro-cli config at `~/.kiro/agents/<name>.json`. This is the only registry — no separate config file needed.
-
-```bash
-kiro-cli agent create    # Interactive
-# Or manually create ~/.kiro/agents/galen.json, ~/.kiro/agents/glados.json
-```
-
-The receiver scans this directory to discover which agents it can dispatch. The filename becomes the agent name (e.g. `galen.json` → Galen). Tool permissions, model, and resources are all defined in the kiro-cli config.
-
-### Step 2: Agent Registry
-
-The agent registry at `~/.brainiac/agents.json` maps each agent to its identity and environment. This serves four purposes:
+The agent registry at `~/.brainiac/agents.json` is the authority for agent identity. This serves four purposes:
 
 1. **Per-agent environment variables** — any env var can be set per-agent via the `env` hash (e.g. `FIZZY_TOKEN`, `DISCORD_BOT_TOKEN`, custom vars)
-2. **Display name mapping** — agents know the exact spelling for @mentions (e.g. `GLaDOS` not `glados`)
+2. **Display name mapping** — agents know the exact spelling for @mentions (e.g. `Robin` not `robin`)
 3. **Discord bot tokens** — agents with `DISCORD_BOT_TOKEN` in their env get their own Discord bot
 4. **Local flag** — agents marked `"local": true` pick up card assignments on this machine
 
 ```json
 {
-  "galen": {
-    "fizzy_name": "Galen",
+  "sherlock": {
+    "fizzy_name": "Sherlock",
     "local": true,
     "env": {
       "FIZZY_TOKEN": "fizzy_abc...",
       "DISCORD_BOT_TOKEN": "Bot_abc..."
     }
   },
-  "glados": {
-    "fizzy_name": "GLaDOS",
+  "robin": {
+    "fizzy_name": "Robin",
     "env": {
       "FIZZY_TOKEN": "fizzy_xyz...",
       "DISCORD_BOT_TOKEN": "Bot_xyz..."
     }
   },
-  "kaylee": {
-    "fizzy_name": "Kaylee"
+  "merlin": {
+    "fizzy_name": "Merlin"
   }
 }
 ```
 
 Keys are lowercase lookup keys (normalized: non-alphanumeric chars become hyphens). `fizzy_name` is the exact Fizzy account display name. The `env` hash is injected into the spawned agent process — every key/value pair becomes an environment variable.
 
-The `local` flag controls which agents pick up card assignments on this machine. Agents without `"local": true` are still known for mention detection, display names, tokens, and cross-agent interactions — they just won't pick up card assignments. Agents discovered from `~/.kiro/agents/` configs and the default `AI_AGENT_NAME` are always considered local.
+The `local` flag controls which agents pick up card assignments on this machine. Agents without `"local": true` are still known for mention detection, display names, tokens, and cross-agent interactions — they just won't pick up card assignments. The default agent (from `AI_AGENT_NAME` or `brainiac.json`) is always considered local.
 
-Agents without an `env` block (like Kaylee above on a Linux box) still appear in the agent roster so local agents spell @mentions correctly.
+Agents without an `env` block (like Merlin above on a Linux box) still appear in the agent roster so local agents spell @mentions correctly.
 
 The registry reloads on every webhook and via `POST /api/reload`.
 
@@ -390,13 +369,13 @@ Each agent needs at least one persona file. Create it directly in the brain:
 
 ```bash
 # Create persona file for your agent
-mkdir -p ~/.brainiac/brain/persona/galen
-cat > ~/.brainiac/brain/persona/galen/style.md << 'EOF'
+mkdir -p ~/.brainiac/brain/persona/sherlock
+cat > ~/.brainiac/brain/persona/sherlock/style.md << 'EOF'
 ---
-name: galen-persona
-description: Persona voice for Galen.
+name: sherlock-persona
+description: Persona voice for Sherlock.
 ---
-# Galen — Persona
+# Sherlock — Persona
 Gruff, no-nonsense, direct, practical, a little cynical. Zero corporate fluff.
 Keep responses tight and technical.
 EOF
@@ -438,17 +417,17 @@ This creates the directory structure, sets up qmd collections, and indexes every
 
 When a webhook arrives:
 
-1. **Card assigned** — the receiver checks if any assignee matches a local agent name. Only agents marked `local` (or discovered from `~/.kiro/agents/`) pick up assignments — this prevents multiple machines from dispatching the same card.
-2. **@mention in comment** — the receiver detects which agent is mentioned (e.g. `@Galen`, `@SecurityBot`). If the mentioned agent differs from the card's assigned agent, it's a cross-agent review — the mentioned agent reviews without a worktree. Non-local agent mentions are ignored.
+1. **Card assigned** — the receiver checks if any assignee matches a local agent name. Only agents marked `local` pick up assignments — this prevents multiple machines from dispatching the same card.
+2. **@mention in comment** — the receiver detects which agent is mentioned (e.g. `@Sherlock`, `@SecurityBot`). If the mentioned agent differs from the card's assigned agent, it's a cross-agent review — the mentioned agent reviews without a worktree. Non-local agent mentions are ignored.
 3. **Follow-up comment (no mention)** — the card's assigned agent handles it.
 
-The command dispatched looks like:
+The command dispatched is determined by your project's `agent_cli` config (from `cli-providers/`). For example with kiro-cli:
 
 ```bash
-kiro-cli --agent galen chat --trust-all-tools --no-interactive
+kiro-cli --agent sherlock chat --trust-all-tools --no-interactive
 ```
 
-The `--agent` flag goes before the `chat` subcommand, pointing kiro-cli to the agent's config.
+The exact command structure depends on your CLI provider configuration.
 
 ## Brain (Long-Term Memory)
 
@@ -463,8 +442,8 @@ Agents have persistent memory powered by [qmd](https://github.com/tobi/qmd):
 Each part gets its own qmd collection:
 
 - `brainiac-knowledge` — shared knowledge
-- `galen-memory`, `kaylee-memory` — per-agent card memory
-- `galen-persona`, `kaylee-persona` — per-agent persona
+- `sherlock-memory`, `merlin-memory` — per-agent card memory
+- `sherlock-persona`, `merlin-persona` — per-agent persona
 
 Knowledge is automatically queried and injected into every prompt. Memory is read/written at the start/end of each session. Persona stays out of work context — agents only query it during pre-comment reflection.
 
@@ -492,7 +471,7 @@ Conflicts are handled with `git pull --rebase --autostash`. If a rebase fails (r
 
 ## Discord Bot
 
-Each agent gets its own Discord bot. Users @mention @Galen or @GLaDOS directly in Discord — no shared bot, no agent name detection needed. No Fizzy card or worktree is created; the agent runs in the project's repo for read-only exploration, brain queries, and knowledge/persona updates.
+Each agent gets its own Discord bot. Users @mention @Sherlock or @Robin directly in Discord — no shared bot, no agent name detection needed. No Fizzy card or worktree is created; the agent runs in the project's repo for read-only exploration, brain queries, and knowledge/persona updates.
 
 All Discord bots run inside `brainiac server` as background threads — no separate processes to manage.
 
@@ -516,7 +495,7 @@ React with ❌ to any message that triggered an agent to immediately terminate t
 
 Create one Discord application per agent at https://discord.com/developers/applications:
 
-1. Click "New Application", name it after the agent (e.g. "Galen", "GLaDOS")
+1. Click "New Application", name it after the agent (e.g. "Sherlock", "Robin")
 2. Go to the "Bot" tab in the left sidebar
 3. Under "Privileged Gateway Intents", enable **Message Content Intent** — this is required for the bot to read message text. Without it, all message content arrives as empty strings.
 4. Optionally uncheck "Public Bot" if you don't want others to invite your bots
@@ -534,8 +513,8 @@ Still on the "Bot" tab for each application:
 Register each token with Brainiac:
 
 ```bash
-brainiac discord token galen "BOT_TOKEN_FOR_GALEN"
-brainiac discord token glados "BOT_TOKEN_FOR_GLADOS"
+brainiac discord token sherlock "BOT_TOKEN_FOR_SHERLOCK"
+brainiac discord token robin "BOT_TOKEN_FOR_ROBIN"
 ```
 
 This adds `DISCORD_BOT_TOKEN` to the agent's `env` hash in `~/.brainiac/agents.json`. You can verify with:
@@ -610,7 +589,7 @@ When someone @mentions an agent's bot in Discord:
 Use `[project:XYZ]` to target a specific project and `[opus]`/`[sonnet]`/`[haiku]` to override the model:
 
 ```
-@Galen [project:brainiac] [opus] how does the webhook signature verification work?
+@Sherlock [project:brainiac] [opus] how does the webhook signature verification work?
 ```
 
 Tags are stripped from the prompt — the agent only sees the question.
@@ -638,7 +617,7 @@ Channel mappings and authorization are stored in `~/.brainiac/discord.json`:
   "user_mappings": {
     "Andy": "123456789012345678",
     "Adam": "234567890123456789",
-    "Kaylee": "345678901234567890"
+    "Merlin": "345678901234567890"
   },
   "authorized_role_ids": ["role-id"],
   "authorized_user_ids": ["user-id"],
@@ -685,7 +664,7 @@ Cron jobs can run in two modes:
 ```bash
 # Agent mode (recurring schedules)
 brainiac cron add -s "0 9 * * 1-5" -p marketplace "Summarize open cards and post a standup update"
-brainiac cron add -s "@daily" -p brainiac -a Galen "Review recent commits and flag anything that needs attention"
+brainiac cron add -s "@daily" -p brainiac -a Sherlock "Review recent commits and flag anything that needs attention"
 brainiac cron add -s "0 17 * * 5" -p marketplace -d 1234567890 "Post a weekly summary to Discord"
 
 # Script mode (no agent, direct execution)
@@ -813,9 +792,9 @@ Configure how agents appear in the status bar via `~/.brainiac/waybar.json`:
 ```json
 {
   "agents": [
-    { "name": "Galen", "emoji": "🛠️", "color": "green" },
-    { "name": "GLaDOS", "emoji": "🤖", "color": "blue" },
-    { "name": "Kaylee", "emoji": "🔧", "color": "pink" }
+    { "name": "Sherlock", "emoji": "🛠️", "color": "green" },
+    { "name": "Robin", "emoji": "🤖", "color": "blue" },
+    { "name": "Merlin", "emoji": "🔧", "color": "pink" }
   ],
   "default_emoji": "❓",
   "schema_version": "1.0"
@@ -927,7 +906,7 @@ Create `~/.brainiac/zoho.json`:
 {
   "hook_secret": null,
   "default_discord_channel_id": "YOUR_DISCORD_CHANNEL_ID",
-  "notify_as": "threepio",
+  "notify_as": "merlin",
   "rules": [
     {
       "label": "Item Sold",
@@ -1061,11 +1040,15 @@ The `Brainiac::Plugins` namespace is defined in `lib/brainiac.rb`. Plugin module
 
 | Plugin | Gem | Description |
 |--------|-----|-------------|
+| discord | `brainiac-discord` | Per-agent Discord bots — conversational AI access via @mentions, threads, session supersede |
+| fizzy | `brainiac-fizzy` | Fizzy card management — assignment, comments, @mentions, cross-agent reviews, duplicate detection, planning mode |
+| github | `brainiac-github` | GitHub webhooks — PR reviews, PR comments, PR merges, CI workflow notifications, deploy tracking |
+| zoho | `brainiac-zoho` | Zoho Mail webhooks — rule-based email notifications, AI triage, OAuth for content fetching |
 | whatsapp | `brainiac-whatsapp` | WhatsApp Business API integration |
 
 ### Backward Compatibility
 
-The old `~/.brainiac/handlers/*.rb` drop-in system still works. Custom handler files are loaded before gem plugins. Over time, built-in handlers (Discord, Fizzy, GitHub) may be extracted into their own gems.
+The old `~/.brainiac/handlers/*.rb` drop-in system still works. Custom handler files are loaded before gem plugins.
 
 ## Version Check
 
@@ -1220,9 +1203,9 @@ curl http://localhost:4567/api/users?filter=agents          # List only AI agent
 curl http://localhost:4567/api/users/fladamd                # Find user by any identifier
 curl -X POST http://localhost:4567/api/reload               # Reload projects + agent registry + user registry
 curl http://localhost:4567/api/brain                        # Brain status (default agent)
-curl http://localhost:4567/api/brain?agent=GLaDOS           # Brain status for specific agent
+curl http://localhost:4567/api/brain?agent=Robin           # Brain status for specific agent
 curl "http://localhost:4567/api/brain/search?q=ruby+style"  # Search knowledge
-curl "http://localhost:4567/api/brain/search?q=tone&scope=persona&agent=Galen"  # Search persona
+curl "http://localhost:4567/api/brain/search?q=tone&scope=persona&agent=Sherlock"  # Search persona
 curl http://localhost:4567/api/card-index                   # Card duplicate detection index
 curl http://localhost:4567/api/dispatch-depth               # Agent-to-agent loop prevention state
 curl http://localhost:4567/api/discord                      # Discord bot status and config
@@ -1246,9 +1229,9 @@ ls brainiac receiver.rb lib/brainiac/*.rb lib/brainiac/handlers/*.rb | entr -r b
 
 **Card not matching a project:** Verify the Fizzy card has a tag matching `fizzy_tags` in the project config. If no tags match, the default project is used (set with `brainiac projects default`).
 
-**Agent not dispatching:** Check that `~/.kiro/agents/<name>.json` exists for the agent. The receiver discovers agents by scanning that directory. For registry-only agents, ensure `"local": true` is set.
+**Agent not dispatching:** Check that the agent is in `~/.brainiac/agents.json` with `"local": true`. The registry determines which agents can be dispatched on this machine.
 
-**Cross-agent mention ignored:** Both machines receive webhooks. Only the machine with the agent's kiro-cli config in `~/.kiro/agents/` (or `"local": true` in the registry) will dispatch it.
+**Cross-agent mention ignored:** Both machines receive webhooks. Only the machine with the agent marked `"local": true` in `~/.brainiac/agents.json` will dispatch it.
 
 **Agent commenting as wrong user:** Check `~/.brainiac/agents.json` has the correct `FIZZY_TOKEN` in the agent's `env` hash. The env is injected into the spawned agent process — verify with `curl http://localhost:4567/api/agents` to see the roster.
 
@@ -1270,7 +1253,7 @@ ls brainiac receiver.rb lib/brainiac/*.rb lib/brainiac/handlers/*.rb | entr -r b
 
 **Discord "unauthorized" reaction (🚫):** The user isn't in `authorized_user_ids` or doesn't have a role in `authorized_role_ids` in `~/.brainiac/discord.json`. Leave both arrays empty to allow everyone.
 
-**Duplicate Discord dispatches:** Check `~/.brainiac/agents.json` for duplicate entries with the same bot token under different key formats (e.g. `sleeper-service` and `sleeper_service`). Keys are normalized to lowercase with hyphens — duplicates after normalization cause multiple gateway connections.
+**Duplicate Discord dispatches:** Check `~/.brainiac/agents.json` for duplicate entries with the same bot token under different key formats (e.g. `robin-hood` and `robin_hood`). Keys are normalized to lowercase with hyphens — duplicates after normalization cause multiple gateway connections.
 
 **Worktree cleanup:** Automatic on PR merge. Manual: `cd /path/to/worktree && gd` (see shell helpers below).
 

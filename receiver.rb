@@ -34,17 +34,7 @@ module Brainiac
   end
 end
 
-# --- Conditional handler loading (based on ~/.brainiac/brainiac.json) ---
-
-if handler_enabled?("github")
-  require_relative "lib/brainiac/handlers/github"
-  LOG.info "[Handlers] GitHub handler enabled"
-end
-
-if handler_enabled?("zoho")
-  require_relative "lib/brainiac/handlers/zoho"
-  LOG.info "[Handlers] Zoho handler enabled"
-end
+# --- Custom handlers + plugins ---
 
 # Reload hook registry — custom handlers register callbacks here
 module ReloadHooks
@@ -63,15 +53,11 @@ def register_reload_hook(name, &)
   ReloadHooks.register(name, &)
 end
 
-# Load custom handlers from ~/.brainiac/handlers/ (plugin system)
+# Load custom handlers from ~/.brainiac/handlers/ (legacy plugin system)
 CUSTOM_HANDLERS_DIR = File.join(BRAINIAC_DIR, "handlers")
 if Dir.exist?(CUSTOM_HANDLERS_DIR)
   Dir.glob(File.join(CUSTOM_HANDLERS_DIR, "*.rb")).each do |handler|
     handler_name = File.basename(handler, ".rb")
-    unless handler_enabled?(handler_name)
-      LOG.info "[Handlers] Skipping custom handler (disabled): #{handler_name}"
-      next
-    end
     LOG.info "[Handlers] Loading custom handler: #{handler_name}"
     require handler
   end
@@ -136,209 +122,7 @@ end
 before "/api/*" do
   # Skip auth for all localhost requests (CLI, waybar, daemon, etc.)
   pass if localhost_request?
-  # Skip auth for webhook-related routes that have their own verification
-  pass if request.path_info == "/api/discord"
   authenticate_dashboard!
-end
-
-post "/github" do
-  content_type :json
-  request.body.rewind
-  payload_body = request.body.read
-
-  verify_github_signature!(request, payload_body)
-
-  payload = JSON.parse(payload_body)
-  event = request.env["HTTP_X_GITHUB_EVENT"]
-
-  reload_projects!
-  reload_agent_registry!
-  reload_github_config!
-
-  action = payload["action"]
-
-  case event
-  when "pull_request"
-    if action == "closed" && payload.dig("pull_request", "merged")
-      status_code, body = handle_github_pr_merged(payload)
-      halt status_code, body
-    elsif action == "opened"
-      track_pr_in_work_items(payload)
-      halt 200, { status: "processed", action: "pr_tracked" }.to_json
-    elsif action == "synchronize"
-      status_code, body = handle_github_pr_synchronized(payload)
-      halt status_code, body
-    else
-      halt 200, { status: "ignored", reason: "pull_request action: #{action}" }.to_json
-    end
-  when "pull_request_review"
-    if action == "submitted"
-      status_code, body = handle_github_pr_review_submitted(payload)
-      halt status_code, body
-    else
-      halt 200, { status: "ignored", reason: "pull_request_review action: #{action}" }.to_json
-    end
-  when "issue_comment"
-    if action == "created"
-      status_code, body = handle_github_issue_comment(payload)
-      halt status_code, body
-    else
-      halt 200, { status: "ignored", reason: "issue_comment action: #{action}" }.to_json
-    end
-  when "issues"
-    if action == "opened"
-      status_code, body = handle_github_issue_opened(payload)
-      halt status_code, body
-    else
-      halt 200, { status: "ignored", reason: "issues action: #{action}" }.to_json
-    end
-  when "workflow_run"
-    if action == "completed"
-      status_code, body = handle_github_workflow_run(payload)
-      halt status_code, body
-    else
-      halt 200, { status: "ignored", reason: "workflow_run action: #{action}" }.to_json
-    end
-  when "ping"
-    halt 200, { status: "pong" }.to_json
-  else
-    halt 200, { status: "ignored", event: event }.to_json
-  end
-rescue JSON::ParserError => e
-  LOG.error "Invalid JSON: #{e.message}"
-  halt 400, { error: "Invalid JSON" }.to_json
-rescue StandardError => e
-  LOG.error "Unhandled error: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
-  halt 500, { error: e.message }.to_json
-end
-
-# --- Zoho Mail webhook route ---
-
-if handler_enabled?("zoho")
-  post "/zoho" do
-    content_type :json
-    request.body.rewind
-    payload_body = request.body.read
-
-    # Zoho sends X-Hook-Secret on the very first request — capture and store it
-    hook_secret = request.env["HTTP_X_HOOK_SECRET"]
-    if hook_secret
-      save_zoho_hook_secret(hook_secret)
-      LOG.info "[Zoho] Received and stored hook_secret from initial handshake"
-      halt 200, { status: "hook_secret_received" }.to_json
-    end
-
-    verify_zoho_signature!(request, payload_body)
-
-    email = JSON.parse(payload_body)
-    LOG.info "[Zoho] Received email: subject=#{email["subject"]}, from=#{email["fromAddress"]}, to=#{email["toAddress"]}"
-    LOG.info "[Zoho] Payload keys: #{email.keys.sort.join(", ")}"
-    LOG.info "[Zoho] summary=#{email["summary"].to_s[0..200].inspect}, html=#{email["html"].to_s[0..200].inspect}, content=#{email["content"].to_s[0..200].inspect}"
-
-    # Dump raw payload for debugging (last 5 kept)
-    zoho_debug_dir = File.join(BRAINIAC_DIR, "tmp", "zoho", "payloads")
-    FileUtils.mkdir_p(zoho_debug_dir)
-    File.write(File.join(zoho_debug_dir, "#{Time.now.strftime("%Y%m%d-%H%M%S")}.json"), JSON.pretty_generate(email))
-
-    reload_zoho_config!
-    rule = match_zoho_rule(email)
-
-    if rule
-      LOG.info "[Zoho] Matched rule: #{rule["label"]}"
-      if rule["dispatch_agent"]
-        dispatch_zoho_triage(email, rule)
-        halt 200, { status: "triage_dispatched", rule: rule["label"], agent: rule["dispatch_agent"] }.to_json
-      else
-        notify_zoho_match(email, rule)
-        halt 200, { status: "matched", rule: rule["label"] }.to_json
-      end
-    else
-      LOG.info "[Zoho] No rules matched"
-      halt 200, { status: "no_match" }.to_json
-    end
-  rescue JSON::ParserError => e
-    LOG.error "[Zoho] Invalid JSON: #{e.message}"
-    halt 400, { error: "Invalid JSON" }.to_json
-  rescue StandardError => e
-    LOG.error "[Zoho] Unhandled error: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
-    halt 500, { error: e.message }.to_json
-  end
-end
-
-# --- Zoho OAuth routes ---
-
-if handler_enabled?("zoho")
-  ZOHO_AUTH_SCOPES = "ZohoMail.messages.READ,ZohoMail.accounts.READ,ZohoMail.folders.READ".freeze
-
-  get "/zoho/auth" do
-    reload_zoho_config!
-    api = ZOHO_CONFIG["api"] || {}
-    halt 500, "Missing client_id in zoho.json api section" unless api["client_id"]
-
-    redirect_uri = "#{request.base_url}/zoho/callback"
-    params = URI.encode_www_form(
-      scope: ZOHO_AUTH_SCOPES,
-      client_id: api["client_id"],
-      response_type: "code",
-      access_type: "offline",
-      redirect_uri: redirect_uri,
-      prompt: "consent"
-    )
-    redirect "https://accounts.zoho.com/oauth/v2/auth?#{params}"
-  end
-
-  get "/zoho/callback" do
-    content_type :html
-    code = params["code"]
-    halt 400, "No authorization code received" unless code
-
-    reload_zoho_config!
-    api = ZOHO_CONFIG["api"] || {}
-    redirect_uri = "#{request.base_url}/zoho/callback"
-
-    uri = URI(ZOHO_TOKEN_URL)
-    res = Net::HTTP.post_form(uri, {
-                                "grant_type" => "authorization_code",
-                                "client_id" => api["client_id"],
-                                "client_secret" => api["client_secret"],
-                                "code" => code,
-                                "redirect_uri" => redirect_uri
-                              })
-
-    data = JSON.parse(res.body)
-    if data["refresh_token"]
-      ZOHO_CONFIG["api"] ||= {}
-      ZOHO_CONFIG["api"]["refresh_token"] = data["refresh_token"]
-      @zoho_access_token = data["access_token"]
-      @zoho_token_expires_at = Time.now + 3300
-      File.write(ZOHO_CONFIG_FILE, JSON.pretty_generate(ZOHO_CONFIG))
-      LOG.info "[Zoho:OAuth] Stored refresh_token and access_token"
-
-      # Auto-fetch account_id if not set
-      unless ZOHO_CONFIG.dig("api", "account_id")
-        acct_uri = URI(ZOHO_MAIL_API_BASE.to_s)
-        http = Net::HTTP.new(acct_uri.host, acct_uri.port)
-        http.use_ssl = true
-        req = Net::HTTP::Get.new(acct_uri)
-        req["Authorization"] = "Zoho-oauthtoken #{@zoho_access_token}"
-        acct_res = http.request(req)
-        acct_data = JSON.parse(acct_res.body)
-        if (account_id = acct_data.dig("data", 0, "accountId"))
-          ZOHO_CONFIG["api"]["account_id"] = account_id
-          File.write(ZOHO_CONFIG_FILE, JSON.pretty_generate(ZOHO_CONFIG))
-          LOG.info "[Zoho:OAuth] Auto-fetched account_id: #{account_id}"
-        end
-      end
-
-      "<h1>✅ Zoho OAuth Complete</h1><p>Refresh token and account_id saved to zoho.json. You can close this tab.</p>"
-    else
-      LOG.error "[Zoho:OAuth] Token exchange failed: #{data}"
-      "<h1>❌ OAuth Failed</h1><pre>#{data.to_json}</pre>"
-    end
-  rescue StandardError => e
-    LOG.error "[Zoho:OAuth] Error: #{e.message}"
-    "<h1>❌ Error</h1><pre>#{e.message}</pre>"
-  end
 end
 
 # --- Admin API routes ---
@@ -362,15 +146,6 @@ end
 get "/dashboard" do
   content_type :html
   erb :dashboard, layout: false
-end
-
-# --- Discord fallback (plugin handles startup when installed) ---
-
-unless Brainiac.channel_prompts[:discord]
-  get "/api/discord" do
-    content_type :json
-    { enabled: false, reason: "brainiac-discord plugin not installed" }.to_json
-  end
 end
 
 start_brainiac_restart_monitor

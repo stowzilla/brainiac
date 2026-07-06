@@ -6,12 +6,12 @@
 # environment variable can be set per-agent:
 #
 #   {
-#     "galen": {
-#       "display_name": "Galen",
+#     "sherlock": {
+#       "display_name": "Sherlock",
 #       "local": true,
 #       "env": {
 #         "SOME_TOKEN": "token_abc...",
-#         "DISCORD_BOT_TOKEN": "Bot_abc..."
+#         "OTHER_TOKEN": "Bot_abc..."
 #       }
 #     }
 #   }
@@ -71,7 +71,7 @@ def agent_env_var(agent_name, var_name)
 end
 
 # Get the display name for an agent (from agents.json registry).
-# This is the human-readable canonical name (e.g., "GLaDOS" not "glados").
+# This is the human-readable canonical name (e.g., "Robin" not "robin").
 # Core owns this — it's the identity used across all channels and plugins.
 def agent_display_name(agent_name)
   return agent_name unless agent_name
@@ -173,7 +173,7 @@ def detect_mentioned_agent(text)
   all_agent_names.each do |name|
     return name if downcased.include?("@#{name.downcase}")
 
-    # Some systems render mentions using first name only (e.g. "@Sleeper" not "@Sleeper Service").
+    # Some systems render mentions using first name only (e.g. "@Robin" not "@Robin Hood").
     # Fall back to matching the first word of multi-word agent names.
     first_word = name.split.first.downcase
     next if first_word == name.downcase # already checked above

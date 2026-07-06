@@ -4,7 +4,7 @@
 #
 # Prompts are layered:
 #   PROMPT_CORE            — universal (identity, memory, brain, reflection)
-#   PROMPT_GITHUB_CHANNEL  — GitHub-specific rules (GFM, PR conventions)
+#   (GitHub prompts extracted to brainiac-github plugin)
 #
 # Each handler composes: PROMPT_CORE + channel rules + situation template.
 # Channel-specific prompts (Discord, Fizzy, etc.) are registered by plugins.
@@ -112,7 +112,7 @@ PROMPT_CORE = <<~PROMPT
   - Be specific in your query — tell the subagent exactly what to find and where to look
   - Include relevant file paths and repo locations in the query
   - Use `relevant_context` to pass information the subagent needs
-  - You can specify `agent_name` to use a specialized agent (e.g., "sheogorath" for Android research)
+  - You can specify `agent_name` to use a specialized agent (e.g., "robin" for Android research)
   - Run `ListAgents` first if you want to see available specialized agents
   - Up to 4 subagents can run in parallel
   - To discover project locations for cross-repo work, run: `brainiac list`
@@ -122,34 +122,8 @@ PROMPT_CORE = <<~PROMPT
   They're excellent researchers — use them as such.
 
   ## Image Reading Limits
-  Read at most 4–5 images per tool call. Summarize what you saw before reading more.
+  Read at most 4-5 images per tool call. Summarize what you saw before reading more.
   Loading too many images at once can exceed the API request size limit and crash your session.
-
-PROMPT
-
-# ---------------------------------------------------------------------------
-# PROMPT_PRE_POST_CHECK — inserted before PROMPT_REFLECTION so the agent
-# re-checks for new comments/messages before posting its response.
-# Channel-specific: plugins register pre-post checks, Discord skips.
-# ---------------------------------------------------------------------------
-
-PROMPT_PRE_POST_CHECK_GITHUB = <<~PROMPT
-  ## Pre-Post Comment Check (MANDATORY — do this BEFORE posting your comment)
-
-  Your session may have been running for a while. Before you post your final comment,
-  re-check the PR for new comments that arrived while you were working:
-
-  ```bash
-  gh pr view {{PR_NUMBER}} --comments --json comments
-  ```
-
-  If there are **new comments** that weren't in your original context:
-
-  1. **Read them carefully** — a reviewer may have added feedback or changed direction
-  2. **Adjust your work or response** to account for the new information
-  3. **Do NOT ignore new comments** — avoid posting a response that's already outdated
-
-  If no new comments appeared, proceed normally.
 
 PROMPT
 
@@ -187,77 +161,12 @@ PROMPT_REFLECTION = <<~PROMPT
 PROMPT
 
 # ---------------------------------------------------------------------------
-# PROMPT_GITHUB_CHANNEL — GitHub-specific rules, prepended to GitHub templates
-# ---------------------------------------------------------------------------
-PROMPT_GITHUB_CHANNEL = <<~PROMPT
-  ## GitHub Channel Rules
-
-  ### Formatting
-  Use GitHub-Flavored Markdown for all comments:
-  - `## Heading` for sections
-  - `**bold**` for emphasis
-  - ``` ```language ``` for code blocks
-  - `- item` for lists
-
-  ### Scope
-  You are responding to activity on a GitHub PR. Focus on the code changes and review feedback.
-  When posting comments, post on the PR unless specifically asked to update the card.
-
-PROMPT
-
-PROMPT_GITHUB_PR_COMMENT = <<~'PROMPT'
-  There's a new comment from @{{COMMENT_CREATOR}} on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
-
-  Comment:
-  {{COMMENT_BODY}}
-
-  Please:
-  1. Read the comment and understand what's being requested
-  2. Make any necessary changes
-  3. Commit and push your updates
-  4. Reply on the PR summarizing what you changed
-
-  You are in the worktree at {{WORKTREE_PATH}}.
-PROMPT
-
-PROMPT_GITHUB_PR_REVIEW = <<~'PROMPT'
-  A code review has been submitted on your PR #{{PR_NUMBER}} for card #{{CARD_NUMBER}}.
-
-  {{REVIEW_CONTEXT}}
-
-  Please:
-  1. Read the review comments carefully
-  2. Address each piece of feedback
-  3. Make the necessary code changes
-  4. Commit and push your updates
-  5. Post a comment on the PR summarizing the changes
-
-  You are in the worktree at {{WORKTREE_PATH}}.
-PROMPT
-
-# ---------------------------------------------------------------------------
 # Channel constant mapping for render_prompt
+# NOTE: GitHub prompts have been extracted to brainiac-github plugin.
+#       The plugin registers via Brainiac.register_channel_prompt(:github, ...)
 # ---------------------------------------------------------------------------
-PROMPT_GITHUB_UAT = <<~'PROMPT'
-  PR #{{PR_NUMBER}} has been merged into main for card #{{CARD_NUMBER}}: "{{CARD_TITLE}}"
 
-  The card has been moved to the UAT column. The changes are now deployed to the UAT environment.
-
-  Your job: post a comment on card #{{CARD_NUMBER}} with clear, specific steps for how to manually test this feature in UAT. Include:
-  1. What URL(s) or screen(s) to visit
-  2. Step-by-step actions to verify the feature works
-  3. What the expected behavior should be
-  4. Any edge cases worth checking
-  5. Links to relevant pages if applicable (use the UAT/staging URL, not localhost)
-
-  Base your testing steps on the card title, the PR diff, and any card context provided. Be specific — "verify it works" is not a testing step.
-
-  Do NOT make any code changes. This is a read-only review task.
-PROMPT
-
-CHANNEL_PROMPTS = {
-  github: PROMPT_GITHUB_CHANNEL
-}.freeze
+CHANNEL_PROMPTS = {}.freeze
 
 # ---------------------------------------------------------------------------
 # render_prompt — composes PROMPT_CORE + channel rules + situation template
@@ -266,7 +175,7 @@ CHANNEL_PROMPTS = {
 # ---------------------------------------------------------------------------
 
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: :discord, board_key: nil)
+def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: nil, board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
   result += card_context unless card_context.empty?
@@ -278,16 +187,12 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
 
   result += template
 
-  # Pre-post comment check: plugin-registered or built-in
+  # Pre-post comment check: plugin-registered
   plugin_pre_post = Brainiac.channel_pre_post_checks[channel]
-  if plugin_pre_post
-    result += plugin_pre_post
-  elsif channel == :github
-    result += PROMPT_PRE_POST_CHECK_GITHUB
-  end
+  result += plugin_pre_post if plugin_pre_post
 
-  # Reflection prompt — skip for Discord (causes crashes in post-task phase)
-  result += PROMPT_REFLECTION unless channel == :discord
+  # Reflection prompt — skip for now
+  # result += PROMPT_REFLECTION
 
   vars["KNOWLEDGE_DIR"] ||= KNOWLEDGE_DIR
   vars["MEMORY_DIR"] ||= memory_dir_for(agent_name)
@@ -342,33 +247,6 @@ def render_resume_prompt(comment_body:, comment_creator:, comment_id:, card_numb
   lines << ""
   lines << "---"
   lines << "Respond to this comment. All your previous instructions still apply."
-
-  lines.join("\n")
-end
-
-# Lean resume prompt for Discord threads. The previous session has full context
-# (role, persona, knowledge, instructions). We only send the new message + channel history.
-def render_discord_resume_prompt(message_body:, discord_user:, response_file:, agent_name: AI_AGENT_NAME, card_id: nil)
-  memory_dir = memory_dir_for(agent_name)
-  if card_id
-    memory_file = File.join(memory_dir, "card-#{card_id}.md")
-    FileUtils.mkdir_p(memory_dir)
-    FileUtils.touch(memory_file)
-  end
-
-  lines = []
-  lines << "## Resumed Session — New Discord Message"
-  lines << ""
-  lines << "This is a continuation of your previous session in this thread."
-  lines << "All prior context, instructions, and your previous work are still in this conversation."
-  lines << ""
-  lines << "### New Message from #{discord_user}"
-  lines << ""
-  lines << message_body
-  lines << ""
-  lines << "---"
-  lines << "**IMPORTANT: Write your response to `#{response_file}`. Do NOT reply via stdout.**"
-  lines << "All your previous instructions still apply (memory, persona, one message per session, etc.)."
 
   lines.join("\n")
 end

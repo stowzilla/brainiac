@@ -11,14 +11,14 @@ class TestMultiAgentInteraction < Minitest::Test
     AGENT_DISPATCH_DEPTH.clear
   end
 
-  def test_detect_galen_mentioned
-    assert_equal "Galen", detect_mentioned_agent("@Galen can you review this?")
+  def test_detect_sherlock_mentioned
+    assert_equal "Sherlock", detect_mentioned_agent("@Sherlock can you review this?")
   end
 
-  def test_detect_glados_mentioned
-    agent = detect_mentioned_agent("Hey @GLaDOS what do you think?")
+  def test_detect_robin_mentioned
+    agent = detect_mentioned_agent("Hey @Robin what do you think?")
     assert agent
-    assert_equal "glados", agent.downcase
+    assert_equal "robin", agent.downcase
   end
 
   def test_no_mention_detected
@@ -44,8 +44,8 @@ class TestMultiAgentInteraction < Minitest::Test
   def test_concurrent_sessions_different_cards
     pid1 = spawn("sleep", "30")
     pid2 = spawn("sleep", "30")
-    register_session("card-100", pid1, agent_name: "Galen")
-    register_session("card-200", pid2, agent_name: "GLaDOS")
+    register_session("card-100", pid1, agent_name: "Sherlock")
+    register_session("card-200", pid2, agent_name: "Robin")
     assert session_active?("card-100")
     assert session_active?("card-200")
   ensure
@@ -64,17 +64,17 @@ class TestMultiAgentInteraction < Minitest::Test
   end
 
   def test_comment_from_agent_vs_human
-    assert comment_from_agent?("Galen")
+    assert comment_from_agent?("Sherlock")
     refute comment_from_agent?("Andy")
     refute comment_from_agent?("RandomPerson")
   end
 
   def test_kill_archives_session
     pid = spawn("sleep", "30")
-    register_session("card-archive", pid, agent_name: "GLaDOS")
+    register_session("card-archive", pid, agent_name: "Robin")
     kill_session("card-archive")
     sleep 0.1
-    assert_equal "GLaDOS", RECENT_SESSIONS.first[:agent_name]
+    assert_equal "Robin", RECENT_SESSIONS.first[:agent_name]
   ensure
     begin
       begin
@@ -93,8 +93,8 @@ class TestMultiAgentInteraction < Minitest::Test
   end
 
   def test_agent_display_name_preserves_casing
-    assert_equal "GLaDOS", agent_display_name("glados")
-    assert_equal "Galen", agent_display_name("galen")
-    assert_equal "Kaylee", agent_display_name("kaylee")
+    assert_equal "Robin", agent_display_name("robin")
+    assert_equal "Sherlock", agent_display_name("sherlock")
+    assert_equal "Merlin", agent_display_name("merlin")
   end
 end

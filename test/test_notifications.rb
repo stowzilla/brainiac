@@ -7,7 +7,7 @@ class TestNotifications < Minitest::Test
     # Write a brainiac.json with notification config for tests
     @brainiac_config_file = File.join(TEST_BRAINIAC_DIR, "brainiac.json")
     config = {
-      "default_agent" => "Galen",
+      "default_agent" => "Sherlock",
       "notifications" => {
         "deploy" => { "channel" => "discord", "target" => "channel-123" },
         "restart" => { "channel" => "discord", "target" => "channel-456" },

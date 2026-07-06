@@ -22,7 +22,7 @@
 #   end
 #
 # Usage (in core):
-#   Brainiac.emit(:agent_completed, card_number: 42, agent_name: "Galen", ...)
+#   Brainiac.emit(:agent_completed, card_number: 42, agent_name: "Sherlock", ...)
 
 module Brainiac
   @hooks = Hash.new { |h, k| h[k] = [] }

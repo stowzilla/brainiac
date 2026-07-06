@@ -4,19 +4,7 @@ require_relative "test_helper"
 
 class TestConfig < Minitest::Test
   def test_ai_agent_name
-    assert_equal "Galen", AI_AGENT_NAME
-  end
-
-  def test_handler_enabled_github
-    assert handler_enabled?("github")
-  end
-
-  def test_handler_disabled_zoho
-    refute handler_enabled?("zoho")
-  end
-
-  def test_github_webhook_secret
-    assert_equal "github-test-secret", github_webhook_secret
+    assert_equal "Sherlock", AI_AGENT_NAME
   end
 
   def test_projects_loaded

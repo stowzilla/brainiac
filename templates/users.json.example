@@ -1,118 +1,56 @@
 {
   "users": [
     {
-      "canonical_name": "Adam Dalton",
+      "canonical_name": "Jane Smith",
       "identities": {
         "discord": {
-          "username": "fladamd",
-          "user_id": "832331260088287242",
-          "display_name": "fladamd"
+          "username": "janesmith",
+          "user_id": "123456789012345678",
+          "display_name": "janesmith"
         },
         "github": {
-          "username": "dalton"
-        },
+          "username": "jsmith"
+        }
       },
-      "aliases": ["Andy"],
-      "relationships": {
-        "spouse": "Larissa"
-      },
+      "aliases": ["Jane"],
       "notes": "Primary user"
     },
     {
-      "canonical_name": "Andy Davis",
+      "canonical_name": "Sherlock",
       "identities": {
         "discord": {
-          "username": "ardavis",
-          "user_id": "397928984232591361",
-          "display_name": "ardavis"
-        },
-        "github": {
-          "username": "ardavis"
+          "username": "sherlock",
+          "user_id": "234567890123456789",
+          "display_name": "Sherlock"
         }
       },
       "aliases": [],
-      "relationships": {},
-      "notes": "Works with Adam on brainiac development"
-    },
-    {
-      "canonical_name": "Kaylee",
-      "identities": {
-        "discord": {
-          "username": "kaylee",
-          "user_id": "1475961955125825687",
-          "display_name": "Kaylee"
-        }
-      },
-      "aliases": [],
-      "relationships": {},
-      "notes": "AI agent - cheerful, optimistic, loves fixing things"
-    },
-    {
-      "canonical_name": "Sleeper Service",
-      "identities": {
-        "discord": {
-          "username": "sleeper_service",
-          "user_id": "1476572591220199514",
-          "display_name": "Sleeper Service"
-        }
-      },
-      "aliases": [],
-      "relationships": {},
-      "notes": "AI agent - dry wit, cosmic perspective, understated"
-    },
-    {
-      "canonical_name": "Avon",
-      "identities": {
-        "discord": {
-          "username": "avon",
-          "user_id": "1476683857922228386",
-          "display_name": "Avon"
-        }
-      },
-      "aliases": [],
-      "relationships": {},
-      "notes": "AI agent - iOS specialist, pragmatic, competence-driven"
-    },
-    {
-      "canonical_name": "Galen",
-      "identities": {
-        "discord": {
-          "username": "galen",
-          "user_id": "1475925968584573181",
-          "display_name": "Galen"
-        }
-      },
-      "aliases": [],
-      "relationships": {},
       "notes": "AI agent"
     },
     {
-      "canonical_name": "GLaDOS",
+      "canonical_name": "Robin",
       "identities": {
         "discord": {
-          "username": "glados",
-          "user_id": "1475957005817610412",
-          "display_name": "GLaDOS"
+          "username": "robin",
+          "user_id": "345678901234567890",
+          "display_name": "Robin"
         }
       },
       "aliases": [],
-      "relationships": {},
       "notes": "AI agent"
     },
     {
-      "canonical_name": "Threepio",
+      "canonical_name": "Merlin",
       "identities": {
         "discord": {
-          "username": "threepio",
-          "user_id": "1476068144278929438",
-          "display_name": "Threepio"
+          "username": "merlin",
+          "user_id": "456789012345678901",
+          "display_name": "Merlin"
         }
       },
       "aliases": [],
-      "relationships": {},
       "notes": "AI agent"
     }
   ],
-  "schema_version": "1.0",
-  "last_updated": "2026-02-27T13:52:22-05:00"
+  "schema_version": "1.0"
 }

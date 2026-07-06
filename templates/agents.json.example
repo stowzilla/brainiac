@@ -1,6 +1,6 @@
 {
-  "galen": {
-    "display_name": "Galen",
+  "sherlock": {
+    "display_name": "Sherlock",
     "local": true,
     "env": {
       "DISCORD_BOT_TOKEN": "your-discord-bot-token"
