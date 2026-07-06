@@ -354,6 +354,30 @@ post "/api/cron/reload" do
   { status: "reloaded", jobs: CRON_JOBS.size }.to_json
 end
 
+# --- Intent ---
+
+get "/api/intent/config" do
+  content_type :json
+  intent_config.to_json
+end
+
+post "/api/intent/check" do
+  content_type :json
+  request.body.rewind
+  payload = JSON.parse(request.body.read)
+
+  message = payload["message"]
+  agent = payload["agent"] || AI_AGENT_NAME
+  channel = payload["channel"] || "conversation"
+
+  halt 400, { error: "Missing 'message' field" }.to_json unless message && !message.empty?
+
+  result = check_intent(message, agent_name: agent, channel: channel)
+  { should_respond: result, agent: agent, channel: channel }.to_json
+end
+
+# --- Cron Logs ---
+
 get "/api/cron/logs" do
   content_type :json
   job_id = params["id"]
