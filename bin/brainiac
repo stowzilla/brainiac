@@ -203,6 +203,23 @@ def stop_server
   end
 end
 
+def update_handler_config(name, enabled)
+  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  config = if File.exist?(brainiac_config_path)
+             JSON.parse(File.read(brainiac_config_path))
+           else
+             {}
+           end
+
+  config["handlers"] ||= {}
+  config["handlers"][name] = enabled
+  File.write(brainiac_config_path, JSON.pretty_generate(config))
+
+  action = enabled ? "enabled" : "disabled"
+  puts "✓ Handler '#{name}' #{action}"
+  puts "  Restart the server for changes to take effect: brainiac restart"
+end
+
 # After installing a plugin, load it and run its setup if it provides one.
 # Only runs if the plugin defines .cli and responds to a "setup" subcommand via .configured?
 def run_plugin_setup(name, local_path: nil)
