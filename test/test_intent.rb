@@ -19,27 +19,27 @@ class TestIntent < Minitest::Test
   end
 
   def test_parse_intent_response_yes
-    assert intent_response?("yes")
-    assert intent_response?("Yes")
-    assert intent_response?("YES")
-    assert intent_response?(" yes ")
-    assert intent_response?("yes.")
+    assert positive_intent?("yes")
+    assert positive_intent?("Yes")
+    assert positive_intent?("YES")
+    assert positive_intent?(" yes ")
+    assert positive_intent?("yes.")
   end
 
   def test_parse_intent_response_no
-    refute intent_response?("no")
-    refute intent_response?("No")
-    refute intent_response?("NO")
-    refute intent_response?(" no ")
-    refute intent_response?("no.")
+    refute positive_intent?("no")
+    refute positive_intent?("No")
+    refute positive_intent?("NO")
+    refute positive_intent?(" no ")
+    refute positive_intent?("no.")
   end
 
   def test_parse_intent_response_ambiguous_defaults_to_true
     # Fail-open: anything that isn't clearly "no" should return true
-    assert intent_response?("maybe")
-    assert intent_response?("I think yes")
-    assert intent_response?("probably")
-    assert intent_response?("")
+    assert positive_intent?("maybe")
+    assert positive_intent?("I think yes")
+    assert positive_intent?("probably")
+    assert positive_intent?("")
   end
 
   def test_intent_config_returns_defaults
@@ -52,14 +52,18 @@ class TestIntent < Minitest::Test
   end
 
   def test_intent_prompt_template_interpolation
-    prompt = format(INTENT_PROMPT_TEMPLATE, agent_name: "Galen", channel: "Discord thread", message: "hey do the thing")
+    prompt = INTENT_PROMPT_TEMPLATE
+      .gsub("{{AGENT_NAME}}", "Galen")
+      .gsub("{{CHANNEL}}", "Discord thread")
+      .gsub("{{MESSAGE}}", "hey do the thing")
     assert_includes prompt, "Galen"
     assert_includes prompt, "Discord thread"
     assert_includes prompt, "hey do the thing"
   end
 
   def test_check_intent_with_enabled_config_and_connection_refused
-    # Temporarily override BRAINIAC_CONFIG to enable intent
+    # Mutates BRAINIAC_CONFIG directly — safe because Style/MutableConstant is disabled
+    # project-wide and the ensure block restores the original value.
     original = BRAINIAC_CONFIG.dup
     BRAINIAC_CONFIG["intent"] = { "enabled" => true, "endpoint" => "http://localhost:99999/api/generate", "timeout" => 1 }
 
@@ -71,7 +75,10 @@ class TestIntent < Minitest::Test
   end
 
   def test_channel_parameter_passed_through
-    prompt = format(INTENT_PROMPT_TEMPLATE, agent_name: "Robin", channel: "Fizzy card comment", message: "test")
+    prompt = INTENT_PROMPT_TEMPLATE
+      .gsub("{{AGENT_NAME}}", "Robin")
+      .gsub("{{CHANNEL}}", "Fizzy card comment")
+      .gsub("{{MESSAGE}}", "test")
     assert_includes prompt, "Fizzy card comment"
     assert_includes prompt, "Robin"
   end

@@ -31,23 +31,21 @@ INTENT_CONFIG_DEFAULTS = {
   "temperature" => 0.1
 }.freeze
 
-# rubocop:disable Style/FormatStringToken
 INTENT_PROMPT_TEMPLATE = <<~PROMPT
-  You are a message router for a %{channel}. An AI agent named %{agent_name} is participating in this conversation. Your job: determine if the latest message requires %{agent_name} to take action or respond.
+  You are a message router for a {{CHANNEL}}. An AI agent named {{AGENT_NAME}} is participating in this conversation. Your job: determine if the latest message requires {{AGENT_NAME}} to take action or respond.
 
   Rules:
-  - If the message is giving %{agent_name} instructions, asking %{agent_name} a question, or continuing a conversation WITH %{agent_name} → yes
-  - If the message is humans talking to each other and %{agent_name} is not being addressed → no
-  - If the message is a simple acknowledgment (like "thanks", "ok", "got it") directed at %{agent_name}'s previous work → no
+  - If the message is giving {{AGENT_NAME}} instructions, asking {{AGENT_NAME}} a question, or continuing a conversation WITH {{AGENT_NAME}} → yes
+  - If the message is humans talking to each other and {{AGENT_NAME}} is not being addressed → no
+  - If the message is a simple acknowledgment (like "thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
   - If the message is asking a question to another person or agent → no
   - If uncertain, lean toward yes (better to respond unnecessarily than miss a request)
 
   Respond with ONLY "yes" or "no" — nothing else.
 
   Latest message:
-  %{message}
+  {{MESSAGE}}
 PROMPT
-# rubocop:enable Style/FormatStringToken
 
 # Load intent config from brainiac.json, merging with defaults.
 def intent_config
@@ -66,10 +64,13 @@ def check_intent(message, agent_name:, channel: "conversation")
   return true unless config["enabled"]
   return true if message.nil? || message.strip.empty?
 
-  prompt = format(INTENT_PROMPT_TEMPLATE, agent_name: agent_name, channel: channel, message: message.strip)
+  prompt = INTENT_PROMPT_TEMPLATE
+    .gsub("{{AGENT_NAME}}", agent_name)
+    .gsub("{{CHANNEL}}", channel)
+    .gsub("{{MESSAGE}}", message.strip)
 
   response = query_local_llm(prompt, config)
-  intent_response?(response)
+  positive_intent?(response)
 rescue StandardError => e
   LOG.warn "[Intent] Classification failed (fail-open): #{e.message}"
   true
@@ -97,7 +98,7 @@ def query_local_llm(prompt, config)
   request.body = JSON.generate(payload)
 
   response = http.request(request)
-  raise "Ollama returned #{response.code}: #{response.body[0..200]}" unless response.is_a?(Net::HTTPSuccess)
+  raise "Ollama returned #{response.code}: #{response.body&.slice(0, 200)}" unless response.is_a?(Net::HTTPSuccess)
 
   body = JSON.parse(response.body)
   body["response"] || ""
@@ -112,7 +113,7 @@ end
 #
 # @param response [String] Raw response from the model
 # @return [Boolean]
-def intent_response?(response)
+def positive_intent?(response)
   cleaned = response.to_s.strip.downcase.gsub(/[^a-z]/, "")
   return false if cleaned == "no"
 
