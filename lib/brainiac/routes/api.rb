@@ -376,6 +376,20 @@ post "/api/intent/check" do
   { should_respond: result, agent: agent, channel: channel }.to_json
 end
 
+post "/api/intent/pending-work" do
+  content_type :json
+  request.body.rewind
+  payload = JSON.parse(request.body.read)
+
+  message = payload["message"]
+  agent = payload["agent"] || AI_AGENT_NAME
+
+  halt 400, { error: "Missing 'message' field" }.to_json unless message && !message.empty?
+
+  result = check_pending_work(message, agent_name: agent)
+  { pending_work: result, agent: agent }.to_json
+end
+
 # --- Cron Logs ---
 
 get "/api/cron/logs" do

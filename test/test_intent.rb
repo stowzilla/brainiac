@@ -82,4 +82,65 @@ class TestIntent < Minitest::Test
     assert_includes prompt, "Fizzy card comment"
     assert_includes prompt, "Robin"
   end
+
+  # --- Pending work detection ---
+
+  def test_check_pending_work_returns_false_when_disabled
+    # Default config has enabled: false, so it should return false (no re-dispatch)
+    refute check_pending_work("I'll implement this — give me a sec.", agent_name: "Sherlock")
+  end
+
+  def test_check_pending_work_returns_false_for_nil_message
+    refute check_pending_work(nil, agent_name: "Sherlock")
+  end
+
+  def test_check_pending_work_returns_false_for_empty_message
+    refute check_pending_work("", agent_name: "Sherlock")
+    refute check_pending_work("   ", agent_name: "Sherlock")
+  end
+
+  def test_pending_work_detected_yes
+    assert pending_work_detected?("yes")
+    assert pending_work_detected?("Yes")
+    assert pending_work_detected?("YES")
+    assert pending_work_detected?(" yes ")
+    assert pending_work_detected?("yes.")
+  end
+
+  def test_pending_work_detected_no
+    refute pending_work_detected?("no")
+    refute pending_work_detected?("No")
+    refute pending_work_detected?("NO")
+    refute pending_work_detected?(" no ")
+    refute pending_work_detected?("no.")
+  end
+
+  def test_pending_work_detected_ambiguous_defaults_to_false
+    # Fail-closed: anything that isn't clearly "yes" should return false
+    refute pending_work_detected?("maybe")
+    refute pending_work_detected?("I think so")
+    refute pending_work_detected?("probably")
+    refute pending_work_detected?("")
+  end
+
+  def test_check_pending_work_with_enabled_config_and_connection_refused
+    # Mutates BRAINIAC_CONFIG directly — safe because Style/MutableConstant is disabled
+    # project-wide and the ensure block restores the original value.
+    original = BRAINIAC_CONFIG.dup
+    BRAINIAC_CONFIG["intent"] = { "enabled" => true, "endpoint" => "http://localhost:99999/api/generate", "timeout" => 1 }
+
+    # Should fail-closed (return false) when Ollama is not reachable
+    result = check_pending_work("I'll do that now, give me a sec.", agent_name: "Sherlock")
+    refute result, "Should fail-closed when LLM is unreachable"
+  ensure
+    BRAINIAC_CONFIG.replace(original)
+  end
+
+  def test_pending_work_prompt_template_interpolation
+    prompt = PENDING_WORK_PROMPT_TEMPLATE
+      .gsub("{{AGENT_NAME}}", "Galen")
+      .gsub("{{MESSAGE}}", "I'll implement this — one-liner change")
+    assert_includes prompt, "Galen"
+    assert_includes prompt, "I'll implement this — one-liner change"
+  end
 end

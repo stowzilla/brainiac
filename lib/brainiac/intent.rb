@@ -6,6 +6,10 @@
 # message requires an agent to respond. This saves expensive API tokens by
 # filtering out messages that are just humans chatting, reactions, or noise.
 #
+# Also detects when an agent's own response implies pending work — if the agent
+# said "I'll do X" but the session ended without completing the work, this
+# signals that the agent should be re-dispatched.
+#
 # Configuration (in ~/.brainiac/brainiac.json):
 #
 #   "intent": {
@@ -44,6 +48,22 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
   Respond with ONLY "yes" or "no" — nothing else.
 
   Latest message:
+  {{MESSAGE}}
+PROMPT
+
+PENDING_WORK_PROMPT_TEMPLATE = <<~PROMPT
+  You are analyzing a message posted by an AI agent named {{AGENT_NAME}}. Your job: determine if this message indicates the agent intends to do more work that hasn't been completed yet.
+
+  Rules:
+  - If the agent says it will do something, is about to start work, or promises a follow-up action → yes
+  - If the agent is reporting completed work, summarizing what was done, or delivering a final answer → no
+  - If the agent is asking a clarifying question and waiting for a human response → no
+  - If the agent says things like "give me a sec", "I'll implement this", "let me do that", "working on it" → yes
+  - If uncertain, lean toward no (avoid unnecessary re-dispatches)
+
+  Respond with ONLY "yes" or "no" — nothing else.
+
+  Agent's message:
   {{MESSAGE}}
 PROMPT
 
@@ -119,4 +139,41 @@ def positive_intent?(response)
 
   LOG.debug "[Intent] Classified as: #{response.strip}" if cleaned == "yes"
   true
+end
+
+# Check whether an agent's own message implies pending work that wasn't completed.
+# Used to detect when an agent posted "I'll do X" but the session ended without
+# actually doing the work — signaling the agent should be re-dispatched.
+#
+# Fail-closed: returns false on any error (don't re-dispatch on classification failure).
+#
+# @param message [String] The agent's posted message
+# @param agent_name [String] The agent who posted it
+# @return [Boolean] true if the message implies uncommitted work
+def check_pending_work(message, agent_name:)
+  config = intent_config
+  return false unless config["enabled"]
+  return false if message.nil? || message.strip.empty?
+
+  prompt = PENDING_WORK_PROMPT_TEMPLATE
+    .gsub("{{AGENT_NAME}}", agent_name)
+    .gsub("{{MESSAGE}}", message.strip)
+
+  response = query_local_llm(prompt, config)
+  result = pending_work_detected?(response)
+  LOG.info "[Intent] Pending work detected in #{agent_name}'s message" if result
+  result
+rescue StandardError => e
+  LOG.warn "[Intent] Pending work check failed (fail-closed): #{e.message}"
+  false
+end
+
+# Parse the LLM's yes/no response for pending work detection.
+# Fail-closed: anything that isn't clearly "yes" returns false.
+#
+# @param response [String] Raw response from the model
+# @return [Boolean]
+def pending_work_detected?(response)
+  cleaned = response.to_s.strip.downcase.gsub(/[^a-z]/, "")
+  cleaned == "yes"
 end
