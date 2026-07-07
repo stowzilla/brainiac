@@ -43,7 +43,9 @@ All four channels support inline tags in message/comment text. Tags are stripped
 | ----------------------------------------------------------------------------- | ----- | ------- | ------ | ----------------------------------------------------------------------------------------------------- |
 | `[project:XYZ]`                                                               | —     | ✓       | —      | Override which project the agent works in (Discord only — Fizzy uses card tags, GitHub uses the repo) |
 | `[opus]` `[sonnet]` `[haiku]` `[deepseek]` `[minimax]` `[minimax21]` `[qwen]` | ✓     | ✓       | ✓      | Override the model for this dispatch                                                                  |
-| `[worktree:branch-name]`                                                      | ✓     | —       | —      | Direct the agent to a specific worktree instead of the card's default                                 |
+| `[worktree:branch-name]`                                                      | ✓     | ✓       | —      | Direct the agent to a specific worktree/branch (legacy syntax)                                        |
+| `[branch:branch-name]`                                                        | ✓     | ✓       | ✓      | Target an existing branch — reuses its worktree if a work item exists                                 |
+| `[workitem:wi-abc123]`                                                        | ✓     | ✓       | ✓      | Target a specific work item by ID — agent works in its worktree                                       |
 | `[plan]`                                                                      | ✓     | ✓       | —      | Activate planning mode — agent gathers requirements before coding                                     |
 
 Model keys come from the project's `allowed_models` config. Fizzy also supports model selection via card tags (e.g. adding an `opus` tag to the card).
@@ -867,6 +869,50 @@ curl http://localhost:4567/api/users/fladamd            # Find by identifier
 ```
 
 The registry reloads automatically on every webhook and via `POST /api/reload`.
+
+## Work Items
+
+Work items are the universal tracking unit in Brainiac — they connect a branch/worktree to one or more communication channels. A single work item can span Discord, Fizzy, and GitHub simultaneously.
+
+### Structure
+
+Work items are stored in `~/.brainiac/work_items.json`:
+
+```json
+{
+  "wi-a1b2c3d4": {
+    "id": "wi-a1b2c3d4",
+    "branch": "fizzy-42-fix-login",
+    "worktree": "/home/you/Code/marketplace--fizzy-42-fix-login",
+    "project": "marketplace",
+    "agent": "Sherlock",
+    "sources": {
+      "fizzy": { "card_internal_id": "uuid-here", "card_number": 42 },
+      "github": { "prs": [{"number": 8, "url": "https://github.com/org/repo/pull/8"}] },
+      "discord": { "thread_id": "1234567890" }
+    }
+  }
+}
+```
+
+The **branch** is the universal join key. When any channel needs to find a work item, it looks up by branch name. This means:
+
+- A Fizzy card assignment creates a work item with `sources.fizzy`
+- When a PR is opened for that branch, `sources.github` is attached automatically
+- A Discord `[branch:fizzy-42-fix-login]` message targets the same worktree
+
+### Targeting Work Items
+
+From Discord or any channel, use inline tags to target existing work items:
+
+- **`[branch:branch-name]`** — find the work item for this branch, work in its worktree
+- **`[workitem:wi-abc123]`** — target a work item by its ID directly
+
+This enables cross-channel workflows without creating duplicate worktrees.
+
+### Migration
+
+The old format (keyed by Fizzy card internal ID) is automatically migrated on first read. No manual intervention needed — existing `work_items.json` files are transparently upgraded to the new source-agnostic format.
 
 ## Worktree Management
 

@@ -95,6 +95,41 @@ class TestInlineTags < Minitest::Test
     assert_equal "work here", result[:clean_text]
   end
 
+  def test_parse_branch_tag
+    result = parse_inline_tags("[branch:my-feature-branch] work on this")
+    assert_equal "my-feature-branch", result[:branch_override]
+    assert_equal "my-feature-branch", result[:worktree_override]
+    assert_equal "work on this", result[:clean_text]
+  end
+
+  def test_parse_branch_tag_case_insensitive
+    result = parse_inline_tags("[Branch:My-Branch] hello")
+    assert_equal "My-Branch", result[:branch_override]
+  end
+
+  def test_parse_workitem_tag
+    result = parse_inline_tags("[workitem:wi-abc12345] continue this work")
+    assert_equal "wi-abc12345", result[:work_item]
+    assert_equal "continue this work", result[:clean_text]
+  end
+
+  def test_parse_workitem_tag_case_insensitive
+    result = parse_inline_tags("[WorkItem:wi-xyz99] check status")
+    assert_equal "wi-xyz99", result[:work_item]
+  end
+
+  def test_worktree_tag_takes_priority_over_branch
+    result = parse_inline_tags("[worktree:old-branch] [branch:new-branch] hello")
+    assert_equal "old-branch", result[:worktree_override]
+    assert_equal "new-branch", result[:branch_override]
+  end
+
+  def test_branch_sets_worktree_when_no_worktree_tag
+    result = parse_inline_tags("[branch:only-branch] test")
+    assert_equal "only-branch", result[:worktree_override]
+    assert_equal "only-branch", result[:branch_override]
+  end
+
   def test_multiple_tags_combined
     result = parse_inline_tags("[project:brainiac] [effort:max] [plan] review the architecture")
     assert_equal "brainiac", result[:project]

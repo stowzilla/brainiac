@@ -112,13 +112,170 @@ end
 def load_work_item_map
   return {} unless File.exist?(WORK_ITEM_MAP_FILE)
 
-  JSON.parse(File.read(WORK_ITEM_MAP_FILE))
+  raw = JSON.parse(File.read(WORK_ITEM_MAP_FILE))
+  migrate_work_item_map(raw)
 rescue JSON::ParserError
   {}
 end
 
 def save_work_item_map(map)
   File.write(WORK_ITEM_MAP_FILE, JSON.pretty_generate(map))
+end
+
+# Migrate old-format work item maps (keyed by Fizzy card internal ID with flat structure)
+# to the new source-agnostic format (keyed by work item ID with sources hash).
+# Old format: { "fizzy-uuid" => { "number" => 42, "branch" => "...", "worktree" => "...", "project" => "...", "agent" => "..." } }
+# New format: { "wi-abc123" => { "id" => "wi-...", "branch" => "...", "worktree" => "...",
+#   "project" => "...", "agent" => "...", "sources" => { "fizzy" => { ... } } } }
+def migrate_work_item_map(raw)
+  return raw if raw.empty?
+
+  # Detect: if any entry has a "sources" key, it's already new format (or mixed)
+  # If none have "sources", it's entirely old format
+  needs_migration = raw.values.any? { |v| v.is_a?(Hash) && !v.key?("sources") }
+  return raw unless needs_migration
+
+  migrated = {}
+  raw.each do |key, entry|
+    next unless entry.is_a?(Hash)
+
+    if entry.key?("sources")
+      # Already new format
+      migrated[key] = entry
+    else
+      # Old format — migrate. Generate a work item ID from the branch or card number.
+      work_item_id = generate_work_item_id(branch: entry["branch"], card_number: entry["number"])
+      migrated[work_item_id] = {
+        "id" => work_item_id,
+        "branch" => entry["branch"],
+        "worktree" => entry["worktree"],
+        "project" => entry["project"],
+        "agent" => entry["agent"],
+        "sources" => {
+          "fizzy" => {
+            "card_internal_id" => key,
+            "card_number" => entry["number"]
+          }
+        }
+      }
+      # Preserve PR tracking if it exists
+      migrated[work_item_id]["sources"]["github"] = { "prs" => entry["prs"] } if entry["prs"]
+    end
+  end
+  migrated
+end
+
+# Generate a deterministic work item ID from available identifiers.
+# Priority: branch name (universal join key), then card number fallback.
+def generate_work_item_id(branch: nil, card_number: nil)
+  if branch
+    "wi-#{Digest::SHA256.hexdigest(branch)[0..7]}"
+  elsif card_number
+    "wi-card-#{card_number}"
+  else
+    "wi-#{SecureRandom.hex(4)}"
+  end
+end
+
+# Find a work item by its branch name. Returns [work_item_id, info] or nil.
+# This is the primary lookup method — branch is the universal join key.
+def find_work_item_by_branch(branch)
+  return nil unless branch
+
+  map = load_work_item_map
+  map.each do |work_item_id, info|
+    next unless info.is_a?(Hash) && info["branch"] == branch
+
+    return [work_item_id, info]
+  end
+  nil
+end
+
+# Find a work item by its ID. Returns the info hash or nil.
+def find_work_item_by_id(work_item_id)
+  return nil unless work_item_id
+
+  map = load_work_item_map
+  map[work_item_id]
+end
+
+# Find a work item by a Fizzy card internal ID (for backward compat with Fizzy plugin).
+# Returns [work_item_id, info] or nil.
+def find_work_item_by_card(card_internal_id)
+  return nil unless card_internal_id
+
+  map = load_work_item_map
+  map.each do |work_item_id, info|
+    next unless info.is_a?(Hash)
+
+    fizzy_source = info.dig("sources", "fizzy")
+    next unless fizzy_source && fizzy_source["card_internal_id"] == card_internal_id
+
+    return [work_item_id, info]
+  end
+  nil
+end
+
+# Register a new work item or update an existing one.
+# Returns the work item ID.
+def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source: nil, source_data: {})
+  map = load_work_item_map
+
+  # Check if a work item already exists for this branch
+  existing_id = nil
+  map.each do |wid, info|
+    if info.is_a?(Hash) && info["branch"] == branch
+      existing_id = wid
+      break
+    end
+  end
+
+  work_item_id = existing_id || generate_work_item_id(branch: branch)
+
+  if existing_id
+    # Update existing entry — merge in new source, update worktree/agent if provided
+    map[work_item_id]["worktree"] = worktree if worktree
+    map[work_item_id]["agent"] = agent if agent
+    map[work_item_id]["sources"] ||= {}
+    map[work_item_id]["sources"][source] = source_data if source
+  else
+    # Create new entry
+    map[work_item_id] = {
+      "id" => work_item_id,
+      "branch" => branch,
+      "worktree" => worktree,
+      "project" => project,
+      "agent" => agent,
+      "sources" => source ? { source => source_data } : {}
+    }
+  end
+
+  save_work_item_map(map)
+  work_item_id
+end
+
+# Add or update a source on an existing work item.
+# Returns true if the work item was found and updated, false otherwise.
+def register_work_item_source(source:, source_data:, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
+  map = load_work_item_map
+
+  # Find by ID or branch
+  target_id = work_item_id
+  unless target_id
+    map.each do |wid, info|
+      if info.is_a?(Hash) && info["branch"] == branch
+        target_id = wid
+        break
+      end
+    end
+  end
+
+  return false unless target_id && map[target_id]
+
+  map[target_id]["sources"] ||= {}
+  map[target_id]["sources"][source] = source_data
+  save_work_item_map(map)
+  true
 end
 
 def slugify(title, max_length: 40)
