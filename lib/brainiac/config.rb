@@ -5,6 +5,7 @@ require "openssl"
 require "open3"
 require "fileutils"
 require "logger"
+require "securerandom"
 require "net/http"
 require "uri"
 

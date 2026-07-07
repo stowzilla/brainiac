@@ -3,7 +3,8 @@
 # Shared inline tag parsing for handler messages.
 #
 # Messages from any channel can contain inline tags like:
-#   [project:my-project], [opus], [effort:high], [cli:grok], [chat], [plan]
+#   [project:my-project], [opus], [effort:high], [cli:grok], [chat], [plan],
+#   [branch:feature-xyz], [workitem:wi-abc123]
 #
 # This module provides a single parser that extracts all tags and returns
 # a structured result with the cleaned text.
@@ -31,6 +32,8 @@ def parse_inline_tags(text)
     planning: false,
     deploy_intent: nil,
     worktree_override: nil,
+    work_item: nil,
+    branch_override: nil,
     clean_text: text.dup
   }
 
@@ -70,9 +73,23 @@ def parse_inline_tags(text)
     result[:clean_text].sub!(match[0], "")
   end
 
-  # [worktree:branch-name]
+  # [worktree:branch-name] — legacy syntax, still supported
   if (match = result[:clean_text].match(/\[worktree:([^\]]+)\]/))
     result[:worktree_override] = match[1].strip
+    result[:clean_text].sub!(match[0], "")
+  end
+
+  # [branch:branch-name] — preferred syntax for targeting a branch/worktree
+  if (match = result[:clean_text].match(/\[branch:([^\]]+)\]/i))
+    result[:branch_override] = match[1].strip
+    # Also set worktree_override for backward compat with plugins that read it
+    result[:worktree_override] ||= result[:branch_override]
+    result[:clean_text].sub!(match[0], "")
+  end
+
+  # [workitem:wi-abc123] — target a specific work item by ID
+  if (match = result[:clean_text].match(/\[workitem:([^\]]+)\]/i))
+    result[:work_item] = match[1].strip
     result[:clean_text].sub!(match[0], "")
   end
 
