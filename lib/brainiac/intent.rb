@@ -85,9 +85,9 @@ def check_intent(message, agent_name:, channel: "conversation")
   return true if message.nil? || message.strip.empty?
 
   prompt = INTENT_PROMPT_TEMPLATE
-    .gsub("{{AGENT_NAME}}", agent_name)
-    .gsub("{{CHANNEL}}", channel)
-    .gsub("{{MESSAGE}}", message.strip)
+           .gsub("{{AGENT_NAME}}", agent_name)
+           .gsub("{{CHANNEL}}", channel)
+           .gsub("{{MESSAGE}}", message.strip)
 
   response = query_local_llm(prompt, config)
   positive_intent?(response)
@@ -156,8 +156,8 @@ def check_pending_work(message, agent_name:)
   return false if message.nil? || message.strip.empty?
 
   prompt = PENDING_WORK_PROMPT_TEMPLATE
-    .gsub("{{AGENT_NAME}}", agent_name)
-    .gsub("{{MESSAGE}}", message.strip)
+           .gsub("{{AGENT_NAME}}", agent_name)
+           .gsub("{{MESSAGE}}", message.strip)
 
   response = query_local_llm(prompt, config)
   result = pending_work_detected?(response)

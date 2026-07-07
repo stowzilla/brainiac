@@ -53,9 +53,9 @@ class TestIntent < Minitest::Test
 
   def test_intent_prompt_template_interpolation
     prompt = INTENT_PROMPT_TEMPLATE
-      .gsub("{{AGENT_NAME}}", "Galen")
-      .gsub("{{CHANNEL}}", "Discord thread")
-      .gsub("{{MESSAGE}}", "hey do the thing")
+             .gsub("{{AGENT_NAME}}", "Galen")
+             .gsub("{{CHANNEL}}", "Discord thread")
+             .gsub("{{MESSAGE}}", "hey do the thing")
     assert_includes prompt, "Galen"
     assert_includes prompt, "Discord thread"
     assert_includes prompt, "hey do the thing"
@@ -76,9 +76,9 @@ class TestIntent < Minitest::Test
 
   def test_channel_parameter_passed_through
     prompt = INTENT_PROMPT_TEMPLATE
-      .gsub("{{AGENT_NAME}}", "Robin")
-      .gsub("{{CHANNEL}}", "Fizzy card comment")
-      .gsub("{{MESSAGE}}", "test")
+             .gsub("{{AGENT_NAME}}", "Robin")
+             .gsub("{{CHANNEL}}", "Fizzy card comment")
+             .gsub("{{MESSAGE}}", "test")
     assert_includes prompt, "Fizzy card comment"
     assert_includes prompt, "Robin"
   end
@@ -138,8 +138,8 @@ class TestIntent < Minitest::Test
 
   def test_pending_work_prompt_template_interpolation
     prompt = PENDING_WORK_PROMPT_TEMPLATE
-      .gsub("{{AGENT_NAME}}", "Galen")
-      .gsub("{{MESSAGE}}", "I'll implement this — one-liner change")
+             .gsub("{{AGENT_NAME}}", "Galen")
+             .gsub("{{MESSAGE}}", "I'll implement this — one-liner change")
     assert_includes prompt, "Galen"
     assert_includes prompt, "I'll implement this — one-liner change"
   end
