@@ -57,8 +57,8 @@ def resolve_default_agent
         [Brainiac] No default agent configured — using "#{agent_name}" (first agent in agents.json).
         To set explicitly, either:
           export AI_AGENT_NAME="#{agent_name}"
-        Or create ~/.brainiac/brainiac.json:
-          echo '{ "default_agent": "#{agent_name}" }' > ~/.brainiac/brainiac.json
+        Or add to ~/.brainiac/brainiac.json:
+          { "default_agent": "#{agent_name}" }
       MSG
       return agent_name
     end
