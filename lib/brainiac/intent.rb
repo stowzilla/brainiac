@@ -89,8 +89,11 @@ def check_intent(message, agent_name:, channel: "conversation")
            .gsub("{{CHANNEL}}", channel)
            .gsub("{{MESSAGE}}", message.strip)
 
+  LOG.info "[Intent] Checking intent for #{agent_name} (#{channel}): #{message.strip.slice(0, 80)}..."
   response = query_local_llm(prompt, config)
-  positive_intent?(response)
+  result = positive_intent?(response)
+  LOG.info "[Intent] Result: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
+  result
 rescue StandardError => e
   LOG.warn "[Intent] Classification failed (fail-open): #{e.message}"
   true
@@ -135,10 +138,7 @@ end
 # @return [Boolean]
 def positive_intent?(response)
   cleaned = response.to_s.strip.downcase.gsub(/[^a-z]/, "")
-  return false if cleaned == "no"
-
-  LOG.debug "[Intent] Classified as: #{response.strip}" if cleaned == "yes"
-  true
+  cleaned != "no"
 end
 
 # Check whether an agent's own message implies pending work that wasn't completed.

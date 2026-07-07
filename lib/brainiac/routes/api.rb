@@ -358,7 +358,30 @@ end
 
 get "/api/intent/config" do
   content_type :json
-  intent_config.to_json
+  config = intent_config
+  status = if config["enabled"]
+             begin
+               uri = URI(config["endpoint"].sub("/api/generate", "/api/tags"))
+               http = Net::HTTP.new(uri.host, uri.port)
+               http.open_timeout = 3
+               http.read_timeout = 3
+               response = http.get(uri.path)
+               if response.is_a?(Net::HTTPSuccess)
+                 models = JSON.parse(response.body).fetch("models", []).map { |m| m["name"] }
+                 model_available = models.any? { |m| m.start_with?(config["model"].split(":").first) }
+                 model_available ? "ok" : "model_not_found"
+               else
+                 "ollama_error"
+               end
+             rescue Errno::ECONNREFUSED
+               "ollama_not_running"
+             rescue StandardError => e
+               "error: #{e.message}"
+             end
+           else
+             "disabled"
+           end
+  config.merge("status" => status).to_json
 end
 
 post "/api/intent/check" do

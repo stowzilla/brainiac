@@ -98,6 +98,11 @@ configure do
 end
 
 LOG.info "[Brainiac] Starting v#{BRAINIAC_VERSION} on port #{settings.port} (#{settings.environment})"
+if intent_config["enabled"]
+  LOG.info "[Intent] Enabled — model: #{intent_config["model"]}, endpoint: #{intent_config["endpoint"]}"
+else
+  LOG.info "[Intent] Disabled (enable in brainiac.json → intent.enabled: true)"
+end
 
 # --- Dashboard authentication ---
 
