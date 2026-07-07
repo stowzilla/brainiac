@@ -9,6 +9,8 @@
 #
 # Events:
 #   :agent_completed    — After an agent session finishes (success or failure)
+#   :agent_added        — When a new agent appears in the registry (after reload)
+#   :agent_removed      — When an agent is removed from the registry (after reload)
 #   :pr_merged          — After a GitHub PR is merged
 #   :pr_opened          — After a GitHub PR is opened
 #   :pr_reviewed        — After a PR review is submitted

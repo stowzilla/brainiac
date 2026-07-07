@@ -50,8 +50,26 @@ AGENT_REGISTRY = load_agent_registry
 def reload_agent_registry!(force: false)
   return unless file_changed?(AGENT_REGISTRY_FILE, force: force)
 
+  old_keys = AGENT_REGISTRY.keys.to_set
   AGENT_REGISTRY.replace(load_agent_registry)
+  new_keys = AGENT_REGISTRY.keys.to_set
   LOG.info "Reloaded agent registry: #{AGENT_REGISTRY.keys.join(", ")}"
+
+  # Emit lifecycle hooks for added/removed agents
+  added = new_keys - old_keys
+  removed = old_keys - new_keys
+
+  added.each do |key|
+    entry = AGENT_REGISTRY[key]
+    display_name = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+    LOG.info "Agent added: #{display_name} (#{key})"
+    Brainiac.emit(:agent_added, agent_key: key, display_name: display_name, entry: entry)
+  end
+
+  removed.each do |key|
+    LOG.info "Agent removed: #{key}"
+    Brainiac.emit(:agent_removed, agent_key: key)
+  end
 end
 
 # Get the env hash for an agent. Returns {} if none configured.

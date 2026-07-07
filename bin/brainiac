@@ -120,6 +120,21 @@ rescue StandardError
   []
 end
 
+# Notify the running server to reload configs (triggers agent lifecycle hooks).
+# Silently does nothing if the server isn't running.
+def notify_server_reload
+  config = load_config
+  server_url = config["server_url"] || "http://localhost:4567"
+  uri = URI("#{server_url}/api/reload")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.open_timeout = 2
+  http.read_timeout = 5
+  request = Net::HTTP::Post.new(uri.path)
+  http.request(request)
+rescue StandardError
+  nil
+end
+
 def wait_for_agents_to_finish
   sessions = fetch_active_sessions
   return true if sessions.empty?
@@ -1873,6 +1888,9 @@ when "agent"
       brain_init(name)
     end
 
+    # Notify running server to reload and trigger :agent_added hook
+    notify_server_reload
+
   when "remove", "delete", "rm"
     name = ARGV.shift
     unless name
@@ -1893,6 +1911,9 @@ when "agent"
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Removed agent '#{display}' (#{agent_key}) from registry"
     puts "  Note: Persona files at ~/.brainiac/brain/persona/#{agent_key}/ were not deleted."
+
+    # Notify running server to reload and trigger :agent_removed hook
+    notify_server_reload
 
   when nil
     puts <<~HELP
