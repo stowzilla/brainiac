@@ -1,0 +1,14 @@
+#!/bin/bash
+# Pre-commit hook: auto-run `bundle` when version.rb changes
+# This ensures Gemfile.lock stays in sync with gemspec version bumps.
+
+if git diff --cached --name-only | grep -q "version\.rb$"; then
+  echo "🔒 version.rb changed — running bundle to sync Gemfile.lock..."
+  bundle install --quiet
+  if [ $? -ne 0 ]; then
+    echo "❌ bundle install failed. Fix the issue and try again."
+    exit 1
+  fi
+  git add Gemfile.lock
+  echo "✅ Gemfile.lock updated and staged."
+fi
