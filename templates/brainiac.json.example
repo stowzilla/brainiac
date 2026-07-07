@@ -1,3 +1,10 @@
 {
-  "default_agent": "Sherlock"
+  "default_agent": "Sherlock",
+  "intent": {
+    "enabled": false,
+    "endpoint": "http://localhost:11434/api/generate",
+    "model": "gemma3:4b",
+    "timeout": 10,
+    "temperature": 0.1
+  }
 }

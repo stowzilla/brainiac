@@ -399,8 +399,27 @@ def resolve_resume(resume, resolved, chdir)
   false
 end
 
+# Check if intent detection says to skip dispatching the agent.
+# Returns true if the message should be skipped, false otherwise.
+# Only runs if a raw message is provided, an agent is named, and intent is enabled.
+def intent_skip?(message, agent_name:, source: nil, channel: nil)
+  return false unless message && agent_name && intent_config["enabled"]
+
+  intent_channel = channel || source&.to_s || "conversation"
+  unless check_intent(message, agent_name: agent_name, channel: intent_channel)
+    LOG.info "[Intent] Skipping dispatch for #{agent_name} — message classified as not requiring response"
+    return true
+  end
+
+  false
+end
+
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
-              source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false)
+              source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
+              message: nil, channel: nil)
+  # Intent gate: if a raw message is provided, check whether the agent should respond.
+  return nil if intent_skip?(message, agent_name: agent_name, source: source, channel: channel)
+
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
   model ||= resolved["agent_model"]

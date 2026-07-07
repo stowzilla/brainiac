@@ -354,6 +354,67 @@ post "/api/cron/reload" do
   { status: "reloaded", jobs: CRON_JOBS.size }.to_json
 end
 
+# --- Intent ---
+
+get "/api/intent/config" do
+  content_type :json
+  config = intent_config
+  status = if config["enabled"]
+             begin
+               uri = URI(config["endpoint"].sub("/api/generate", "/api/tags"))
+               http = Net::HTTP.new(uri.host, uri.port)
+               http.open_timeout = 3
+               http.read_timeout = 3
+               response = http.get(uri.path)
+               if response.is_a?(Net::HTTPSuccess)
+                 models = JSON.parse(response.body).fetch("models", []).map { |m| m["name"] }
+                 model_available = models.any? { |m| m.start_with?(config["model"].split(":").first) }
+                 model_available ? "ok" : "model_not_found"
+               else
+                 "ollama_error"
+               end
+             rescue Errno::ECONNREFUSED
+               "ollama_not_running"
+             rescue StandardError => e
+               "error: #{e.message}"
+             end
+           else
+             "disabled"
+           end
+  config.merge("status" => status).to_json
+end
+
+post "/api/intent/check" do
+  content_type :json
+  request.body.rewind
+  payload = JSON.parse(request.body.read)
+
+  message = payload["message"]
+  agent = payload["agent"] || AI_AGENT_NAME
+  channel = payload["channel"] || "conversation"
+
+  halt 400, { error: "Missing 'message' field" }.to_json unless message && !message.empty?
+
+  result = check_intent(message, agent_name: agent, channel: channel)
+  { should_respond: result, agent: agent, channel: channel }.to_json
+end
+
+post "/api/intent/pending-work" do
+  content_type :json
+  request.body.rewind
+  payload = JSON.parse(request.body.read)
+
+  message = payload["message"]
+  agent = payload["agent"] || AI_AGENT_NAME
+
+  halt 400, { error: "Missing 'message' field" }.to_json unless message && !message.empty?
+
+  result = check_pending_work(message, agent_name: agent)
+  { pending_work: result, agent: agent }.to_json
+end
+
+# --- Cron Logs ---
+
 get "/api/cron/logs" do
   content_type :json
   job_id = params["id"]

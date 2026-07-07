@@ -24,6 +24,7 @@ require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/notifications"
 require_relative "lib/brainiac/cron"
 require_relative "lib/brainiac/restart"
+require_relative "lib/brainiac/intent"
 require_relative "lib/brainiac/plugins"
 require_relative "lib/brainiac/handlers/shared/git"
 require_relative "lib/brainiac/handlers/shared/inline_tags"
@@ -98,6 +99,11 @@ configure do
 end
 
 LOG.info "[Brainiac] Starting v#{BRAINIAC_VERSION} on port #{settings.port} (#{settings.environment})"
+if intent_config["enabled"]
+  LOG.info "[Intent] Enabled — model: #{intent_config["model"]}, endpoint: #{intent_config["endpoint"]}"
+else
+  LOG.info "[Intent] Disabled (enable in brainiac.json → intent.enabled: true)"
+end
 
 # --- Dashboard authentication ---
 

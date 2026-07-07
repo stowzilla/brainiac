@@ -138,6 +138,7 @@ require_relative "../lib/brainiac/brain"
 require_relative "../lib/brainiac/sessions"
 require_relative "../lib/brainiac/notifications"
 require_relative "../lib/brainiac/helpers"
+require_relative "../lib/brainiac/intent"
 require_relative "../lib/brainiac/handlers/shared/inline_tags"
 require_relative "../lib/brainiac/handlers/shared/git"
 

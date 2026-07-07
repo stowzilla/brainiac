@@ -247,4 +247,27 @@ class TestHelpers < Minitest::Test
   def test_default_project_key
     assert_equal "brainiac", default_project_key
   end
+
+  def test_intent_skip_returns_false_when_no_message
+    refute intent_skip?(nil, agent_name: "Sherlock")
+  end
+
+  def test_intent_skip_returns_false_when_no_agent_name
+    refute intent_skip?("do the thing", agent_name: nil)
+  end
+
+  def test_intent_skip_returns_false_when_intent_disabled
+    # Default config has intent disabled
+    refute intent_skip?("do the thing", agent_name: "Sherlock", source: :discord)
+  end
+
+  def test_intent_skip_returns_false_when_enabled_but_connection_fails
+    original = BRAINIAC_CONFIG.dup
+    BRAINIAC_CONFIG["intent"] = { "enabled" => true, "endpoint" => "http://localhost:99999/api/generate", "timeout" => 1 }
+
+    # check_intent fail-opens (returns true) → intent_skip? returns false (don't skip)
+    refute intent_skip?("do the thing", agent_name: "Sherlock", source: :discord)
+  ensure
+    BRAINIAC_CONFIG.replace(original)
+  end
 end
