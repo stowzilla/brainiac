@@ -2295,54 +2295,44 @@ when "update", "upgrade"
     end
 
     puts "Updating #{gem_name}..."
-    system("gem install #{gem_name}")
-    unless $CHILD_STATUS.success?
+    output, status = Open3.capture2e("gem install #{gem_name}")
+    puts output
+    unless status.success?
       puts ""
       puts "Failed to update #{gem_name}."
       exit 1
     end
 
-    # Show version change
-    Gem::Specification.reset
-    new_version = begin
-      spec = Gem::Specification.find_by_name(gem_name)
-      spec.version.to_s
-    rescue Gem::MissingSpecError
-      "unknown"
-    end
+    # Parse installed version from gem install output
+    new_version = output[/Successfully installed #{Regexp.escape(gem_name)}-(\S+)/, 1]
 
-    if current_version && current_version == new_version
-      puts "✓ #{gem_name} is already at the latest version (#{new_version})"
-    else
+    if new_version
       puts "✓ Updated #{gem_name}: #{current_version || "new"} → #{new_version}"
       puts "  Restart the server to activate: brainiac restart"
+    else
+      puts "✓ #{gem_name} is already at the latest version (#{current_version})"
     end
   else
     # Update brainiac itself: brainiac update
     current_version = BRAINIAC_VERSION
 
     puts "Updating brainiac gem..."
-    system("gem install brainiac")
-    unless $CHILD_STATUS.success?
+    output, status = Open3.capture2e("gem install brainiac")
+    puts output
+    unless status.success?
       puts ""
       puts "Failed to update brainiac."
       exit 1
     end
 
-    # Show version change
-    Gem::Specification.reset
-    new_version = begin
-      spec = Gem::Specification.find_by_name("brainiac")
-      spec.version.to_s
-    rescue Gem::MissingSpecError
-      "unknown"
-    end
+    # Parse installed version from gem install output
+    new_version = output[/Successfully installed brainiac-(\S+)/, 1]
 
-    if current_version == new_version
-      puts "✓ brainiac is already at the latest version (#{new_version})"
-    else
+    if new_version
       puts "✓ Updated brainiac: #{current_version} → #{new_version}"
       puts "  Restart the server to apply: brainiac restart"
+    else
+      puts "✓ brainiac is already at the latest version (#{current_version})"
     end
   end
 
