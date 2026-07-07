@@ -125,7 +125,8 @@ end
 # Migrate old-format work item maps (keyed by Fizzy card internal ID with flat structure)
 # to the new source-agnostic format (keyed by work item ID with sources hash).
 # Old format: { "fizzy-uuid" => { "number" => 42, "branch" => "...", "worktree" => "...", "project" => "...", "agent" => "..." } }
-# New format: { "wi-abc123" => { "id" => "wi-abc123", "branch" => "...", "worktree" => "...", "project" => "...", "agent" => "...", "sources" => { "fizzy" => { ... } } } }
+# New format: { "wi-abc123" => { "id" => "wi-...", "branch" => "...", "worktree" => "...",
+#   "project" => "...", "agent" => "...", "sources" => { "fizzy" => { ... } } } }
 def migrate_work_item_map(raw)
   return raw if raw.empty?
 
@@ -255,7 +256,7 @@ end
 
 # Add or update a source on an existing work item.
 # Returns true if the work item was found and updated, false otherwise.
-def register_work_item_source(work_item_id: nil, branch: nil, source:, source_data:)
+def register_work_item_source(source:, source_data:, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
   map = load_work_item_map
 
   # Find by ID or branch

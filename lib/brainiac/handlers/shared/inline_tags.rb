@@ -37,6 +37,16 @@ def parse_inline_tags(text)
     clean_text: text.dup
   }
 
+  parse_value_tags(result)
+  parse_flag_tags(result)
+  parse_work_item_tags(result)
+  parse_model_tag(result)
+
+  result[:clean_text].strip!
+  result
+end
+
+def parse_value_tags(result)
   # [project:my-project]
   if (match = result[:clean_text].match(/\[project:(\S+)\]/i))
     result[:project] = match[1]
@@ -55,6 +65,14 @@ def parse_inline_tags(text)
     result[:clean_text].sub!(match[0], "")
   end
 
+  # [deploy] or [deploy:dev01]
+  if (match = result[:clean_text].match(/\[deploy(?::([^\]]+))?\]/i))
+    result[:deploy_intent] = match[1]&.strip&.downcase || :auto
+    result[:clean_text].sub!(match[0], "")
+  end
+end
+
+def parse_flag_tags(result)
   # [chat], [question], [?]
   if result[:clean_text].match?(/\[(chat|question|\?)\]/i)
     result[:chat_mode] = true
@@ -62,17 +80,13 @@ def parse_inline_tags(text)
   end
 
   # [plan]
-  if result[:clean_text].match?(/\[plan\]/i)
-    result[:planning] = true
-    result[:clean_text].sub!(/\[plan\]/i, "")
-  end
+  return unless result[:clean_text].match?(/\[plan\]/i)
 
-  # [deploy] or [deploy:dev01]
-  if (match = result[:clean_text].match(/\[deploy(?::([^\]]+))?\]/i))
-    result[:deploy_intent] = match[1]&.strip&.downcase || :auto
-    result[:clean_text].sub!(match[0], "")
-  end
+  result[:planning] = true
+  result[:clean_text].sub!(/\[plan\]/i, "")
+end
 
+def parse_work_item_tags(result)
   # [worktree:branch-name] — legacy syntax, still supported
   if (match = result[:clean_text].match(/\[worktree:([^\]]+)\]/))
     result[:worktree_override] = match[1].strip
@@ -92,7 +106,9 @@ def parse_inline_tags(text)
     result[:work_item] = match[1].strip
     result[:clean_text].sub!(match[0], "")
   end
+end
 
+def parse_model_tag(result)
   # Model tag: any remaining [word] that isn't a known tag — detected separately
   # because it depends on the project's allowed_models config. We just capture
   # the raw match here for the caller to resolve.
@@ -100,7 +116,4 @@ def parse_inline_tags(text)
     result[:model_tag] = match[1].downcase
     result[:clean_text].sub!(match[0], "")
   end
-
-  result[:clean_text].strip!
-  result
 end
