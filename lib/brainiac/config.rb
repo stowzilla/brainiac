@@ -49,11 +49,15 @@ def resolve_default_agent
 
   # 3. First agent in agents.json
   if File.exist?(AGENT_REGISTRY_FILE)
-    agents = JSON.parse(File.read(AGENT_REGISTRY_FILE)) rescue {}
+    agents = begin
+      JSON.parse(File.read(AGENT_REGISTRY_FILE))
+    rescue StandardError
+      {}
+    end
     first_agent = agents.values.first
     if first_agent
       agent_name = first_agent["fizzy_name"] || first_agent["display_name"] || agents.keys.first.capitalize
-      $stderr.puts <<~MSG
+      warn <<~MSG
         [Brainiac] No default agent configured — using "#{agent_name}" (first agent in agents.json).
         To set explicitly, either:
           export AI_AGENT_NAME="#{agent_name}"
