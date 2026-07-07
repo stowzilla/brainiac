@@ -655,7 +655,8 @@ def list_projects
     default_marker = config["default"] ? " (default)" : ""
     puts "  #{key}#{default_marker}"
     puts "    Path: #{config["repo_path"]}"
-    puts "    Tags: #{config["tags"] || config["project_tags"].join(", ")}"
+    tags = config["tags"] || config["project_tags"]&.join(", ")
+    puts "    Tags: #{tags}" if tags
     puts "    GitHub: #{config["github_repo"]}" if config["github_repo"]
     puts "    Agent: #{config["agent_cli"]} (model: #{config["agent_model"]})"
     puts

@@ -38,14 +38,47 @@ end
 BRAINIAC_CONFIG = load_brainiac_config
 
 # --- Default agent name ---
-# Priority: AI_AGENT_NAME env var → brainiac.json "default_agent" → error.
-AI_AGENT_NAME = ENV.fetch("AI_AGENT_NAME", nil) || BRAINIAC_CONFIG["default_agent"] || begin
+# Priority: AI_AGENT_NAME env var → brainiac.json "default_agent" → first agent in agents.json → error.
+def resolve_default_agent
+  # 1. Env var
+  name = ENV.fetch("AI_AGENT_NAME", nil)
+  return name if name
+
+  # 2. brainiac.json
+  name = BRAINIAC_CONFIG["default_agent"]
+  return name if name
+
+  # 3. First agent in agents.json
+  if File.exist?(AGENT_REGISTRY_FILE)
+    agents = begin
+      JSON.parse(File.read(AGENT_REGISTRY_FILE))
+    rescue StandardError
+      {}
+    end
+    first_agent = agents.values.first
+    if first_agent
+      agent_name = first_agent["fizzy_name"] || first_agent["display_name"] || agents.keys.first.capitalize
+      warn <<~MSG
+        [Brainiac] No default agent configured — using "#{agent_name}" (first agent in agents.json).
+        To set explicitly, either:
+          export AI_AGENT_NAME="#{agent_name}"
+        Or add to ~/.brainiac/brainiac.json:
+          { "default_agent": "#{agent_name}" }
+      MSG
+      return agent_name
+    end
+  end
+
+  # 4. Nothing found
   raise <<~MSG
-    No default agent configured. Set one of:
+    No default agent configured and no agents found in #{AGENT_REGISTRY_FILE}.
+    Set one of:
       1. Environment variable: export AI_AGENT_NAME="YourAgent"
       2. In ~/.brainiac/brainiac.json: { "default_agent": "YourAgent" }
   MSG
 end
+
+AI_AGENT_NAME = resolve_default_agent
 
 LOG_LEVEL = ENV.fetch("LOG_LEVEL", "info").downcase
 LOG = Logger.new($stdout)
