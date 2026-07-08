@@ -148,7 +148,7 @@ def notify_plugins_agent_created(agent_key, entry)
     try_require_metadata(pname, pentry)
     try_require_plugin_cli(pname, pentry)
     mod = resolve_plugin_module_for(pname)
-    next unless mod&.respond_to?(:on_agent_created)
+    next unless mod.respond_to?(:on_agent_created)
 
     mod.on_agent_created(agent_key, entry)
   rescue StandardError => e
@@ -169,7 +169,7 @@ def notify_plugins_agent_removed(agent_key, display_name)
     try_require_metadata(pname, pentry)
     try_require_plugin_cli(pname, pentry)
     mod = resolve_plugin_module_for(pname)
-    next unless mod&.respond_to?(:on_agent_removed)
+    next unless mod.respond_to?(:on_agent_removed)
 
     mod.on_agent_removed(agent_key, display_name)
   rescue StandardError => e
