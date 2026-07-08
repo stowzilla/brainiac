@@ -40,19 +40,20 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
 
   Rules:
   - If the message addresses {{AGENT_NAME}} by name, gives {{AGENT_NAME}} instructions, or asks {{AGENT_NAME}} a question → yes
-  - If the message continues a conversation directed at {{AGENT_NAME}} → yes
+  - If the message continues a conversation directed at {{AGENT_NAME}} (e.g. {{AGENT_NAME}} was the last to respond and the human follows up) → yes
   - If the message starts with or addresses a DIFFERENT person/agent (not {{AGENT_NAME}}) → no
   - If the message is humans talking to each other and {{AGENT_NAME}} is not being addressed → no
   - If the message is a simple acknowledgment ("thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
   - If the message is asking a question to another person or agent (not {{AGENT_NAME}}) → no
   - If the message is responding to or commenting on what someone OTHER than {{AGENT_NAME}} just said → no
+  - If the conversation context shows a DIFFERENT agent was the last to respond, and the human's follow-up does not mention {{AGENT_NAME}} by name → no
   - If uncertain, lean toward yes (better to respond unnecessarily than miss a request)
 
   Critical: "addresses someone else" means someone whose name is NOT {{AGENT_NAME}}. If the message says "{{AGENT_NAME}}, ..." that IS addressed to {{AGENT_NAME}} → yes.
 
   Respond with ONLY "yes" or "no" — nothing else.
 
-  Latest message:
+  {{CONTEXT}}Latest message:
   {{MESSAGE}}
 PROMPT
 
@@ -135,14 +136,24 @@ end
 # @param agent_name [String] The agent being addressed
 # @param channel [String] Context description (e.g., "Discord thread", "Fizzy card comment")
 # @return [Boolean] true if the agent should respond, false if it can be skipped
-def check_intent(message, agent_name:, channel: "conversation")
+def check_intent(message, agent_name:, channel: "conversation", context: nil)
   config = intent_config
   return true unless config["enabled"]
   return true if message.nil? || message.strip.empty?
 
+  context_block = if context && !context.strip.empty?
+                    # Keep only last 5 messages for the small local model — enough to determine
+                    # conversational flow without overwhelming the context window.
+                    recent = context.strip.lines.last(5).join
+                    "Recent conversation (most recent last):\n#{recent}\n\n"
+                  else
+                    ""
+                  end
+
   prompt = INTENT_PROMPT_TEMPLATE
            .gsub("{{AGENT_NAME}}", agent_name)
            .gsub("{{CHANNEL}}", channel)
+           .gsub("{{CONTEXT}}", context_block)
            .gsub("{{MESSAGE}}", message.strip)
 
   LOG.info "[Intent] Checking intent for #{agent_name} (#{channel}): #{message.strip.slice(0, 80)}..."
