@@ -135,6 +135,50 @@ rescue StandardError
   nil
 end
 
+# Run CLI-time plugin hooks for agent lifecycle events.
+# Loads each installed plugin's CLI module and calls the hook method if defined.
+# This runs synchronously and can prompt for interactive input.
+def notify_plugins_agent_created(agent_key, entry)
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  return unless File.exist?(plugins_file)
+
+  plugins_config = JSON.parse(File.read(plugins_file))
+  (plugins_config["plugins"] || []).each do |pentry|
+    pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
+    try_require_metadata(pname, pentry)
+    try_require_plugin_cli(pname, pentry)
+    mod = resolve_plugin_module_for(pname)
+    next unless mod&.respond_to?(:on_agent_created)
+
+    mod.on_agent_created(agent_key, entry)
+  rescue StandardError => e
+    puts "  ⚠ Plugin '#{pname}' hook failed: #{e.message}"
+  end
+rescue JSON::ParserError
+  nil
+end
+
+# Run CLI-time plugin hooks for agent removal.
+def notify_plugins_agent_removed(agent_key, display_name)
+  plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+  return unless File.exist?(plugins_file)
+
+  plugins_config = JSON.parse(File.read(plugins_file))
+  (plugins_config["plugins"] || []).each do |pentry|
+    pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
+    try_require_metadata(pname, pentry)
+    try_require_plugin_cli(pname, pentry)
+    mod = resolve_plugin_module_for(pname)
+    next unless mod&.respond_to?(:on_agent_removed)
+
+    mod.on_agent_removed(agent_key, display_name)
+  rescue StandardError => e
+    puts "  ⚠ Plugin '#{pname}' hook failed: #{e.message}"
+  end
+rescue JSON::ParserError
+  nil
+end
+
 def wait_for_agents_to_finish
   sessions = fetch_active_sessions
   return true if sessions.empty?
@@ -1888,6 +1932,9 @@ when "agent"
       brain_init(name)
     end
 
+    # Let plugins prompt for additional config (e.g. Discord user ID)
+    notify_plugins_agent_created(agent_key, entry)
+
     # Notify running server to reload and trigger :agent_added hook
     notify_server_reload
 
@@ -1911,6 +1958,9 @@ when "agent"
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Removed agent '#{display}' (#{agent_key}) from registry"
     puts "  Note: Persona files at ~/.brainiac/brain/persona/#{agent_key}/ were not deleted."
+
+    # Let plugins clean up their config
+    notify_plugins_agent_removed(agent_key, display)
 
     # Notify running server to reload and trigger :agent_removed hook
     notify_server_reload
