@@ -39,13 +39,16 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
   You are a message router for a {{CHANNEL}}. An AI agent named {{AGENT_NAME}} is participating in this conversation. Your job: determine if the latest message requires {{AGENT_NAME}} to take action or respond.
 
   Rules:
-  - If the message is giving {{AGENT_NAME}} instructions, asking {{AGENT_NAME}} a question, or continuing a conversation WITH {{AGENT_NAME}} → yes
-  - If the message starts with or addresses someone else by name (e.g., "Adam, ...", "Hey Sarah", "Effie, ...") → no (it's directed at that person, not {{AGENT_NAME}})
+  - If the message addresses {{AGENT_NAME}} by name, gives {{AGENT_NAME}} instructions, or asks {{AGENT_NAME}} a question → yes
+  - If the message continues a conversation directed at {{AGENT_NAME}} → yes
+  - If the message starts with or addresses a DIFFERENT person/agent (not {{AGENT_NAME}}) → no
   - If the message is humans talking to each other and {{AGENT_NAME}} is not being addressed → no
-  - If the message is a simple acknowledgment (like "thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
-  - If the message is asking a question to another person or agent → no
+  - If the message is a simple acknowledgment ("thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
+  - If the message is asking a question to another person or agent (not {{AGENT_NAME}}) → no
   - If the message is responding to or commenting on what someone OTHER than {{AGENT_NAME}} just said → no
   - If uncertain, lean toward yes (better to respond unnecessarily than miss a request)
+
+  Critical: "addresses someone else" means someone whose name is NOT {{AGENT_NAME}}. If the message says "{{AGENT_NAME}}, ..." that IS addressed to {{AGENT_NAME}} → yes.
 
   Respond with ONLY "yes" or "no" — nothing else.
 
