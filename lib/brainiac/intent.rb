@@ -53,7 +53,10 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
 
   Respond with ONLY "yes" or "no" — nothing else.
 
-  {{CONTEXT}}Latest message:
+  Context:
+  {{CONTEXT}}
+  
+  Latest message:
   {{MESSAGE}}
 PROMPT
 
