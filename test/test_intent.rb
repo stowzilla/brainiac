@@ -77,10 +77,23 @@ class TestIntent < Minitest::Test
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Galen")
              .gsub("{{CHANNEL}}", "Discord thread")
+             .gsub("{{CONTEXT}}", "")
              .gsub("{{MESSAGE}}", "hey do the thing")
     assert_includes prompt, "Galen"
     assert_includes prompt, "Discord thread"
     assert_includes prompt, "hey do the thing"
+  end
+
+  def test_intent_prompt_template_with_context
+    context_block = "Recent conversation (most recent last):\nAndy: @Effie what's your favorite color?\nEffie: I like blue!\n\n"
+    prompt = INTENT_PROMPT_TEMPLATE
+             .gsub("{{AGENT_NAME}}", "Galen")
+             .gsub("{{CHANNEL}}", "Discord thread")
+             .gsub("{{CONTEXT}}", context_block)
+             .gsub("{{MESSAGE}}", "What do you think about Galen's answer?")
+    assert_includes prompt, "Recent conversation (most recent last):"
+    assert_includes prompt, "Effie: I like blue!"
+    assert_includes prompt, "What do you think about Galen's answer?"
   end
 
   def test_check_intent_with_enabled_config_and_connection_refused
