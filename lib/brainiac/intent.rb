@@ -69,10 +69,61 @@ PENDING_WORK_PROMPT_TEMPLATE = <<~PROMPT
   {{MESSAGE}}
 PROMPT
 
+# Custom error for missing Ollama models — provides actionable install instructions.
+class OllamaModelNotFoundError < RuntimeError
+  attr_reader :model_name, :endpoint
+
+  def initialize(model_name, endpoint)
+    @model_name = model_name
+    @endpoint = endpoint
+    super(<<~MSG.strip)
+      Ollama model '#{model_name}' is not installed.
+
+      To install it, run:
+        ollama pull #{model_name}
+
+      Or change the model in ~/.brainiac/brainiac.json → intent.model
+
+      Available models can be listed with:
+        ollama list
+    MSG
+  end
+end
+
 # Load intent config from brainiac.json, merging with defaults.
 def intent_config
   raw = BRAINIAC_CONFIG["intent"] || {}
   INTENT_CONFIG_DEFAULTS.merge(raw)
+end
+
+# Validate that the configured intent model is available in Ollama.
+# Called at server startup — aborts with a helpful error if the model is missing.
+#
+# @param config [Hash] Intent configuration
+# @raise [OllamaModelNotFoundError] if the model isn't installed
+def validate_intent_model!(config)
+  base_uri = URI(config["endpoint"])
+  show_uri = URI("#{base_uri.scheme}://#{base_uri.host}:#{base_uri.port}/api/show")
+
+  http = Net::HTTP.new(show_uri.host, show_uri.port)
+  http.open_timeout = 5
+  http.read_timeout = 5
+
+  request = Net::HTTP::Post.new(show_uri.path, "Content-Type" => "application/json")
+  request.body = JSON.generate({ model: config["model"] })
+
+  response = http.request(request)
+
+  if response.code == "404" || (!response.is_a?(Net::HTTPSuccess) && response.body&.include?("not found"))
+    raise OllamaModelNotFoundError.new(config["model"], config["endpoint"])
+  end
+
+  true
+rescue Errno::ECONNREFUSED
+  raise "Ollama is not running at #{config["endpoint"]}. Start it with: ollama serve"
+rescue Net::OpenTimeout, Net::ReadTimeout
+  LOG.warn "[Intent] Could not validate model (Ollama timed out) — will check at first use"
+  true
 end
 
 # Check whether a message requires an agent to respond.
@@ -96,6 +147,12 @@ def check_intent(message, agent_name:, channel: "conversation")
   result = positive_intent?(response)
   LOG.info "[Intent] Result: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
   result
+rescue OllamaModelNotFoundError => e
+  LOG.error "[Intent] #{e.message}"
+  LOG.error "[Intent] Disabling intent classification until model is installed."
+  BRAINIAC_CONFIG["intent"] ||= {}
+  BRAINIAC_CONFIG["intent"]["enabled"] = false
+  true
 rescue StandardError => e
   LOG.warn "[Intent] Classification failed (fail-open): #{e.message}"
   true
@@ -123,12 +180,17 @@ def query_local_llm(prompt, config)
   request.body = JSON.generate(payload)
 
   response = http.request(request)
-  raise "Ollama returned #{response.code}: #{response.body&.slice(0, 200)}" unless response.is_a?(Net::HTTPSuccess)
+
+  unless response.is_a?(Net::HTTPSuccess)
+    raise OllamaModelNotFoundError.new(config["model"], config["endpoint"]) if response.code == "404" && response.body&.include?("not found")
+
+    raise "Ollama returned #{response.code}: #{response.body&.slice(0, 200)}"
+  end
 
   body = JSON.parse(response.body)
   body["response"] || ""
 rescue Errno::ECONNREFUSED
-  raise "Ollama not running at #{config["endpoint"]}"
+  raise "Ollama not running at #{config["endpoint"]}. Start it with: ollama serve"
 rescue Net::OpenTimeout, Net::ReadTimeout
   raise "Ollama timed out after #{config["timeout"]}s"
 end

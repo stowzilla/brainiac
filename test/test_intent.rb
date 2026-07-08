@@ -2,8 +2,30 @@
 
 require_relative "test_helper"
 require_relative "../lib/brainiac/intent"
+require "socket"
 
 class TestIntent < Minitest::Test
+  def with_fake_ollama(status:, body:)
+    server = TCPServer.new("127.0.0.1", 0)
+    port = server.addr[1]
+
+    thread = Thread.new do
+      loop do
+        client = server.accept
+        _line = client.gets while (line = client.gets) && line.strip != ""
+        client.print "HTTP/1.1 #{status}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: #{body.bytesize}\r\n\r\n#{body}"
+        client.close
+      rescue IOError
+        break
+      end
+    end
+
+    yield "http://127.0.0.1:#{port}/api/generate"
+  ensure
+    thread&.kill
+    server&.close
+  end
+
   def test_check_intent_returns_true_when_disabled
     # Default config has enabled: false, so it should always return true (pass-through)
     assert check_intent("hey Sherlock do the thing", agent_name: "Sherlock")
@@ -142,5 +164,48 @@ class TestIntent < Minitest::Test
              .gsub("{{MESSAGE}}", "I'll implement this — one-liner change")
     assert_includes prompt, "Galen"
     assert_includes prompt, "I'll implement this — one-liner change"
+  end
+
+  # --- Model validation ---
+
+  def test_ollama_model_not_found_error_includes_install_instructions
+    error = OllamaModelNotFoundError.new("qwen3:4b", "http://localhost:11434/api/generate")
+    assert_includes error.message, "ollama pull qwen3:4b"
+    assert_includes error.message, "~/.brainiac/brainiac.json"
+    assert_includes error.message, "ollama list"
+    assert_equal "qwen3:4b", error.model_name
+    assert_equal "http://localhost:11434/api/generate", error.endpoint
+  end
+
+  def test_validate_intent_model_raises_when_ollama_not_running
+    config = intent_config.merge("enabled" => true, "endpoint" => "http://localhost:99999/api/generate")
+    error = assert_raises(RuntimeError) { validate_intent_model!(config) }
+    assert_includes error.message, "Ollama is not running"
+    assert_includes error.message, "ollama serve"
+  end
+
+  def test_validate_intent_model_raises_for_missing_model
+    with_fake_ollama(status: "404 Not Found", body: '{"error":"model \'nonexistent:1b\' not found"}') do |endpoint|
+      config = intent_config.merge("enabled" => true, "endpoint" => endpoint, "model" => "nonexistent:1b")
+      error = assert_raises(OllamaModelNotFoundError) { validate_intent_model!(config) }
+      assert_includes error.message, "ollama pull nonexistent:1b"
+      assert_includes error.message, "~/.brainiac/brainiac.json"
+    end
+  end
+
+  def test_check_intent_disables_intent_on_model_not_found
+    with_fake_ollama(status: "404 Not Found", body: '{"error":"model \'nonexistent:1b\' not found"}') do |endpoint|
+      original = BRAINIAC_CONFIG.dup
+      BRAINIAC_CONFIG["intent"] = { "enabled" => true, "endpoint" => endpoint, "model" => "nonexistent:1b", "timeout" => 2 }
+
+      result = check_intent("do the thing", agent_name: "Sherlock", channel: "test")
+
+      # Should fail-open (return true)
+      assert result, "Should fail-open when model is not found"
+      # Should disable intent in config to prevent repeated errors
+      refute BRAINIAC_CONFIG.dig("intent", "enabled"), "Intent should be disabled after model-not-found"
+    ensure
+      BRAINIAC_CONFIG.replace(original)
+    end
   end
 end
