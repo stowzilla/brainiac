@@ -107,3 +107,65 @@ class TestAgents < Minitest::Test
     assert_includes content, "# Reviewer"
   end
 end
+
+class TestAgentLifecycleHooks < Minitest::Test
+  def setup
+    Brainiac.reset_hooks!
+    @events = []
+  end
+
+  def teardown
+    Brainiac.reset_hooks!
+  end
+
+  def test_reload_emits_agent_added_hook
+    Brainiac.on(:agent_added) { |ctx| @events << ctx }
+
+    # Add a new agent to the registry file
+    registry = JSON.parse(File.read(AGENT_REGISTRY_FILE))
+    registry["newbot"] = { "display_name" => "NewBot", "local" => true, "env" => {} }
+    File.write(AGENT_REGISTRY_FILE, JSON.generate(registry))
+
+    # Force reload to pick up changes
+    reload_agent_registry!(force: true)
+
+    assert_equal 1, @events.size
+    assert_equal "newbot", @events.first[:agent_key]
+    assert_equal "NewBot", @events.first[:display_name]
+  ensure
+    # Restore original registry
+    registry.delete("newbot")
+    File.write(AGENT_REGISTRY_FILE, JSON.generate(registry))
+    reload_agent_registry!(force: true)
+  end
+
+  def test_reload_emits_agent_removed_hook
+    Brainiac.on(:agent_removed) { |ctx| @events << ctx }
+
+    # Remove an agent from the registry file
+    registry = JSON.parse(File.read(AGENT_REGISTRY_FILE))
+    saved_entry = registry.delete("merlin")
+    File.write(AGENT_REGISTRY_FILE, JSON.generate(registry))
+
+    # Force reload to pick up changes
+    reload_agent_registry!(force: true)
+
+    assert_equal 1, @events.size
+    assert_equal "merlin", @events.first[:agent_key]
+  ensure
+    # Restore original registry
+    registry["merlin"] = saved_entry
+    File.write(AGENT_REGISTRY_FILE, JSON.generate(registry))
+    reload_agent_registry!(force: true)
+  end
+
+  def test_reload_no_hooks_when_unchanged
+    Brainiac.on(:agent_added) { |ctx| @events << ctx }
+    Brainiac.on(:agent_removed) { |ctx| @events << ctx }
+
+    # Reload without changes (same content)
+    reload_agent_registry!(force: true)
+
+    assert_empty @events
+  end
+end
