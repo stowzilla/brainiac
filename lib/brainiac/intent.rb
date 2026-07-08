@@ -38,10 +38,13 @@ INTENT_CONFIG_DEFAULTS = {
 INTENT_PROMPT_TEMPLATE = <<~PROMPT
   You are a message router for a {{CHANNEL}}. An AI agent named {{AGENT_NAME}} is participating in this conversation. Your job: determine if the latest message requires {{AGENT_NAME}} to take action or respond.
 
+  {{AGENT_ROSTER}}
+
   Rules:
   - If the message addresses {{AGENT_NAME}} by name, gives {{AGENT_NAME}} instructions, or asks {{AGENT_NAME}} a question → yes
   - If the message continues a conversation directed at {{AGENT_NAME}} (e.g. {{AGENT_NAME}} was the last to respond and the human follows up) → yes
   - If the message starts with or addresses a DIFFERENT person/agent (not {{AGENT_NAME}}) → no
+  - If the message contains another agent's name (e.g. "Effie, ...", "Another one Effie", "Hey Galen") and does NOT contain "{{AGENT_NAME}}" → no
   - If the message is humans talking to each other and {{AGENT_NAME}} is not being addressed → no
   - If the message is a simple acknowledgment ("thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
   - If the message is asking a question to another person or agent (not {{AGENT_NAME}}) → no
@@ -55,7 +58,7 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
 
   Context:
   {{CONTEXT}}
-  
+
   Latest message:
   {{MESSAGE}}
 PROMPT
@@ -138,11 +141,20 @@ end
 # @param message [String] The message text to classify
 # @param agent_name [String] The agent being addressed
 # @param channel [String] Context description (e.g., "Discord thread", "Fizzy card comment")
+# @param context [String, nil] Recent conversation history for flow detection
 # @return [Boolean] true if the agent should respond, false if it can be skipped
 def check_intent(message, agent_name:, channel: "conversation", context: nil)
   config = intent_config
   return true unless config["enabled"]
   return true if message.nil? || message.strip.empty?
+
+  # Deterministic pre-check: if the message explicitly names another agent
+  # and does NOT name this agent, skip without consulting the LLM.
+  # This handles the common case of "Effie, tell me another" when checking Galen.
+  if intent_names_other_agent?(message, agent_name)
+    LOG.info "[Intent] Deterministic skip for #{agent_name} — message addresses another agent"
+    return false
+  end
 
   context_block = if context && !context.strip.empty?
                     # Keep only last 5 messages for the small local model — enough to determine
@@ -153,13 +165,18 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
                     ""
                   end
 
+  # Build agent roster for the prompt so the model knows which names are agents
+  roster_block = build_intent_agent_roster(agent_name)
+
   prompt = INTENT_PROMPT_TEMPLATE
            .gsub("{{AGENT_NAME}}", agent_name)
            .gsub("{{CHANNEL}}", channel)
+           .gsub("{{AGENT_ROSTER}}", roster_block)
            .gsub("{{CONTEXT}}", context_block)
            .gsub("{{MESSAGE}}", message.strip)
 
   LOG.info "[Intent] Checking intent for #{agent_name} (#{channel}): #{message.strip.slice(0, 80)}..."
+  LOG.debug "[Intent] Full prompt:\n#{prompt}" if LOG.debug?
   response = query_local_llm(prompt, config)
   result = positive_intent?(response)
   LOG.info "[Intent] Result: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
@@ -257,4 +274,55 @@ end
 def pending_work_detected?(response)
   cleaned = response.to_s.strip.downcase.gsub(/[^a-z]/, "")
   cleaned == "yes"
+end
+
+# Deterministic check: does the message explicitly name another known agent
+# without mentioning this agent? If so, the message is clearly directed elsewhere.
+#
+# Only triggers when:
+# 1. The message contains another agent's display name (case-insensitive word boundary match)
+# 2. The message does NOT contain this agent's name
+#
+# This avoids the LLM entirely for obvious cases like "Effie, tell me another"
+# when evaluating whether Galen should respond.
+#
+# @param message [String] The message text
+# @param agent_name [String] The agent being evaluated
+# @return [Boolean] true if another agent is named and this one isn't
+def intent_names_other_agent?(message, agent_name)
+  return false unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+
+  msg_lower = message.downcase
+  agent_lower = agent_name.downcase
+
+  # Check if this agent IS named in the message — if so, no deterministic skip
+  return false if msg_lower.match?(/\b#{Regexp.escape(agent_lower)}\b/)
+
+  # Check if any OTHER agent is named in the message
+  AGENT_REGISTRY.each do |key, entry|
+    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+    other_lower = display.downcase
+    next if other_lower == agent_lower
+
+    return true if msg_lower.match?(/\b#{Regexp.escape(other_lower)}\b/)
+  end
+
+  false
+end
+
+# Build a compact agent roster string for the intent prompt.
+# Helps the LLM identify which names in the conversation are agents.
+#
+# @param agent_name [String] The current agent (highlighted)
+# @return [String] Formatted roster for prompt injection
+def build_intent_agent_roster(agent_name)
+  return "" unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+
+  names = AGENT_REGISTRY.map do |key, entry|
+    entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+  end.uniq
+
+  return "" if names.size <= 1
+
+  "Known agents in this system: #{names.join(", ")}. You are routing for #{agent_name}."
 end

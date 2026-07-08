@@ -77,11 +77,13 @@ class TestIntent < Minitest::Test
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Galen")
              .gsub("{{CHANNEL}}", "Discord thread")
+             .gsub("{{AGENT_ROSTER}}", "Known agents in this system: Galen, Effie, Sherlock. You are routing for Galen.")
              .gsub("{{CONTEXT}}", "")
              .gsub("{{MESSAGE}}", "hey do the thing")
     assert_includes prompt, "Galen"
     assert_includes prompt, "Discord thread"
     assert_includes prompt, "hey do the thing"
+    assert_includes prompt, "Known agents in this system"
   end
 
   def test_intent_prompt_template_with_context
@@ -89,6 +91,7 @@ class TestIntent < Minitest::Test
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Galen")
              .gsub("{{CHANNEL}}", "Discord thread")
+             .gsub("{{AGENT_ROSTER}}", "")
              .gsub("{{CONTEXT}}", context_block)
              .gsub("{{MESSAGE}}", "What do you think about Galen's answer?")
     assert_includes prompt, "Recent conversation (most recent last):"
@@ -113,6 +116,8 @@ class TestIntent < Minitest::Test
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Robin")
              .gsub("{{CHANNEL}}", "Fizzy card comment")
+             .gsub("{{AGENT_ROSTER}}", "")
+             .gsub("{{CONTEXT}}", "")
              .gsub("{{MESSAGE}}", "test")
     assert_includes prompt, "Fizzy card comment"
     assert_includes prompt, "Robin"
@@ -220,5 +225,57 @@ class TestIntent < Minitest::Test
     ensure
       BRAINIAC_CONFIG.replace(original)
     end
+  end
+
+  # --- Deterministic agent name detection ---
+
+  def test_intent_names_other_agent_detects_other_agent
+    # "Another one Robin" mentions Robin but not Sherlock → true
+    assert intent_names_other_agent?("Another one Robin", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_case_insensitive
+    assert intent_names_other_agent?("hey robin tell me more", "Sherlock")
+    assert intent_names_other_agent?("ROBIN do the thing", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_false_when_self_named
+    # "What do you think about Sherlock's answer?" mentions Sherlock → false (don't skip)
+    refute intent_names_other_agent?("What do you think about Sherlock's answer?", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_false_when_both_named
+    # "Sherlock, what do you think of Robin?" mentions both → false (might be for Sherlock)
+    refute intent_names_other_agent?("Sherlock, what do you think of Robin?", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_false_when_no_agents_named
+    refute intent_names_other_agent?("what's the weather like?", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_word_boundary_match
+    # "robin" inside a longer word shouldn't match
+    refute intent_names_other_agent?("the robinhood movie was great", "Sherlock")
+    # But "Robin" as a standalone word should
+    assert intent_names_other_agent?("Robin, one more", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_multi_word_agent_name
+    # "Robin Hood" is a multi-word agent name in our test registry
+    assert intent_names_other_agent?("hey robin hood what do you think", "Sherlock")
+  end
+
+  # --- Agent roster building ---
+
+  def test_build_intent_agent_roster_includes_agents
+    roster = build_intent_agent_roster("Sherlock")
+    assert_includes roster, "Known agents in this system:"
+    assert_includes roster, "You are routing for Sherlock"
+  end
+
+  def test_build_intent_agent_roster_includes_multiple_agents
+    roster = build_intent_agent_roster("Sherlock")
+    assert_includes roster, "Robin"
+    assert_includes roster, "Merlin"
   end
 end
