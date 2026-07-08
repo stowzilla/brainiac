@@ -182,9 +182,8 @@ def query_local_llm(prompt, config)
   response = http.request(request)
 
   unless response.is_a?(Net::HTTPSuccess)
-    if response.code == "404" && response.body&.include?("not found")
-      raise OllamaModelNotFoundError.new(config["model"], config["endpoint"])
-    end
+    raise OllamaModelNotFoundError.new(config["model"], config["endpoint"]) if response.code == "404" && response.body&.include?("not found")
+
     raise "Ollama returned #{response.code}: #{response.body&.slice(0, 200)}"
   end
 
