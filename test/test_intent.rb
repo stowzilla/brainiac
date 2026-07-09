@@ -284,9 +284,18 @@ class TestIntent < Minitest::Test
     assert intent_names_other_agent?("Another one Robin", "Sherlock")
   end
 
-  def test_intent_names_other_agent_false_when_both_named
-    # "Sherlock, what do you think of Robin?" mentions both → false (might be for Sherlock)
+  def test_intent_names_other_agent_false_when_self_directly_addressed
+    # "Sherlock, what do you think of Robin?" — Sherlock is directly addressed → false (don't skip)
     refute intent_names_other_agent?("Sherlock, what do you think of Robin?", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_true_when_other_addressed_and_self_mentioned
+    # "Robin, tell Sherlock you're sorry" — Robin is addressee, Sherlock merely mentioned → skip Sherlock
+    assert intent_names_other_agent?("Robin, tell Sherlock you're sorry", "Sherlock")
+    # "Effie, tell Galen you're sorry" — same pattern
+    assert intent_names_other_agent?("Robin, ask Sherlock what he thinks", "Sherlock")
+    # "hey Robin, tell Sherlock to fix the bug" — greeting + vocative
+    assert intent_names_other_agent?("hey Robin, tell Sherlock to fix the bug", "Sherlock")
   end
 
   def test_intent_names_other_agent_false_when_no_agents_named

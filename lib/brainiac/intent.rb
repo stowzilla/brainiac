@@ -179,7 +179,7 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
   LOG.debug "[Intent] Full prompt:\n#{prompt}" if LOG.debug?
   response = query_local_llm(prompt, config)
   result = positive_intent?(response)
-  LOG.info "[Intent] Result: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
+  LOG.info "[Intent] Result for #{agent_name}: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
   result
 rescue OllamaModelNotFoundError => e
   LOG.error "[Intent] #{e.message}"
@@ -309,8 +309,8 @@ def intent_names_other_agent?(message, agent_name)
   msg_lower = message.downcase.strip
   agent_lower = agent_name.downcase
 
-  # If this agent IS named in the message, never deterministic skip
-  return false if msg_lower.match?(/\b#{Regexp.escape(agent_lower)}\b/)
+  # If this agent is DIRECTLY ADDRESSED (vocative), never skip — message is for us
+  return false if directly_addressed_to?(msg_lower, agent_lower)
 
   # Check if any OTHER agent is directly addressed (not merely mentioned)
   AGENT_REGISTRY.each do |key, entry|
@@ -319,7 +319,8 @@ def intent_names_other_agent?(message, agent_name)
     next if other_lower == agent_lower
     next unless msg_lower.match?(/\b#{Regexp.escape(other_lower)}\b/)
 
-    # Agent name is present — now determine if it's direct address or mere mention
+    # Other agent is directly addressed — skip even if our name is mentioned in the body.
+    # e.g. "Effie, tell Galen you're sorry" → Effie is addressee, Galen is just mentioned.
     return true if directly_addressed_to?(msg_lower, other_lower)
   end
 
