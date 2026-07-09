@@ -286,26 +286,74 @@ end
 # This avoids the LLM entirely for obvious cases like "Effie, tell me another"
 # when evaluating whether Galen should respond.
 #
+# Determines if the message is DIRECTLY ADDRESSED to another agent (not just mentioning them).
+# Only triggers on vocative patterns — where the name is used to call someone, not refer to them.
+#
+# Patterns that indicate direct address (skip this agent):
+#   - "Effie, tell me a joke" (name + comma at start)
+#   - "hey Effie one more" (greeting + name)
+#   - "Another one Effie" (name at end, imperative)
+#   - "Effie tell me more" (name at start, imperative — no comma but first word)
+#
+# Patterns that are merely MENTIONING (do NOT skip):
+#   - "What do you think about Effie's answer?" (talking about Effie)
+#   - "Was Effie nice to you?" (asking about Effie)
+#   - "I liked what Effie said" (referencing Effie)
+#
 # @param message [String] The message text
 # @param agent_name [String] The agent being evaluated
-# @return [Boolean] true if another agent is named and this one isn't
+# @return [Boolean] true if another agent is directly addressed and this one isn't
 def intent_names_other_agent?(message, agent_name)
   return false unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
 
-  msg_lower = message.downcase
+  msg_lower = message.downcase.strip
   agent_lower = agent_name.downcase
 
-  # Check if this agent IS named in the message — if so, no deterministic skip
+  # If this agent IS named in the message, never deterministic skip
   return false if msg_lower.match?(/\b#{Regexp.escape(agent_lower)}\b/)
 
-  # Check if any OTHER agent is named in the message
+  # Check if any OTHER agent is directly addressed (not merely mentioned)
   AGENT_REGISTRY.each do |key, entry|
     display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
     other_lower = display.downcase
     next if other_lower == agent_lower
+    next unless msg_lower.match?(/\b#{Regexp.escape(other_lower)}\b/)
 
-    return true if msg_lower.match?(/\b#{Regexp.escape(other_lower)}\b/)
+    # Agent name is present — now determine if it's direct address or mere mention
+    return true if directly_addressed_to?(msg_lower, other_lower)
   end
+
+  false
+end
+
+# Heuristics for detecting direct address (vocative use of a name).
+# Returns true when the name is used to CALL someone, not talk ABOUT them.
+#
+# @param msg [String] Lowercased, stripped message
+# @param name [String] Lowercased agent name to check
+# @return [Boolean]
+def directly_addressed_to?(msg, name)
+  escaped = Regexp.escape(name)
+
+  # Pattern 1: Name at the very start (with or without comma/colon)
+  # "Effie, tell me a joke" / "Effie tell me more" / "Effie: do the thing"
+  return true if msg.match?(/\A#{escaped}[\s,:!]/i)
+
+  # Pattern 2: Name at the very end (imperative directed at them)
+  # "Another one Effie" / "one more Effie"
+  # BUT NOT when preceded by a preposition — "agree with Effie?" is about Effie, not to her
+  if msg.match?(/\s#{escaped}\s*[.!?]?\z/i)
+    prepositions = /\b(?:with|about|from|to|for|of|by|like|than|as|at|on|against|toward|towards)\s+#{escaped}\s*[.!?]?\z/i
+    return true unless msg.match?(prepositions)
+  end
+
+  # Pattern 3: Greeting/vocative prefix + name
+  # "hey Effie" / "yo Effie" / "ok Effie" / "thanks Effie"
+  return true if msg.match?(/\b(?:hey|hi|yo|ok|okay|thanks|thank you|please)\s+#{escaped}\b/i)
+
+  # Pattern 4: Name followed by comma mid-sentence (vocative comma)
+  # "so Effie, what do you think?"
+  return true if msg.match?(/\b#{escaped}\s*,/i)
 
   false
 end

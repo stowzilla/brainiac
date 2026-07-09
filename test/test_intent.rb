@@ -229,19 +229,59 @@ class TestIntent < Minitest::Test
 
   # --- Deterministic agent name detection ---
 
-  def test_intent_names_other_agent_detects_other_agent
-    # "Another one Robin" mentions Robin but not Sherlock → true
+  def test_intent_names_other_agent_direct_address_start
+    # "Robin, tell me a joke" — Robin at start with comma → direct address
+    assert intent_names_other_agent?("Robin, tell me a joke", "Sherlock")
+    # "Robin tell me more" — Robin at start, imperative
+    assert intent_names_other_agent?("Robin tell me more", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_direct_address_end
+    # "Another one Robin" — Robin at end → direct address
     assert intent_names_other_agent?("Another one Robin", "Sherlock")
+    # "one more Robin!" — with punctuation
+    assert intent_names_other_agent?("one more Robin!", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_direct_address_greeting
+    assert intent_names_other_agent?("hey robin tell me more", "Sherlock")
+    assert intent_names_other_agent?("yo Robin what's up", "Sherlock")
+    assert intent_names_other_agent?("ok Robin do the thing", "Sherlock")
+    assert intent_names_other_agent?("thanks Robin", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_direct_address_vocative_comma
+    # "so Robin, what do you think?" — vocative comma mid-sentence
+    assert intent_names_other_agent?("so Robin, what do you think?", "Sherlock")
   end
 
   def test_intent_names_other_agent_case_insensitive
-    assert intent_names_other_agent?("hey robin tell me more", "Sherlock")
     assert intent_names_other_agent?("ROBIN do the thing", "Sherlock")
+    assert intent_names_other_agent?("hey ROBIN tell me more", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_mere_mention_no_skip
+    # These mention Robin but are talking ABOUT Robin, not TO Robin
+    refute intent_names_other_agent?("What do you think about Robin's answer?", "Sherlock")
+    refute intent_names_other_agent?("Was Robin nice to you?", "Sherlock")
+    refute intent_names_other_agent?("I liked what Robin said", "Sherlock")
+    refute intent_names_other_agent?("Do you agree with Robin?", "Sherlock")
+    refute intent_names_other_agent?("Tell me about Robin's approach", "Sherlock")
   end
 
   def test_intent_names_other_agent_false_when_self_named
     # "What do you think about Sherlock's answer?" mentions Sherlock → false (don't skip)
     refute intent_names_other_agent?("What do you think about Sherlock's answer?", "Sherlock")
+  end
+
+  def test_intent_names_other_agent_talking_about_not_to
+    # Andy's exact concern: these are clearly about another agent, not addressed TO them
+    # (Uses "Robin" since it's in the test agent registry)
+    refute intent_names_other_agent?("What do you think about Robin's answer?", "Sherlock")
+    refute intent_names_other_agent?("Was Robin nice to you?", "Sherlock")
+    # But these ARE directly addressed to the other agent
+    assert intent_names_other_agent?("Robin, tell me a joke", "Sherlock")
+    assert intent_names_other_agent?("Another one Robin", "Sherlock")
   end
 
   def test_intent_names_other_agent_false_when_both_named
@@ -256,7 +296,7 @@ class TestIntent < Minitest::Test
   def test_intent_names_other_agent_word_boundary_match
     # "robin" inside a longer word shouldn't match
     refute intent_names_other_agent?("the robinhood movie was great", "Sherlock")
-    # But "Robin" as a standalone word should
+    # But "Robin," as direct address should
     assert intent_names_other_agent?("Robin, one more", "Sherlock")
   end
 
