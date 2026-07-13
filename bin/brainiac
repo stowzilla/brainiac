@@ -2380,7 +2380,14 @@ when "update", "upgrade"
 
     if new_version
       puts "✓ Updated #{gem_name}: #{current_version || "new"} → #{new_version}"
-      puts "  Restart the server to activate: brainiac restart"
+
+      if find_server_pid
+        puts "  Restarting server to activate..."
+        wait_for_agents_to_finish
+        stop_server
+        sleep 2
+        start_server(daemon: true)
+      end
     else
       puts "✓ #{gem_name} is already at the latest version (#{current_version})"
     end
@@ -2402,7 +2409,14 @@ when "update", "upgrade"
 
     if new_version
       puts "✓ Updated brainiac: #{current_version} → #{new_version}"
-      puts "  Restart the server to apply: brainiac restart"
+
+      if find_server_pid
+        puts "  Restarting server to apply..."
+        wait_for_agents_to_finish
+        stop_server
+        sleep 2
+        start_server(daemon: true)
+      end
     else
       puts "✓ brainiac is already at the latest version (#{current_version})"
     end
