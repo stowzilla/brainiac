@@ -25,6 +25,7 @@ def format_active_sessions
       started_at: info[:started_at].iso8601,
       elapsed_seconds: (Time.now - info[:started_at]).to_i,
       log_file: info[:log_file], alive: true,
+      channel_id: info[:channel_id],
       children: child_processes_for(info[:pid])
     }
   end

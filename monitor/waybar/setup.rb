@@ -104,6 +104,70 @@ File.write(logs_wrapper, <<~SCRIPT)
 SCRIPT
 File.chmod(0o755, logs_wrapper)
 
+# Tail log wrapper (left-click — tail active session log)
+tail_log_wrapper = File.join(WRAPPER_DIR, "waybar-tail-log")
+File.write(tail_log_wrapper, <<~SCRIPT)
+  #!/usr/bin/env ruby
+  require "json"
+  require "net/http"
+  require "uri"
+
+  def resolve_server_root
+    uri = URI("http://localhost:4567/api/status")
+    response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
+    if response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      root = data["server_root"]
+      return root if root && File.directory?(root)
+    end
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.read(root_file).strip if File.exist?(root_file)
+  rescue StandardError
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.exist?(root_file) ? File.read(root_file).strip : nil
+  end
+
+  server_root = resolve_server_root
+  if server_root
+    script = File.join(server_root, "monitor", "waybar", "tail_log.rb")
+    exec("ruby", script) if File.exist?(script)
+  end
+  warn "Brainiac server root not found"
+SCRIPT
+File.chmod(0o755, tail_log_wrapper)
+
+# Open Discord thread wrapper (middle-click — jump to thread)
+open_thread_wrapper = File.join(WRAPPER_DIR, "waybar-open-thread")
+File.write(open_thread_wrapper, <<~SCRIPT)
+  #!/usr/bin/env ruby
+  require "json"
+  require "net/http"
+  require "uri"
+
+  def resolve_server_root
+    uri = URI("http://localhost:4567/api/status")
+    response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
+    if response.is_a?(Net::HTTPSuccess)
+      data = JSON.parse(response.body)
+      root = data["server_root"]
+      return root if root && File.directory?(root)
+    end
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.read(root_file).strip if File.exist?(root_file)
+  rescue StandardError
+    root_file = File.expand_path("~/.brainiac/server.root")
+    File.exist?(root_file) ? File.read(root_file).strip : nil
+  end
+
+  server_root = resolve_server_root
+  if server_root
+    script = File.join(server_root, "monitor", "waybar", "open_thread.rb")
+    exec("ruby", script) if File.exist?(script)
+  end
+  warn "Brainiac server root not found"
+SCRIPT
+File.chmod(0o755, open_thread_wrapper)
+
 # Deploy env wrapper
 deploy_wrapper = File.join(WRAPPER_DIR, "waybar-deploy-env")
 File.write(deploy_wrapper, <<~SCRIPT)
@@ -163,7 +227,9 @@ config["custom/brainiac"] = {
   "interval" => 3,
   "format" => "{}",
   "tooltip" => true,
-  "on-click" => logs_wrapper
+  "on-click" => tail_log_wrapper,
+  "on-click-right" => logs_wrapper,
+  "on-click-middle" => open_thread_wrapper
 }
 
 # Add per-environment deploy modules (if deployments.json exists)
