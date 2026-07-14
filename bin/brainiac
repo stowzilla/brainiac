@@ -1162,7 +1162,7 @@ when "config"
 
   configure_server(options)
 
-when "server", "s"
+when "server", "s", "start"
   OptionParser.new do |opts|
     opts.banner = "Usage: brainiac server [options]"
     opts.on("-d", "--daemon", "Run server in background (detached)")
@@ -3138,6 +3138,7 @@ when "help", "--help", "-h", nil
       Usage:
         brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
         brainiac server [options]       Start the Brainiac webhook server (foreground)
+        brainiac start [options]        Alias for 'brainiac server'
         brainiac stop                   Stop the running server
         brainiac restart                Restart the server
         brainiac logs                   Tail the server log
@@ -3217,6 +3218,7 @@ when "help", "--help", "-h", nil
       Examples:
         # Start the server in the foreground (like rails server)
         brainiac server
+        brainiac start
         brainiac s
       #{"  "}
         # Register current directory

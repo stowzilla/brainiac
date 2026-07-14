@@ -9,7 +9,7 @@ _brainiac() {
   local brainiac_dir="${BRAINIAC_DIR:-$HOME/.brainiac}"
 
   # Top-level commands (built-in + installed plugins)
-  local commands="server stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects card-map handler plugin install uninstall plugins"
+  local commands="server start stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects card-map handler plugin install uninstall plugins"
 
   # Add installed plugin names as top-level commands
   if [[ -f "$brainiac_dir/plugins.json" ]]; then
