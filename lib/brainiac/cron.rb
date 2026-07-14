@@ -164,9 +164,14 @@ end
 
 # Load cron jobs from config
 def load_cron_jobs
-  return {} unless File.exist?(CRON_CONFIG_FILE)
+  cron_base = File.join(BRAINIAC_DIR, "cron")
+  resolved = Brainiac::ConfigLoader.resolve_path(cron_base)
+  return {} unless resolved
 
-  jobs = JSON.parse(File.read(CRON_CONFIG_FILE), symbolize_names: true)
+  # Cron jobs use symbolized keys internally
+  jobs = Brainiac::ConfigLoader.load_file(resolved, symbolize_names: true)
+  # TOML returns string keys — symbolize if needed
+  jobs = JSON.parse(JSON.generate(jobs), symbolize_names: true) unless jobs.empty? || jobs.keys.first.is_a?(Symbol)
 
   # Deserialize timestamp strings back to Time objects for one-time jobs
   jobs.each_value do |job|
@@ -176,7 +181,7 @@ def load_cron_jobs
   end
 
   jobs
-rescue JSON::ParserError => e
+rescue StandardError => e
   LOG.error "[Cron] Failed to parse cron config: #{e.message}"
   {}
 end
@@ -189,7 +194,9 @@ end
 
 # Reload cron jobs from disk
 def reload_cron_jobs!(force: false)
-  return unless file_changed?(CRON_CONFIG_FILE, force: force)
+  cron_base = File.join(BRAINIAC_DIR, "cron")
+  resolved = Brainiac::ConfigLoader.resolve_path(cron_base) || CRON_CONFIG_FILE
+  return unless file_changed?(resolved, force: force)
 
   CRON_JOBS_MUTEX.synchronize do
     CRON_JOBS.clear

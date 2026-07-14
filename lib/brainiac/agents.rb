@@ -21,13 +21,15 @@
 # mention detection, display names, tokens, and cross-agent interactions —
 # they just won't pick up card assignments on this machine.
 def load_agent_registry
-  unless File.exist?(AGENT_REGISTRY_FILE)
-    LOG.info "No agent registry found at #{AGENT_REGISTRY_FILE}"
+  agents_base = File.join(BRAINIAC_DIR, "agents")
+  resolved = Brainiac::ConfigLoader.resolve_path(agents_base)
+  unless resolved
+    LOG.info "No agent registry found (checked agents.toml and agents.json)"
     return {}
   end
 
-  raw_registry = JSON.parse(File.read(AGENT_REGISTRY_FILE))
-  LOG.info "Loaded agent registry (#{raw_registry.size} agents) from #{AGENT_REGISTRY_FILE}"
+  raw_registry = Brainiac::ConfigLoader.load_file(resolved)
+  LOG.info "Loaded agent registry (#{raw_registry.size} agents) from #{resolved}"
 
   # Normalize keys: convert to lowercase, replace non-alphanumeric with hyphens
   registry = {}
@@ -40,7 +42,7 @@ def load_agent_registry
   end
 
   registry
-rescue JSON::ParserError => e
+rescue Brainiac::ConfigLoader::ParseError => e
   LOG.error "Failed to parse agent registry: #{e.message}"
   {}
 end
@@ -48,7 +50,9 @@ end
 AGENT_REGISTRY = load_agent_registry
 
 def reload_agent_registry!(force: false)
-  return unless file_changed?(AGENT_REGISTRY_FILE, force: force)
+  agents_base = File.join(BRAINIAC_DIR, "agents")
+  resolved = Brainiac::ConfigLoader.resolve_path(agents_base) || AGENT_REGISTRY_FILE
+  return unless file_changed?(resolved, force: force)
 
   old_keys = AGENT_REGISTRY.keys.to_set
   AGENT_REGISTRY.replace(load_agent_registry)

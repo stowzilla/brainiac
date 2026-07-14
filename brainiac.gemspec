@@ -18,6 +18,7 @@ Gem::Specification.new do |s|
   s.add_dependency "puma", "~> 7.2"
   s.add_dependency "rackup", "~> 2.3"
   s.add_dependency "sinatra", "~> 4.1"
+  s.add_dependency "tomlrb", "~> 2.0"
 
   s.add_development_dependency "minitest", "~> 5.25"
   s.add_development_dependency "rake", "~> 13.0"

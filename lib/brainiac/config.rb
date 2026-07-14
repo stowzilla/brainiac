@@ -12,6 +12,7 @@ require "uri"
 # --- Version ---
 
 require_relative "version"
+require_relative "config_loader"
 BRAINIAC_VERSION = Brainiac::VERSION
 
 # --- Environment & paths ---
@@ -27,54 +28,50 @@ AGENT_REGISTRY_FILE = File.join(BRAINIAC_DIR, "agents.json")
 BRAINIAC_CONFIG_FILE = File.join(BRAINIAC_DIR, "brainiac.json")
 
 def load_brainiac_config
-  return {} unless File.exist?(BRAINIAC_CONFIG_FILE)
-
-  JSON.parse(File.read(BRAINIAC_CONFIG_FILE))
-rescue JSON::ParserError => e
-  LOG.error "Failed to parse brainiac.json: #{e.message}" if defined?(LOG)
+  # Try TOML first (brainiac.toml), fall back to brainiac.json
+  config_base = File.join(BRAINIAC_DIR, "brainiac")
+  Brainiac::ConfigLoader.load(config_base, default: {})
+rescue StandardError => e
+  LOG.error "Failed to parse brainiac config: #{e.message}" if defined?(LOG)
   {}
 end
 
 BRAINIAC_CONFIG = load_brainiac_config
 
 # --- Default agent name ---
-# Priority: AI_AGENT_NAME env var → brainiac.json "default_agent" → first agent in agents.json → error.
+# Priority: AI_AGENT_NAME env var → brainiac config "default_agent" → first agent in agents → error.
 def resolve_default_agent
   # 1. Env var
   name = ENV.fetch("AI_AGENT_NAME", nil)
   return name if name
 
-  # 2. brainiac.json
+  # 2. brainiac config (brainiac.toml or brainiac.json)
   name = BRAINIAC_CONFIG["default_agent"]
   return name if name
 
-  # 3. First agent in agents.json
-  if File.exist?(AGENT_REGISTRY_FILE)
-    agents = begin
-      JSON.parse(File.read(AGENT_REGISTRY_FILE))
-    rescue StandardError
-      {}
-    end
-    first_agent = agents.values.first
-    if first_agent
-      agent_name = first_agent["fizzy_name"] || first_agent["display_name"] || agents.keys.first.capitalize
-      warn <<~MSG
-        [Brainiac] No default agent configured — using "#{agent_name}" (first agent in agents.json).
-        To set explicitly, either:
-          export AI_AGENT_NAME="#{agent_name}"
-        Or add to ~/.brainiac/brainiac.json:
-          { "default_agent": "#{agent_name}" }
-      MSG
-      return agent_name
-    end
+  # 3. First agent in agents config (agents.toml or agents.json)
+  agents_base = File.join(BRAINIAC_DIR, "agents")
+  agents = Brainiac::ConfigLoader.load(agents_base, default: {})
+  first_agent = agents.values.first
+  if first_agent
+    agent_name = first_agent["fizzy_name"] || first_agent["display_name"] || agents.keys.first.capitalize
+    warn <<~MSG
+      [Brainiac] No default agent configured — using "#{agent_name}" (first agent in agents config).
+      To set explicitly, either:
+        export AI_AGENT_NAME="#{agent_name}"
+      Or add to ~/.brainiac/brainiac.toml:
+        default_agent = "#{agent_name}"
+    MSG
+    return agent_name
   end
 
   # 4. Nothing found
   raise <<~MSG
-    No default agent configured and no agents found in #{AGENT_REGISTRY_FILE}.
+    No default agent configured and no agents found.
     Set one of:
       1. Environment variable: export AI_AGENT_NAME="YourAgent"
-      2. In ~/.brainiac/brainiac.json: { "default_agent": "YourAgent" }
+      2. In ~/.brainiac/brainiac.toml: default_agent = "YourAgent"
+      3. In ~/.brainiac/brainiac.json: { "default_agent": "YourAgent" }
   MSG
 end
 
@@ -108,12 +105,11 @@ NOTIFICATION_COMMAND = ENV.fetch("NOTIFICATION_COMMAND", nil)
 # --- Projects ---
 
 def load_projects_config
-  return {} unless File.exist?(PROJECTS_FILE)
-
-  projects = JSON.parse(File.read(PROJECTS_FILE))
-  LOG.info "Loaded #{projects.size} project(s) from #{PROJECTS_FILE}"
+  projects_base = File.join(BRAINIAC_DIR, "projects")
+  projects = Brainiac::ConfigLoader.load(projects_base, default: {})
+  LOG.info "Loaded #{projects.size} project(s)" if projects.any?
   projects
-rescue JSON::ParserError => e
+rescue StandardError => e
   LOG.error "Failed to parse projects config: #{e.message}"
   {}
 end
@@ -136,7 +132,10 @@ def file_changed?(path, force: false)
 end
 
 def reload_projects!(force: false)
-  return unless file_changed?(PROJECTS_FILE, force: force)
+  # Check both possible formats for changes
+  projects_base = File.join(BRAINIAC_DIR, "projects")
+  resolved = Brainiac::ConfigLoader.resolve_path(projects_base) || PROJECTS_FILE
+  return unless file_changed?(resolved, force: force)
 
   PROJECTS.replace(load_projects_config)
   LOG.info "Reloaded projects configuration: #{PROJECTS.keys.join(", ")}"
@@ -196,22 +195,17 @@ def check_brainiac_version
 end
 
 # Owner identifier (for version-outdated notifications).
-# Reads from brainiac.json.
+# Reads from brainiac config (brainiac.toml or brainiac.json).
 def owner_id
-  brainiac_config_file = File.join(BRAINIAC_DIR, "brainiac.json")
-  return nil unless File.exist?(brainiac_config_file)
-
-  JSON.parse(File.read(brainiac_config_file))["owner_id"]
-rescue JSON::ParserError
-  nil
+  config_base = File.join(BRAINIAC_DIR, "brainiac")
+  config = Brainiac::ConfigLoader.load(config_base, default: {})
+  config["owner_id"]
 end
 
 # --- Dashboard auth ---
 
 DASHBOARD_TOKEN = begin
-  brainiac_config_file = File.join(BRAINIAC_DIR, "brainiac.json")
-  config = File.exist?(brainiac_config_file) ? JSON.parse(File.read(brainiac_config_file)) : {}
+  config_base = File.join(BRAINIAC_DIR, "brainiac")
+  config = Brainiac::ConfigLoader.load(config_base, default: {})
   config["dashboard_token"]
-rescue JSON::ParserError
-  nil
 end

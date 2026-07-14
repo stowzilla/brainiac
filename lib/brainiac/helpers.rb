@@ -5,15 +5,16 @@
 require "English"
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
-# Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
+# Load a CLI provider config from ~/.brainiac/cli-providers/<name>.{toml,json}.
 # Returns a hash with normalized keys, or {} if not found.
 def load_cli_provider(provider_name)
   return {} unless provider_name
 
-  provider_file = File.join(CLI_PROVIDERS_DIR, "#{provider_name}.json")
-  return {} unless File.exist?(provider_file)
+  provider_base = File.join(CLI_PROVIDERS_DIR, provider_name)
+  resolved = Brainiac::ConfigLoader.resolve_path(provider_base)
+  return {} unless resolved
 
-  raw = JSON.parse(File.read(provider_file))
+  raw = Brainiac::ConfigLoader.load_file(resolved)
   config = {
     "agent_cli" => raw["binary"],
     "agent_cli_args" => raw["default_args"],
@@ -37,7 +38,7 @@ def load_cli_provider(provider_name)
   config.compact!
   config["agent_flag"] = agent_flag_value if raw.key?("agent_flag")
   config
-rescue JSON::ParserError => e
+rescue Brainiac::ConfigLoader::ParseError => e
   LOG.warn "Failed to parse CLI provider '#{provider_name}': #{e.message}"
   {}
 end
@@ -110,11 +111,10 @@ def identify_project_by_repo(repo_full_name)
 end
 
 def load_work_item_map
-  return {} unless File.exist?(WORK_ITEM_MAP_FILE)
-
-  raw = JSON.parse(File.read(WORK_ITEM_MAP_FILE))
+  work_items_base = File.join(BRAINIAC_DIR, "work_items")
+  raw = Brainiac::ConfigLoader.load(work_items_base, default: {})
   migrate_work_item_map(raw)
-rescue JSON::ParserError
+rescue StandardError
   {}
 end
 

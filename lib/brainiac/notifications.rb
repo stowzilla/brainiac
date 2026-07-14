@@ -63,14 +63,12 @@ end
 # Get the notification config for a specific event type.
 # Falls back to "default" config if no event-specific config exists.
 def notification_config_for(event)
-  brainiac_config_file = File.join(BRAINIAC_DIR, "brainiac.json")
-  return {} unless File.exist?(brainiac_config_file)
-
-  config = JSON.parse(File.read(brainiac_config_file))
+  config_base = File.join(BRAINIAC_DIR, "brainiac")
+  config = Brainiac::ConfigLoader.load(config_base, default: {})
   notifications = config[NOTIFICATIONS_CONFIG_KEY] || {}
 
   notifications[event.to_s] || notifications["default"] || {}
-rescue JSON::ParserError
+rescue StandardError
   {}
 end
 

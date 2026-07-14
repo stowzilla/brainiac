@@ -6,18 +6,20 @@
 USERS_FILE = File.join(BRAINIAC_DIR, "users.json")
 
 def load_user_registry
-  return { "users" => [] } unless File.exist?(USERS_FILE)
-
-  data = JSON.parse(File.read(USERS_FILE))
-  LOG.info "Loaded #{data["users"].size} user(s) from #{USERS_FILE}"
+  users_base = File.join(BRAINIAC_DIR, "users")
+  data = Brainiac::ConfigLoader.load(users_base, default: { "users" => [] })
+  users = data["users"] || []
+  LOG.info "Loaded #{users.size} user(s)" if users.any?
   data
-rescue JSON::ParserError => e
+rescue StandardError => e
   LOG.error "Failed to parse user registry: #{e.message}"
   { "users" => [] }
 end
 
 def reload_user_registry!(force: false)
-  return unless file_changed?(USERS_FILE, force: force)
+  users_base = File.join(BRAINIAC_DIR, "users")
+  resolved = Brainiac::ConfigLoader.resolve_path(users_base) || USERS_FILE
+  return unless file_changed?(resolved, force: force)
 
   USER_REGISTRY.replace(load_user_registry)
   LOG.info "Reloaded user registry: #{USER_REGISTRY["users"].size} users"

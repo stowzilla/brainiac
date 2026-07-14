@@ -12,11 +12,10 @@
 PLUGINS_FILE = File.join(BRAINIAC_DIR, "plugins.json")
 
 def load_plugins_config
-  return { "plugins" => [] } unless File.exist?(PLUGINS_FILE)
-
-  JSON.parse(File.read(PLUGINS_FILE))
-rescue JSON::ParserError => e
-  LOG.error "Failed to parse plugins.json: #{e.message}"
+  plugins_base = File.join(BRAINIAC_DIR, "plugins")
+  Brainiac::ConfigLoader.load(plugins_base, default: { "plugins" => [] })
+rescue StandardError => e
+  LOG.error "Failed to parse plugins config: #{e.message}"
   { "plugins" => [] }
 end
 
