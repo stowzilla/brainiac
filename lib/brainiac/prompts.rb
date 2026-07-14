@@ -227,7 +227,8 @@ end
 # Lean prompt for resumed sessions. The previous session already has the full context
 # (role, persona, knowledge, core instructions, channel prompts). We only send the new
 # comment and any fresh card context so the agent knows what changed.
-def render_resume_prompt(comment_body:, comment_creator:, comment_id:, card_number: nil, agent_name: AI_AGENT_NAME)
+def render_resume_prompt(comment_body:, comment_creator:, comment_id:, card_number: nil, agent_name: AI_AGENT_NAME,
+                         response_destination: nil)
   # Touch memory file (same as render_prompt does)
   memory_dir = memory_dir_for(agent_name)
   card_id = card_number || "unknown"
@@ -247,6 +248,10 @@ def render_resume_prompt(comment_body:, comment_creator:, comment_id:, card_numb
   lines << ""
   lines << "---"
   lines << "Respond to this comment. All your previous instructions still apply."
+  if response_destination
+    lines << ""
+    lines << "**Response destination: #{response_destination}**"
+  end
 
   lines.join("\n")
 end
