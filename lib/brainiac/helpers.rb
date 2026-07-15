@@ -216,6 +216,40 @@ def find_work_item_by_card(card_internal_id)
   nil
 end
 
+# Resolve a Fizzy card number from various identifiers.
+# Accepts a branch name (fizzy-<N>-slug), card internal ID, or work item ID.
+# Returns the card number as an Integer, or nil if unresolvable.
+def resolve_card_number(identifier)
+  return nil if identifier.nil? || identifier.to_s.strip.empty?
+
+  id = identifier.to_s.strip
+
+  # 1. Parse from branch name pattern: fizzy-<number>-<slug>
+  if (match = id.match(/\Afizzy-(\d+)/))
+    return match[1].to_i
+  end
+
+  # 2. Look up by work item ID (wi-...)
+  if id.start_with?("wi-")
+    info = find_work_item_by_id(id)
+    if info
+      card_num = info.dig("sources", "fizzy", "card_number")
+      return card_num.to_i if card_num
+    end
+    return nil
+  end
+
+  # 3. Look up by card internal ID (assumes anything else is an internal ID)
+  result = find_work_item_by_card(id)
+  if result
+    _wid, info = result
+    card_num = info.dig("sources", "fizzy", "card_number")
+    return card_num.to_i if card_num
+  end
+
+  nil
+end
+
 # Register a new work item or update an existing one.
 # Returns the work item ID.
 def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source: nil, source_data: {})

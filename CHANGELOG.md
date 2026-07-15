@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.18 — 2026-07-15
+
+- Add `resolve_card_number` helper — resolves a Fizzy card number from branch names (`fizzy-<N>-slug`), work item IDs, or card internal IDs
+
 ## 0.9.1 — 2026-04-21
 
 - Add subagent delegation section to PROMPT_CORE — teaches agents when/how to use `use_subagent` tool, with `brainiac list` for on-demand project discovery

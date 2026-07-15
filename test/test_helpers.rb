@@ -270,4 +270,67 @@ class TestHelpers < Minitest::Test
   ensure
     BRAINIAC_CONFIG.replace(original)
   end
+
+  # --- resolve_card_number ---
+
+  def test_resolve_card_number_from_branch_name
+    assert_equal 42, resolve_card_number("fizzy-42-fix-login")
+  end
+
+  def test_resolve_card_number_from_branch_name_large_number
+    assert_equal 1015, resolve_card_number("fizzy-1015-release-brainiac-gem-with-resolvecardnum")
+  end
+
+  def test_resolve_card_number_from_branch_name_no_slug
+    assert_equal 7, resolve_card_number("fizzy-7")
+  end
+
+  def test_resolve_card_number_from_work_item_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(
+      branch: "fizzy-55-something",
+      project: "marketplace",
+      agent: "Sherlock",
+      source: "fizzy",
+      source_data: { "card_internal_id" => "uuid-55", "card_number" => 55 }
+    )
+
+    assert_equal 55, resolve_card_number(wid)
+  end
+
+  def test_resolve_card_number_from_card_internal_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    register_work_item(
+      branch: "fizzy-88-feature",
+      project: "marketplace",
+      agent: "Galen",
+      source: "fizzy",
+      source_data: { "card_internal_id" => "uuid-card-88", "card_number" => 88 }
+    )
+
+    assert_equal 88, resolve_card_number("uuid-card-88")
+  end
+
+  def test_resolve_card_number_returns_nil_for_nil
+    assert_nil resolve_card_number(nil)
+  end
+
+  def test_resolve_card_number_returns_nil_for_empty_string
+    assert_nil resolve_card_number("")
+    assert_nil resolve_card_number("   ")
+  end
+
+  def test_resolve_card_number_returns_nil_for_unknown_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    assert_nil resolve_card_number("unknown-internal-id-xyz")
+  end
+
+  def test_resolve_card_number_returns_nil_for_unknown_work_item
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    assert_nil resolve_card_number("wi-nonexistent")
+  end
+
+  def test_resolve_card_number_returns_nil_for_non_fizzy_branch
+    assert_nil resolve_card_number("feature-add-login")
+  end
 end
