@@ -22,9 +22,13 @@ WAYBAR_JSON = File.join(BRAINIAC_DIR, "waybar.json")
 MAX_SESSION_SLOTS = 8
 
 # Wrapper scripts go to ~/.brainiac/bin/ and resolve from /api/status (server_root field)
-# Falls back to ~/.brainiac/server.root file for cold-start scenarios
+# Falls back to the repo path where setup.rb was run from (handles gem version mismatch)
 WRAPPER_DIR = File.join(BRAINIAC_DIR, "bin")
 FileUtils.mkdir_p(WRAPPER_DIR)
+
+# The directory where this setup script lives — used as fallback when the server_root
+# (gem install) doesn't have newer files yet
+SETUP_SOURCE_ROOT = File.expand_path("../..", __dir__)
 
 def load_waybar_config
   content = File.read(WAYBAR_CONFIG)
@@ -42,6 +46,8 @@ RESOLVER_CODE = <<~RUBY
   require "net/http"
   require "uri"
 
+  SETUP_SOURCE_ROOT = "#{SETUP_SOURCE_ROOT}"
+
   def resolve_server_root
     uri = URI("http://localhost:4567/api/status")
     response = Net::HTTP.start(uri.hostname, uri.port, open_timeout: 1, read_timeout: 2) { |http| http.get(uri.path) }
@@ -56,6 +62,19 @@ RESOLVER_CODE = <<~RUBY
     root_file = File.expand_path("~/.brainiac/server.root")
     File.exist?(root_file) ? File.read(root_file).strip : nil
   end
+
+  def find_script(relative_path)
+    # Try server_root first (gem install or running server's source)
+    root = resolve_server_root
+    if root
+      script = File.join(root, relative_path)
+      return script if File.exist?(script)
+    end
+    # Fallback: the repo where setup.rb was run from
+    fallback = File.join(SETUP_SOURCE_ROOT, relative_path)
+    return fallback if File.exist?(fallback)
+    nil
+  end
 RUBY
 
 # --- Create wrapper scripts ---
@@ -65,11 +84,8 @@ session_slot_wrapper = File.join(WRAPPER_DIR, "waybar-session-slot")
 File.write(session_slot_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
   #{RESOLVER_CODE}
-  server_root = resolve_server_root
-  if server_root
-    script = File.join(server_root, "monitor", "waybar", "session_slot.rb")
-    exec("ruby", script, *ARGV) if File.exist?(script)
-  end
+  script = find_script("monitor/waybar/session_slot.rb")
+  exec("ruby", script, *ARGV) if script
   puts({ text: "", tooltip: "", class: "" }.to_json) unless ARGV.any? { |a| a.start_with?("--") }
 SCRIPT
 File.chmod(0o755, session_slot_wrapper)
@@ -79,12 +95,9 @@ logs_wrapper = File.join(WRAPPER_DIR, "waybar-logs")
 File.write(logs_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
   #{RESOLVER_CODE}
-  server_root = resolve_server_root
-  if server_root
-    script = File.join(server_root, "monitor", "waybar", "view_logs.rb")
-    exec("ruby", script) if File.exist?(script)
-  end
-  warn "Brainiac server root not found"
+  script = find_script("monitor/waybar/view_logs.rb")
+  exec("ruby", script) if script
+  warn "Brainiac: view_logs.rb not found"
 SCRIPT
 File.chmod(0o755, logs_wrapper)
 
@@ -93,15 +106,12 @@ deploy_wrapper = File.join(WRAPPER_DIR, "waybar-deploy-env")
 File.write(deploy_wrapper, <<~SCRIPT)
   #!/usr/bin/env ruby
   #{RESOLVER_CODE}
-  server_root = resolve_server_root
-  if server_root
-    script = File.join(server_root, "monitor", "waybar", "deploy_env.rb")
-    if File.exist?(script)
-      load script
-      exit
-    end
+  script = find_script("monitor/waybar/deploy_env.rb")
+  if script
+    load script
+    exit
   end
-  puts({ text: "", tooltip: "Brainiac server root not found", class: "error" }.to_json)
+  puts({ text: "", tooltip: "Brainiac: deploy_env.rb not found", class: "error" }.to_json)
 SCRIPT
 File.chmod(0o755, deploy_wrapper)
 
