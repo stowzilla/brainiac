@@ -5,6 +5,18 @@
 require "English"
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
+# Resolve a CLI binary name to an absolute path. If the binary is already an absolute path,
+# returns it as-is. Otherwise, uses `which` to find it on the current PATH at load time.
+# This prevents "No such file or directory" errors when the server's runtime PATH differs
+# from the user's interactive shell (e.g. version-manager-managed binaries like grok).
+def resolve_cli_binary(binary)
+  return binary if binary.nil? || binary.empty?
+  return binary if binary.start_with?("/")
+
+  resolved = `which #{binary} 2>/dev/null`.strip
+  resolved.empty? ? binary : resolved
+end
+
 # Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
 # Returns a hash with normalized keys, or {} if not found.
 def load_cli_provider(provider_name)
@@ -14,8 +26,9 @@ def load_cli_provider(provider_name)
   return {} unless File.exist?(provider_file)
 
   raw = JSON.parse(File.read(provider_file))
+  binary = resolve_cli_binary(raw["binary"])
   config = {
-    "agent_cli" => raw["binary"],
+    "agent_cli" => binary,
     "agent_cli_args" => raw["default_args"],
     "agent_model_flag" => raw["model_flag"],
     "agent_effort_flag" => raw["effort_flag"],
