@@ -202,6 +202,90 @@ class TestHelpers < Minitest::Test
     refute register_work_item_source(work_item_id: "wi-nonexistent", source: "github", source_data: {})
   end
 
+  def test_update_work_item_overrides_by_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(branch: "override-branch", project: "brainiac", agent: "Galen")
+
+    success = update_work_item_overrides(work_item_id: wid, cli_provider: "grok", model: "claude-opus-4.6")
+    assert success
+    info = find_work_item_by_id(wid)
+    assert_equal "grok", info["overrides"]["cli_provider"]
+    assert_equal "claude-opus-4.6", info["overrides"]["model"]
+    assert_nil info["overrides"]["effort"]
+  end
+
+  def test_update_work_item_overrides_by_branch
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    register_work_item(branch: "override-branch-2", project: "brainiac", agent: "Galen")
+
+    success = update_work_item_overrides(branch: "override-branch-2", effort: "high")
+    assert success
+    overrides = work_item_overrides_for(branch: "override-branch-2")
+    assert_equal "high", overrides["effort"]
+  end
+
+  def test_update_work_item_overrides_merges_incrementally
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(branch: "incremental-branch", project: "brainiac", agent: "Galen")
+
+    update_work_item_overrides(work_item_id: wid, cli_provider: "grok")
+    update_work_item_overrides(work_item_id: wid, effort: "high")
+
+    overrides = work_item_overrides_for(work_item_id: wid)
+    assert_equal "grok", overrides["cli_provider"]
+    assert_equal "high", overrides["effort"]
+  end
+
+  def test_update_work_item_overrides_not_found
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    refute update_work_item_overrides(work_item_id: "wi-nonexistent", cli_provider: "grok")
+  end
+
+  def test_work_item_overrides_for_empty_when_none_set
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(branch: "no-overrides", project: "brainiac", agent: "Galen")
+
+    overrides = work_item_overrides_for(work_item_id: wid)
+    assert_equal({}, overrides)
+  end
+
+  def test_work_item_overrides_for_not_found
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    assert_equal({}, work_item_overrides_for(work_item_id: "wi-nonexistent"))
+  end
+
+  def test_resolve_work_item_overrides_uses_stored_when_no_inline
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(branch: "resolve-test", project: "brainiac", agent: "Galen")
+    update_work_item_overrides(work_item_id: wid, cli_provider: "grok", effort: "high")
+
+    resolved = resolve_work_item_overrides(work_item_id: wid)
+    assert_equal "grok", resolved[:cli_provider]
+    assert_equal "high", resolved[:effort]
+    assert_nil resolved[:model]
+  end
+
+  def test_resolve_work_item_overrides_inline_wins_and_persists
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    wid = register_work_item(branch: "resolve-inline-test", project: "brainiac", agent: "Galen")
+    update_work_item_overrides(work_item_id: wid, cli_provider: "grok")
+
+    resolved = resolve_work_item_overrides(work_item_id: wid, inline_cli_provider: "kiro", inline_model: "claude-opus-4.6")
+    assert_equal "kiro", resolved[:cli_provider]
+    assert_equal "claude-opus-4.6", resolved[:model]
+
+    # Verify it was persisted
+    stored = work_item_overrides_for(work_item_id: wid)
+    assert_equal "kiro", stored["cli_provider"]
+    assert_equal "claude-opus-4.6", stored["model"]
+  end
+
+  def test_resolve_work_item_overrides_no_work_item
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    resolved = resolve_work_item_overrides(branch: "nonexistent", inline_cli_provider: "grok")
+    assert_equal "grok", resolved[:cli_provider]
+  end
+
   def test_generate_work_item_id_deterministic_for_branch
     id1 = generate_work_item_id(branch: "my-feature")
     id2 = generate_work_item_id(branch: "my-feature")

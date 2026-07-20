@@ -254,6 +254,93 @@ def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source:
   work_item_id
 end
 
+# Update dispatch overrides on a work item (cli_provider, model, effort).
+# Only non-nil values are stored; nil values are removed from existing overrides.
+# Returns true if the work item was found and updated, false otherwise.
+def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
+  map = load_work_item_map
+
+  target_id = work_item_id
+  unless target_id
+    map.each do |wid, info|
+      if info.is_a?(Hash) && info["branch"] == branch
+        target_id = wid
+        break
+      end
+    end
+  end
+
+  return false unless target_id && map[target_id]
+
+  overrides = map[target_id]["overrides"] || {}
+  overrides["cli_provider"] = cli_provider if cli_provider
+  overrides["model"] = model if model
+  overrides["effort"] = effort if effort
+  overrides.compact!
+
+  if overrides.empty?
+    map[target_id].delete("overrides")
+  else
+    map[target_id]["overrides"] = overrides
+  end
+
+  save_work_item_map(map)
+  LOG.info "[WorkItem] Updated overrides for #{target_id}: #{overrides}" unless overrides.empty?
+  true
+end
+
+# Retrieve dispatch overrides for a work item.
+# Returns a hash (may be empty) with keys like "cli_provider", "model", "effort".
+def work_item_overrides_for(work_item_id: nil, branch: nil)
+  map = load_work_item_map
+
+  target_id = work_item_id
+  unless target_id
+    map.each do |wid, info|
+      if info.is_a?(Hash) && info["branch"] == branch
+        target_id = wid
+        break
+      end
+    end
+  end
+
+  return {} unless target_id && map[target_id]
+
+  map[target_id]["overrides"] || {}
+end
+
+# Resolve dispatch overrides for a work item, merging stored overrides with
+# inline tags from the current message. Inline tags take priority and are
+# persisted for future dispatches.
+#
+# Parameters:
+#   work_item_id: or branch: — identifies the work item
+#   inline_cli_provider: — [cli:X] from current message (nil if not specified)
+#   inline_model: — resolved model from current message (nil if not specified)
+#   inline_effort: — [effort:X] from current message (nil if not specified)
+#
+# Returns: { cli_provider: String|nil, model: String|nil, effort: String|nil }
+def resolve_work_item_overrides(work_item_id: nil, branch: nil, inline_cli_provider: nil, inline_model: nil, inline_effort: nil)
+  stored = work_item_overrides_for(work_item_id: work_item_id, branch: branch)
+
+  # Inline tags override stored values
+  resolved = {
+    cli_provider: inline_cli_provider || stored["cli_provider"],
+    model: inline_model || stored["model"],
+    effort: inline_effort || stored["effort"]
+  }
+
+  # Persist any new inline overrides to the work item for future dispatches
+  new_overrides = {}
+  new_overrides[:cli_provider] = inline_cli_provider if inline_cli_provider
+  new_overrides[:model] = inline_model if inline_model
+  new_overrides[:effort] = inline_effort if inline_effort
+
+  update_work_item_overrides(work_item_id: work_item_id, branch: branch, **new_overrides) if new_overrides.any? && (work_item_id || branch)
+
+  resolved
+end
+
 # Add or update a source on an existing work item.
 # Returns true if the work item was found and updated, false otherwise.
 def register_work_item_source(source:, source_data:, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
