@@ -2392,7 +2392,10 @@ when "update", "upgrade"
       puts "✓ #{gem_name} is already at the latest version (#{current_version})"
     end
   else
-    # Update brainiac itself: brainiac update
+    # Update brainiac itself + all installed plugins: brainiac update
+    any_updated = false
+
+    # --- Update brainiac core ---
     current_version = BRAINIAC_VERSION
 
     puts "Updating brainiac gem..."
@@ -2404,21 +2407,72 @@ when "update", "upgrade"
       exit 1
     end
 
-    # Parse installed version from gem install output
     new_version = output[/Successfully installed brainiac-(\S+)/, 1]
 
     if new_version
       puts "✓ Updated brainiac: #{current_version} → #{new_version}"
-
-      if find_server_pid
-        puts "  Restarting server to apply..."
-        wait_for_agents_to_finish
-        stop_server
-        sleep 2
-        start_server(daemon: true)
-      end
+      any_updated = true
     else
       puts "✓ brainiac is already at the latest version (#{current_version})"
+    end
+
+    # --- Update all installed plugins ---
+    plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+    plugins_config = if File.exist?(plugins_file)
+                       JSON.parse(File.read(plugins_file))
+                     else
+                       { "plugins" => [] }
+                     end
+
+    plugins = (plugins_config["plugins"] || []).reject do |p|
+      entry = p.is_a?(Hash) ? p : { "name" => p.to_s }
+      # Skip local-path plugins — they're updated via git
+      entry["path"]
+    end
+
+    if plugins.any?
+      puts ""
+      puts "Checking #{plugins.size} installed plugin(s) for updates..."
+      puts ""
+
+      plugins.each do |p|
+        entry = p.is_a?(Hash) ? p : { "name" => p.to_s }
+        plugin_name = entry["name"]
+        gem_name = entry["gem"] || "brainiac-#{plugin_name}"
+
+        plugin_current = begin
+          spec = Gem::Specification.find_by_name(gem_name)
+          spec.version.to_s
+        rescue Gem::MissingSpecError
+          nil
+        end
+
+        plugin_output, plugin_status = Open3.capture2e("gem install #{gem_name}")
+
+        unless plugin_status.success?
+          puts "  ✗ #{gem_name}: failed to update"
+          next
+        end
+
+        plugin_new = plugin_output[/Successfully installed #{Regexp.escape(gem_name)}-(\S+)/, 1]
+
+        if plugin_new
+          puts "  ✓ #{gem_name}: #{plugin_current || "unknown"} → #{plugin_new}"
+          any_updated = true
+        else
+          puts "  ✓ #{gem_name}: already at latest (#{plugin_current})"
+        end
+      end
+    end
+
+    # --- Restart server if anything was updated ---
+    if any_updated && find_server_pid
+      puts ""
+      puts "Restarting server to apply updates..."
+      wait_for_agents_to_finish
+      stop_server
+      sleep 2
+      start_server(daemon: true)
     end
   end
 
@@ -3150,8 +3204,8 @@ when "help", "--help", "-h", nil
         brainiac projects default <key> Set the default project
         brainiac show <key>             Show project configuration
         brainiac plugin new <name>      Generate a new plugin gem skeleton
-        brainiac update                  Update brainiac to the latest version
-        brainiac update <plugin>        Update an installed plugin to the latest version
+        brainiac update                  Update brainiac and all installed plugins
+        brainiac update <plugin>        Update a specific installed plugin
         brainiac install <plugin>       Install a Brainiac plugin (gem-based handler)
         brainiac uninstall <plugin>     Remove an installed plugin
         brainiac plugins                List installed plugins
@@ -3172,7 +3226,7 @@ when "help", "--help", "-h", nil
         plugin new <name>                Generate a new plugin gem skeleton
         install <name>                   Install a plugin (gem install brainiac-<name>)
         uninstall <name>                 Remove a plugin
-        update [name]                    Update brainiac or a specific plugin
+        update [name]                    Update brainiac + all plugins, or a specific plugin
         plugins                          List installed plugins
 
       Card Map Commands:
