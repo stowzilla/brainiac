@@ -14,8 +14,8 @@
 #
 #   "intent": {
 #     "enabled": true,
-#     "endpoint": "http://localhost:11434/api/generate",
-#     "model": "gemma3:4b",
+#     "endpoint": "http://localhost:11434/api/chat",
+#     "model": "qwen3:1.7b",
 #     "timeout": 10,
 #     "temperature": 0.1
 #   }
@@ -29,7 +29,7 @@
 
 INTENT_CONFIG_DEFAULTS = {
   "enabled" => false,
-  "endpoint" => "http://localhost:11434/api/generate",
+  "endpoint" => "http://localhost:11434/api/chat",
   "model" => "gemma3:4b",
   "timeout" => 10,
   "temperature" => 0.1
@@ -198,19 +198,25 @@ end
 # @param config [Hash] Intent configuration
 # @return [String] Raw response text from the model
 def query_local_llm(prompt, config)
-  uri = URI(config["endpoint"])
+  endpoint = config["endpoint"]
+  # Use /api/chat with think:false to disable thinking mode on models like Qwen3.
+  # The /api/generate endpoint always uses thinking tokens, which generates hundreds
+  # of hidden tokens for a simple yes/no answer (2.5s+ vs 0.2s with think:false).
+  chat_uri = URI(endpoint.sub(%r{/api/generate\z}, "/api/chat"))
+
   payload = {
     model: config["model"],
-    prompt: prompt,
+    messages: [{ role: "user", content: prompt }],
     stream: false,
+    think: false,
     options: { temperature: config["temperature"] }
   }
 
-  http = Net::HTTP.new(uri.host, uri.port)
+  http = Net::HTTP.new(chat_uri.host, chat_uri.port)
   http.open_timeout = config["timeout"]
   http.read_timeout = config["timeout"]
 
-  request = Net::HTTP::Post.new(uri.path, "Content-Type" => "application/json")
+  request = Net::HTTP::Post.new(chat_uri.path, "Content-Type" => "application/json")
   request.body = JSON.generate(payload)
 
   response = http.request(request)
@@ -222,9 +228,9 @@ def query_local_llm(prompt, config)
   end
 
   body = JSON.parse(response.body)
-  body["response"] || ""
+  body.dig("message", "content") || ""
 rescue Errno::ECONNREFUSED
-  raise "Ollama not running at #{config["endpoint"]}. Start it with: ollama serve"
+  raise "Ollama not running at #{endpoint}. Start it with: ollama serve"
 rescue Net::OpenTimeout, Net::ReadTimeout
   raise "Ollama timed out after #{config["timeout"]}s"
 end

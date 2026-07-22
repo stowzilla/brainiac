@@ -67,7 +67,7 @@ class TestIntent < Minitest::Test
   def test_intent_config_returns_defaults
     config = intent_config
     assert_equal false, config["enabled"]
-    assert_equal "http://localhost:11434/api/generate", config["endpoint"]
+    assert_equal "http://localhost:11434/api/chat", config["endpoint"]
     assert_equal "gemma3:4b", config["model"]
     assert_equal 10, config["timeout"]
     assert_equal 0.1, config["temperature"]
