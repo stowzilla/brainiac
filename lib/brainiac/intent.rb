@@ -41,14 +41,11 @@ INTENT_PROMPT_TEMPLATE = <<~PROMPT
 
   Human's message: "{{MESSAGE}}"
 
-  Is this message directed at {{AGENT_NAME}}? Answer yes ONLY if:
-  - The message contains "{{AGENT_NAME}}" (the name), OR
-  - {{AGENT_NAME}} was the last to speak and human continues
-
-  Answer no if:
-  - A different agent was last to speak and the message doesn't contain "{{AGENT_NAME}}"
-  - The message is just "thanks", "ok", "got it" (acknowledgment, no action needed)
+  Is this message directed at {{AGENT_NAME}}? Answer yes or no.
 PROMPT
+
+# Words/phrases that indicate pure acknowledgment — no action needed from the agent.
+ACKNOWLEDGMENT_PATTERN = /\A\s*(thanks|thank you|thx|ty|ok|okay|k|got it|sounds good|cool|nice|👍|🙏|✅)\s*[.!]?\s*\z/i
 
 PENDING_WORK_PROMPT_TEMPLATE = <<~PROMPT
   You are analyzing a message posted by an AI agent named {{AGENT_NAME}}. Your job: determine if this message indicates the agent intends to do more work that hasn't been completed yet.
@@ -125,6 +122,13 @@ end
 
 # Check whether a message requires an agent to respond.
 #
+# Uses a layered approach:
+# 1. Deterministic pre-checks (fast, no LLM):
+#    - If message names another agent → skip
+#    - If this agent was last to speak AND message isn't pure acknowledgment → respond
+#    - If a different agent was last to speak AND message doesn't name this agent → skip
+# 2. LLM fallback (only for ambiguous cases — no agent spoke, or mixed signals)
+#
 # @param message [String] The message text to classify
 # @param agent_name [String] The agent being addressed
 # @param channel [String] Context description (e.g., "Discord thread", "Fizzy card comment")
@@ -143,21 +147,38 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
     return false
   end
 
-  context_block = if context && !context.strip.empty?
-                    # Keep only last 5 messages for the small local model — enough to determine
-                    # conversational flow without overwhelming the context window.
-                    recent = context.strip.lines.last(5).join
-                    "Recent conversation (most recent last):\n#{recent}\n\n"
-                  else
-                    ""
-                  end
+  # Deterministic conversational-flow check: use last-responder detection to
+  # resolve the common case without hitting the LLM at all.
+  last_responder = detect_last_responder_name(context)
 
-  # Build agent roster for the prompt so the model knows which names are agents
+  if last_responder
+    is_acknowledgment = message.strip.match?(ACKNOWLEDGMENT_PATTERN)
+
+    if last_responder.downcase == agent_name.downcase
+      # This agent was the last to speak — human is continuing with us
+      if is_acknowledgment
+        LOG.info "[Intent] Deterministic skip for #{agent_name} — pure acknowledgment, no action needed"
+        return false
+      end
+      LOG.info "[Intent] Deterministic respond for #{agent_name} — was last to speak, human continues"
+      return true
+    else
+      # A different agent was the last to speak — this message is probably for them
+      # UNLESS it explicitly names this agent (already checked above via intent_names_other_agent? for OTHER agents,
+      # but also check if it mentions THIS agent's name directly)
+      if message_mentions_agent?(message, agent_name)
+        LOG.info "[Intent] Deterministic respond for #{agent_name} — named in message despite #{last_responder} speaking last"
+        return true
+      end
+      LOG.info "[Intent] Deterministic skip for #{agent_name} — #{last_responder} was last to speak"
+      return false
+    end
+  end
+
+  # No clear last responder detected — fall through to LLM for classification.
+  # This handles cases like: no agents have spoken yet, or context is unavailable.
   roster_block = build_intent_agent_roster(agent_name)
-
-  # Detect who was the last agent to respond — critical for small models to
-  # understand conversational flow in multi-agent threads.
-  last_responder_block = detect_last_responder(context, agent_name)
+  last_responder_block = "No agent has spoken recently."
 
   prompt = INTENT_PROMPT_TEMPLATE
            .gsub("{{AGENT_NAME}}", agent_name)
@@ -416,4 +437,43 @@ def detect_last_responder(context, agent_name)
   end
 
   "No agent has spoken yet."
+end
+
+# Detect the last agent to respond — returns just the display name (or nil).
+# Used for deterministic conversational-flow checks without LLM involvement.
+#
+# @param context [String, nil] Conversation history
+# @return [String, nil] Display name of last agent to speak, or nil
+def detect_last_responder_name(context)
+  return nil if context.nil? || context.strip.empty?
+  return nil unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+
+  agent_names = {}
+  AGENT_REGISTRY.each do |key, entry|
+    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+    agent_names[display.downcase] = display
+  end
+
+  context.strip.lines.reverse_each do |line|
+    match = line.match(/\A(\S+?):\s/)
+    next unless match
+
+    username = match[1].downcase
+    return agent_names[username] if agent_names.key?(username)
+  end
+
+  nil
+end
+
+# Check if a message contains a direct reference to a specific agent's name.
+# More permissive than intent_names_other_agent? — catches any occurrence of the name.
+#
+# @param message [String] The message text
+# @param agent_name [String] The agent name to look for
+# @return [Boolean] true if the agent is mentioned by name
+def message_mentions_agent?(message, agent_name)
+  return false if message.nil? || agent_name.nil?
+
+  escaped = Regexp.escape(agent_name)
+  message.match?(/\b#{escaped}\b/i)
 end
