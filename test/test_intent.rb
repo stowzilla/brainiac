@@ -68,35 +68,32 @@ class TestIntent < Minitest::Test
     config = intent_config
     assert_equal false, config["enabled"]
     assert_equal "http://localhost:11434/api/chat", config["endpoint"]
-    assert_equal "gemma3:4b", config["model"]
+    assert_equal "qwen2.5:3b", config["model"]
     assert_equal 10, config["timeout"]
-    assert_equal 0.1, config["temperature"]
+    assert_equal 0.0, config["temperature"]
   end
 
   def test_intent_prompt_template_interpolation
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Galen")
-             .gsub("{{CHANNEL}}", "Discord thread")
-             .gsub("{{AGENT_ROSTER}}", "Known agents in this system: Galen, Effie, Sherlock. You are routing for Galen.")
-             .gsub("{{CONTEXT}}", "")
+             .gsub("{{AGENT_ROSTER}}", "Galen, Effie, Sherlock")
+             .gsub("{{LAST_RESPONDER}}", "Galen was the last to speak. The human is continuing the conversation with Galen.")
              .gsub("{{MESSAGE}}", "hey do the thing")
     assert_includes prompt, "Galen"
-    assert_includes prompt, "Discord thread"
     assert_includes prompt, "hey do the thing"
-    assert_includes prompt, "Known agents in this system"
+    assert_includes prompt, "Galen, Effie, Sherlock"
+    assert_includes prompt, "last to speak"
   end
 
   def test_intent_prompt_template_with_context
-    context_block = "Recent conversation (most recent last):\nAndy: @Effie what's your favorite color?\nEffie: I like blue!\n\n"
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Galen")
-             .gsub("{{CHANNEL}}", "Discord thread")
-             .gsub("{{AGENT_ROSTER}}", "")
-             .gsub("{{CONTEXT}}", context_block)
+             .gsub("{{AGENT_ROSTER}}", "Galen, Effie")
+             .gsub("{{LAST_RESPONDER}}", "Effie was the last to speak. The human is continuing the conversation with Effie.")
              .gsub("{{MESSAGE}}", "What do you think about Galen's answer?")
-    assert_includes prompt, "Recent conversation (most recent last):"
-    assert_includes prompt, "Effie: I like blue!"
     assert_includes prompt, "What do you think about Galen's answer?"
+    assert_includes prompt, "Effie was the last to speak"
+    assert_includes prompt, "directed at Galen"
   end
 
   def test_check_intent_with_enabled_config_and_connection_refused
@@ -115,12 +112,36 @@ class TestIntent < Minitest::Test
   def test_channel_parameter_passed_through
     prompt = INTENT_PROMPT_TEMPLATE
              .gsub("{{AGENT_NAME}}", "Robin")
-             .gsub("{{CHANNEL}}", "Fizzy card comment")
-             .gsub("{{AGENT_ROSTER}}", "")
-             .gsub("{{CONTEXT}}", "")
+             .gsub("{{AGENT_ROSTER}}", "Robin, Sherlock")
+             .gsub("{{LAST_RESPONDER}}", "No agent has spoken yet.")
              .gsub("{{MESSAGE}}", "test")
-    assert_includes prompt, "Fizzy card comment"
     assert_includes prompt, "Robin"
+    assert_includes prompt, "directed at Robin"
+  end
+
+  # --- Last responder detection ---
+
+  def test_detect_last_responder_finds_agent_in_context
+    context = "Andy: hey can you fix this?\nSherlock: Sure, I'll take a look.\nAndy: thanks"
+    result = detect_last_responder(context, "Sherlock")
+    assert_includes result, "Sherlock was the last to speak"
+  end
+
+  def test_detect_last_responder_detects_other_agent
+    context = "Andy: hey can you fix this?\nRobin: Sure, I'll take a look.\nAndy: ok do it"
+    result = detect_last_responder(context, "Sherlock")
+    assert_includes result, "Robin was the last to speak"
+  end
+
+  def test_detect_last_responder_returns_empty_without_agents_in_context
+    context = "Andy: hey what's up?\nBob: not much"
+    result = detect_last_responder(context, "Sherlock")
+    assert_equal "No agent has spoken yet.", result
+  end
+
+  def test_detect_last_responder_returns_empty_for_nil_context
+    assert_equal "No agent has spoken yet.", detect_last_responder(nil, "Sherlock")
+    assert_equal "No agent has spoken yet.", detect_last_responder("", "Sherlock")
   end
 
   # --- Pending work detection ---
@@ -318,8 +339,7 @@ class TestIntent < Minitest::Test
 
   def test_build_intent_agent_roster_includes_agents
     roster = build_intent_agent_roster("Sherlock")
-    assert_includes roster, "Known agents in this system:"
-    assert_includes roster, "You are routing for Sherlock"
+    assert_includes roster, "Sherlock"
   end
 
   def test_build_intent_agent_roster_includes_multiple_agents

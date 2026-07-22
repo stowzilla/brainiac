@@ -30,37 +30,24 @@
 INTENT_CONFIG_DEFAULTS = {
   "enabled" => false,
   "endpoint" => "http://localhost:11434/api/chat",
-  "model" => "gemma3:4b",
+  "model" => "qwen2.5:3b",
   "timeout" => 10,
-  "temperature" => 0.1
+  "temperature" => 0.0
 }.freeze
 
 INTENT_PROMPT_TEMPLATE = <<~PROMPT
-  You are a message router for a {{CHANNEL}}. An AI agent named {{AGENT_NAME}} is participating in this conversation. Your job: determine if the latest message requires {{AGENT_NAME}} to take action or respond.
+  Agents in this chat: {{AGENT_ROSTER}}
+  {{LAST_RESPONDER}}
 
-  {{AGENT_ROSTER}}
+  Human's message: "{{MESSAGE}}"
 
-  Rules:
-  - If the message addresses {{AGENT_NAME}} by name, gives {{AGENT_NAME}} instructions, or asks {{AGENT_NAME}} a question → yes
-  - If the message continues a conversation directed at {{AGENT_NAME}} (e.g. {{AGENT_NAME}} was the last to respond and the human follows up) → yes
-  - If the message starts with or addresses a DIFFERENT person/agent (not {{AGENT_NAME}}) → no
-  - If the message contains another agent's name (e.g. "Effie, ...", "Another one Effie", "Hey Galen") and does NOT contain "{{AGENT_NAME}}" → no
-  - If the message is humans talking to each other and {{AGENT_NAME}} is not being addressed → no
-  - If the message is a simple acknowledgment ("thanks", "ok", "got it") directed at {{AGENT_NAME}}'s previous work → no
-  - If the message is asking a question to another person or agent (not {{AGENT_NAME}}) → no
-  - If the message is responding to or commenting on what someone OTHER than {{AGENT_NAME}} just said → no
-  - If the conversation context shows a DIFFERENT agent was the last to respond, and the human's follow-up does not mention {{AGENT_NAME}} by name → no
-  - If uncertain, lean toward yes (better to respond unnecessarily than miss a request)
+  Is this message directed at {{AGENT_NAME}}? Answer yes ONLY if:
+  - The message contains "{{AGENT_NAME}}" (the name), OR
+  - {{AGENT_NAME}} was the last to speak and human continues
 
-  Critical: "addresses someone else" means someone whose name is NOT {{AGENT_NAME}}. If the message says "{{AGENT_NAME}}, ..." that IS addressed to {{AGENT_NAME}} → yes.
-
-  Respond with ONLY "yes" or "no" — nothing else.
-
-  Context:
-  {{CONTEXT}}
-
-  Latest message:
-  {{MESSAGE}}
+  Answer no if:
+  - A different agent was last to speak and the message doesn't contain "{{AGENT_NAME}}"
+  - The message is just "thanks", "ok", "got it" (acknowledgment, no action needed)
 PROMPT
 
 PENDING_WORK_PROMPT_TEMPLATE = <<~PROMPT
@@ -168,16 +155,19 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
   # Build agent roster for the prompt so the model knows which names are agents
   roster_block = build_intent_agent_roster(agent_name)
 
+  # Detect who was the last agent to respond — critical for small models to
+  # understand conversational flow in multi-agent threads.
+  last_responder_block = detect_last_responder(context, agent_name)
+
   prompt = INTENT_PROMPT_TEMPLATE
            .gsub("{{AGENT_NAME}}", agent_name)
-           .gsub("{{CHANNEL}}", channel)
            .gsub("{{AGENT_ROSTER}}", roster_block)
-           .gsub("{{CONTEXT}}", context_block)
+           .gsub("{{LAST_RESPONDER}}", last_responder_block)
            .gsub("{{MESSAGE}}", message.strip)
 
   LOG.info "[Intent] Checking intent for #{agent_name} (#{channel}): #{message.strip.slice(0, 80)}..."
   LOG.debug "[Intent] Full prompt:\n#{prompt}" if LOG.debug?
-  response = query_local_llm(prompt, config)
+  response = query_local_llm(prompt, config, system: "Answer yes or no only.")
   result = positive_intent?(response)
   LOG.info "[Intent] Result for #{agent_name}: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
   result
@@ -196,20 +186,25 @@ end
 #
 # @param prompt [String] The classification prompt
 # @param config [Hash] Intent configuration
+# @param system [String, nil] Optional system message for output format control
 # @return [String] Raw response text from the model
-def query_local_llm(prompt, config)
+def query_local_llm(prompt, config, system: nil)
   endpoint = config["endpoint"]
   # Use /api/chat with think:false to disable thinking mode on models like Qwen3.
   # The /api/generate endpoint always uses thinking tokens, which generates hundreds
   # of hidden tokens for a simple yes/no answer (2.5s+ vs 0.2s with think:false).
   chat_uri = URI(endpoint.sub(%r{/api/generate\z}, "/api/chat"))
 
+  messages = []
+  messages << { role: "system", content: system } if system
+  messages << { role: "user", content: prompt }
+
   payload = {
     model: config["model"],
-    messages: [{ role: "user", content: prompt }],
+    messages: messages,
     stream: false,
     think: false,
-    options: { temperature: config["temperature"] }
+    options: { temperature: config["temperature"], num_predict: 5 }
   }
 
   http = Net::HTTP.new(chat_uri.host, chat_uri.port)
@@ -366,18 +361,59 @@ def directly_addressed_to?(msg, name)
 end
 
 # Build a compact agent roster string for the intent prompt.
-# Helps the LLM identify which names in the conversation are agents.
+# Returns a comma-separated list of agent display names.
 #
-# @param agent_name [String] The current agent (highlighted)
-# @return [String] Formatted roster for prompt injection
+# @param agent_name [String] The current agent (unused but kept for interface consistency)
+# @return [String] Comma-separated agent names
 def build_intent_agent_roster(agent_name)
-  return "" unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+  return agent_name unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
 
   names = AGENT_REGISTRY.map do |key, entry|
     entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
   end.uniq
 
-  return "" if names.size <= 1
+  return agent_name if names.empty?
 
-  "Known agents in this system: #{names.join(", ")}. You are routing for #{agent_name}."
+  names.join(", ")
+end
+
+# Detect the last agent to respond in the conversation context.
+# Returns a prompt-friendly string telling the model who was last to respond.
+#
+# The context is formatted as "username: message\n..." lines.
+# We scan backwards to find the most recent line authored by a known agent.
+#
+# @param context [String, nil] Conversation history
+# @param agent_name [String] The current agent being evaluated
+# @return [String] Prompt block describing the last responder
+def detect_last_responder(context, agent_name)
+  return "No agent has spoken yet." if context.nil? || context.strip.empty?
+  return "No agent has spoken yet." unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+
+  # Build a lookup of agent display names (lowercase) to their proper display name
+  agent_names = {}
+  AGENT_REGISTRY.each do |key, entry|
+    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+    agent_names[display.downcase] = display
+  end
+
+  # Scan context lines in reverse to find the last agent message
+  lines = context.strip.lines.reverse
+  lines.each do |line|
+    # Lines are formatted as "username: message content"
+    match = line.match(/\A(\S+?):\s/)
+    next unless match
+
+    username = match[1].downcase
+    if agent_names.key?(username)
+      responder = agent_names[username]
+      if responder.downcase == agent_name.downcase
+        return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
+      else
+        return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
+      end
+    end
+  end
+
+  "No agent has spoken yet."
 end
