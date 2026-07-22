@@ -176,7 +176,21 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
   end
 
   # No clear last responder detected — fall through to LLM for classification.
-  # This handles cases like: no agents have spoken yet, or context is unavailable.
+  classify_intent_via_llm(message, agent_name:, channel:, config:)
+rescue OllamaModelNotFoundError => e
+  LOG.error "[Intent] #{e.message}"
+  LOG.error "[Intent] Disabling intent classification until model is installed."
+  BRAINIAC_CONFIG["intent"] ||= {}
+  BRAINIAC_CONFIG["intent"]["enabled"] = false
+  true
+rescue StandardError => e
+  LOG.warn "[Intent] Classification failed (fail-open): #{e.message}"
+  true
+end
+
+# Fall through to LLM for intent classification when deterministic checks are inconclusive.
+# This handles cases like: no agents have spoken yet, or context is unavailable.
+def classify_intent_via_llm(message, agent_name:, channel:, config:)
   roster_block = build_intent_agent_roster(agent_name)
   last_responder_block = "No agent has spoken recently."
 
@@ -192,15 +206,6 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
   result = positive_intent?(response)
   LOG.info "[Intent] Result for #{agent_name}: #{result ? "RESPOND" : "SKIP"} (model: #{config["model"]})"
   result
-rescue OllamaModelNotFoundError => e
-  LOG.error "[Intent] #{e.message}"
-  LOG.error "[Intent] Disabling intent classification until model is installed."
-  BRAINIAC_CONFIG["intent"] ||= {}
-  BRAINIAC_CONFIG["intent"]["enabled"] = false
-  true
-rescue StandardError => e
-  LOG.warn "[Intent] Classification failed (fail-open): #{e.message}"
-  true
 end
 
 # Query the local LLM via Ollama's HTTP API.
@@ -407,7 +412,7 @@ end
 # @param context [String, nil] Conversation history
 # @param agent_name [String] The current agent being evaluated
 # @return [String] Prompt block describing the last responder
-def detect_last_responder(context, agent_name)
+def detect_last_responder(context, _agent_name = nil)
   return "No agent has spoken yet." if context.nil? || context.strip.empty?
   return "No agent has spoken yet." unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
 
@@ -426,14 +431,10 @@ def detect_last_responder(context, agent_name)
     next unless match
 
     username = match[1].downcase
-    if agent_names.key?(username)
-      responder = agent_names[username]
-      if responder.downcase == agent_name.downcase
-        return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
-      else
-        return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
-      end
-    end
+    next unless agent_names.key?(username)
+
+    responder = agent_names[username]
+    return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
   end
 
   "No agent has spoken yet."
