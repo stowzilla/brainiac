@@ -150,4 +150,27 @@ class TestInlineTags < Minitest::Test
     assert result[:planning]
     assert_equal "", result[:clean_text]
   end
+
+  def test_parse_fresh_tag
+    result = parse_inline_tags("[fresh] do the thing again")
+    assert result[:fresh]
+    assert_equal "do the thing again", result[:clean_text]
+  end
+
+  def test_parse_fresh_tag_case_insensitive
+    result = parse_inline_tags("[Fresh] retry this")
+    assert result[:fresh]
+  end
+
+  def test_no_fresh_by_default
+    result = parse_inline_tags("normal follow-up")
+    refute result[:fresh]
+  end
+
+  def test_fresh_combined_with_other_tags
+    result = parse_inline_tags("[fresh] [opus] retry with a new session")
+    assert result[:fresh]
+    assert_equal "opus", result[:model_tag]
+    assert_equal "retry with a new session", result[:clean_text]
+  end
 end

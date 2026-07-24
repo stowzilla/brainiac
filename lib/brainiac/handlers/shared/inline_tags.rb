@@ -4,7 +4,7 @@
 #
 # Messages from any channel can contain inline tags like:
 #   [project:my-project], [opus], [effort:high], [cli:grok], [chat], [plan],
-#   [branch:feature-xyz], [workitem:wi-abc123]
+#   [fresh], [branch:feature-xyz], [workitem:wi-abc123]
 #
 # This module provides a single parser that extracts all tags and returns
 # a structured result with the cleaned text.
@@ -18,6 +18,7 @@
 #     cli_provider: "grok" or nil,
 #     chat_mode: true/false,
 #     planning: true/false,
+#     fresh: true/false,
 #     deploy_intent: "dev01" / :auto / nil,
 #     worktree_override: "branch-name" or nil,
 #     clean_text: "the message with all tags stripped"
@@ -30,6 +31,7 @@ def parse_inline_tags(text)
     cli_provider: nil,
     chat_mode: false,
     planning: false,
+    fresh: false,
     deploy_intent: nil,
     worktree_override: nil,
     work_item: nil,
@@ -77,6 +79,12 @@ def parse_flag_tags(result)
   if result[:clean_text].match?(/\[(chat|question|\?)\]/i)
     result[:chat_mode] = true
     result[:clean_text].sub!(/\[(chat|question|\?)\]/i, "")
+  end
+
+  # [fresh] — start a new CLI session instead of resuming the existing one
+  if result[:clean_text].match?(/\[fresh\]/i)
+    result[:fresh] = true
+    result[:clean_text].sub!(/\[fresh\]/i, "")
   end
 
   # [plan]
