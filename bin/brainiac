@@ -1139,28 +1139,146 @@ when "projects", "project"
     save_projects(projects)
 
     puts "✓ Set '#{project_key}' as the default project"
+  when "update", "set"
+    project_key = ARGV.shift
+    field = ARGV.shift
+    value = ARGV.join(" ") # Allow multi-word values (e.g. tags with spaces)
+
+    unless project_key && field
+      puts "Usage: brainiac projects update <key> <field> <value>"
+      puts ""
+      puts "Fields:"
+      puts "  repo_path <path>           Path to the project repository"
+      puts "  github_repo <owner/repo>   GitHub repository (e.g. stowzilla/brainiac)"
+      puts "  fizzy_tags <tag1,tag2>     Comma-separated Fizzy tags"
+      puts "  fizzy_board <board>        Default Fizzy board key"
+      puts "  cli_provider <provider>    CLI provider name (e.g. kiro, grok)"
+      puts "  agent_name <name>          Default agent for this project"
+      puts "  agent_model <model>        Default model (e.g. auto, opus, sonnet)"
+      puts "  default_branch <branch>    Default git branch (e.g. main, master)"
+      puts ""
+      puts "Examples:"
+      puts "  brainiac projects update brainiac fizzy_board stowzilla"
+      puts "  brainiac projects update marketplace cli_provider grok"
+      puts "  brainiac projects update brainiac fizzy_tags brainiac,core"
+      puts "  brainiac projects update marketplace agent_model opus"
+      exit 1
+    end
+
+    projects = load_projects
+    unless projects.key?(project_key)
+      puts "Error: Project '#{project_key}' not found."
+      puts "Available projects: #{projects.keys.join(", ")}"
+      exit 1
+    end
+
+    # Handle special field parsing
+    case field
+    when "fizzy_tags", "tags"
+      field = "fizzy_tags"
+      unless value && !value.empty?
+        puts "Error: Value required. Provide comma-separated tags."
+        exit 1
+      end
+      parsed_value = value.split(",").map(&:strip)
+    when "repo_path"
+      unless value && !value.empty?
+        puts "Error: Value required."
+        exit 1
+      end
+      parsed_value = File.expand_path(value)
+      unless Dir.exist?(parsed_value)
+        puts "Warning: Path does not exist: #{parsed_value}"
+      end
+    when "github_repo", "fizzy_board", "cli_provider", "agent_name", "agent_model", "default_branch"
+      unless value && !value.empty?
+        puts "Error: Value required."
+        exit 1
+      end
+      parsed_value = value
+    else
+      # Allow setting arbitrary fields for forward-compatibility
+      unless value && !value.empty?
+        puts "Error: Value required."
+        exit 1
+      end
+      parsed_value = value
+    end
+
+    projects[project_key][field] = parsed_value
+    save_projects(projects)
+
+    display_value = parsed_value.is_a?(Array) ? parsed_value.join(", ") : parsed_value
+    puts "✓ Updated #{project_key}: #{field} = #{display_value}"
+
+  when "unset", "delete-field"
+    project_key = ARGV.shift
+    field = ARGV.shift
+
+    unless project_key && field
+      puts "Usage: brainiac projects unset <key> <field>"
+      puts ""
+      puts "Removes a field from a project's configuration."
+      puts ""
+      puts "Examples:"
+      puts "  brainiac projects unset marketplace fizzy_board"
+      puts "  brainiac projects unset brainiac default_branch"
+      exit 1
+    end
+
+    projects = load_projects
+    unless projects.key?(project_key)
+      puts "Error: Project '#{project_key}' not found."
+      exit 1
+    end
+
+    unless projects[project_key].key?(field)
+      puts "Error: Field '#{field}' not set on project '#{project_key}'."
+      exit 1
+    end
+
+    projects[project_key].delete(field)
+    save_projects(projects)
+    puts "✓ Removed #{field} from #{project_key}"
+
   when "help", "--help", "-h"
     puts <<~HELP
       Usage: brainiac projects <command> [options]
 
       Commands:
-        list              List all registered projects (default)
-        show <key>        Show detailed configuration for a project
-        default <key>     Set the default project (fallback when no tags match)
+        list                              List all registered projects (default)
+        show <key>                        Show detailed configuration for a project
+        default <key>                     Set the default project (fallback when no tags match)
+        update <key> <field> <value>      Update a project config field
+        unset <key> <field>               Remove a field from project config
 
       Aliases:
         brainiac project  Works the same as 'brainiac projects'
         brainiac list     Shortcut for 'brainiac projects list'
         brainiac show     Shortcut for 'brainiac projects show'
 
+      Update fields:
+        repo_path         Path to the project repository
+        github_repo       GitHub repository (owner/repo)
+        fizzy_tags        Comma-separated Fizzy tags
+        fizzy_board       Default Fizzy board key
+        cli_provider      CLI provider name (kiro, grok, etc.)
+        agent_name        Default agent for this project
+        agent_model       Default model (auto, opus, sonnet, haiku, etc.)
+        default_branch    Default git branch
+
       Examples:
         brainiac projects list
         brainiac project show marketplace
         brainiac projects default marketplace
+        brainiac projects update brainiac fizzy_board stowzilla
+        brainiac projects update marketplace agent_model opus
+        brainiac projects update brainiac fizzy_tags brainiac,core
+        brainiac projects unset marketplace fizzy_board
     HELP
   else
     puts "Unknown projects command: #{projects_cmd}"
-    puts "Available: list, show, default, help"
+    puts "Available: list, show, default, update, unset, help"
     puts "Run 'brainiac projects help' for more details."
     exit 1
   end
