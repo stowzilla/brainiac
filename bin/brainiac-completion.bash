@@ -9,7 +9,7 @@ _brainiac() {
   local brainiac_dir="${BRAINIAC_DIR:-$HOME/.brainiac}"
 
   # Top-level commands (built-in + installed plugins)
-  local commands="server start stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects card-map handler plugin install uninstall plugins"
+  local commands="server start stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects project card-map handler plugin install uninstall plugins"
 
   # Add installed plugin names as top-level commands
   if [[ -f "$brainiac_dir/plugins.json" ]]; then
@@ -180,13 +180,13 @@ _brainiac() {
       esac
       ;;
 
-    projects)
+    projects|project)
       case $cword in
         2)
-          COMPREPLY=($(compgen -W "list default" -- "$cur"))
+          COMPREPLY=($(compgen -W "list show default help" -- "$cur"))
           ;;
         3)
-          if [[ "${words[2]}" == "default" ]]; then
+          if [[ "${words[2]}" == "default" || "${words[2]}" == "show" ]]; then
             COMPREPLY=($(compgen -W "$(_brainiac_projects)" -- "$cur"))
           fi
           ;;

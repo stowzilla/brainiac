@@ -1107,8 +1107,7 @@ when "unregister", "remove", "rm"
 when "list", "ls"
   list_projects
 
-when "projects"
-  # Support "brainiac projects list" as an alias for "brainiac list"
+when "projects", "project"
   projects_cmd = ARGV.shift
   case projects_cmd
   when "list", "ls", nil
@@ -1140,9 +1139,29 @@ when "projects"
     save_projects(projects)
 
     puts "✓ Set '#{project_key}' as the default project"
+  when "help", "--help", "-h"
+    puts <<~HELP
+      Usage: brainiac projects <command> [options]
+
+      Commands:
+        list              List all registered projects (default)
+        show <key>        Show detailed configuration for a project
+        default <key>     Set the default project (fallback when no tags match)
+
+      Aliases:
+        brainiac project  Works the same as 'brainiac projects'
+        brainiac list     Shortcut for 'brainiac projects list'
+        brainiac show     Shortcut for 'brainiac projects show'
+
+      Examples:
+        brainiac projects list
+        brainiac project show marketplace
+        brainiac projects default marketplace
+    HELP
   else
     puts "Unknown projects command: #{projects_cmd}"
-    puts "Available: list, show, default"
+    puts "Available: list, show, default, help"
+    puts "Run 'brainiac projects help' for more details."
     exit 1
   end
 
@@ -3200,8 +3219,8 @@ when "help", "--help", "-h", nil
         brainiac register [options]     Register current directory as a project
         brainiac unregister <key>       Unregister a project
         brainiac list                   List all registered projects
-        brainiac projects list          List all registered projects (alias)
-        brainiac projects default <key> Set the default project
+        brainiac projects <command>     Manage projects (list, show, default, help)
+        brainiac project <command>      Alias for 'brainiac projects'
         brainiac show <key>             Show project configuration
         brainiac plugin new <name>      Generate a new plugin gem skeleton
         brainiac update                  Update brainiac and all installed plugins
