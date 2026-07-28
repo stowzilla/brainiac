@@ -98,7 +98,7 @@ _brainiac() {
     agent)
       case $cword in
         2)
-          COMPREPLY=($(compgen -W "list create remove $(_brainiac_agents)" -- "$cur"))
+          COMPREPLY=($(compgen -W "list create remove standup $(_brainiac_agents)" -- "$cur"))
           ;;
         3)
           local agent_name="${words[2]}"
@@ -106,6 +106,9 @@ _brainiac() {
             list|remove|delete|rm) ;;
             create|add)
               COMPREPLY=($(compgen -W "--local --role --cli --persona" -- "$cur"))
+              ;;
+            standup)
+              COMPREPLY=($(compgen -W "$(_brainiac_agents) --cli --role --no-brain" -- "$cur"))
               ;;
             *)
               COMPREPLY=($(compgen -W "show env" -- "$cur"))

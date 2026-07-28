@@ -1965,6 +1965,156 @@ when "agent"
     # Notify running server to reload and trigger :agent_removed hook
     notify_server_reload
 
+  when "standup"
+    name = ARGV.shift
+    unless name
+      puts "Usage: brainiac agent standup <name> [options]"
+      puts ""
+      puts "Stand up an existing agent on this machine. Marks it as local,"
+      puts "initializes brain collections, and prompts for env vars."
+      puts ""
+      puts "Options:"
+      puts "  --cli <provider>     Override CLI provider"
+      puts "  --role <role>        Override/set roles (comma-separated, repeatable)"
+      puts "  --no-brain           Skip brain initialization"
+      puts ""
+      puts "Examples:"
+      puts "  brainiac agent standup Sherlock"
+      puts "  brainiac agent standup Galen --cli grok"
+      exit 1
+    end
+
+    agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+
+    # Parse options
+    cli_provider = nil
+    roles = nil
+    skip_brain = false
+    while ARGV.any?
+      case ARGV[0]
+      when "--cli"
+        ARGV.shift
+        cli_provider = ARGV.shift
+      when "--role"
+        ARGV.shift
+        roles ||= []
+        roles << ARGV.shift
+      when "--no-brain"
+        ARGV.shift
+        skip_brain = true
+      else
+        puts "Unknown option: #{ARGV[0]}"
+        exit 1
+      end
+    end
+
+    existing = registry[agent_key]
+
+    if existing
+      # Agent exists in registry — just mark local + refresh
+      display = existing["display_name"] || name
+      if existing["local"]
+        puts "Agent '#{display}' is already local on this machine."
+        puts ""
+      else
+        existing["local"] = true
+        puts "✓ Marked '#{display}' as local (will dispatch on this machine)"
+      end
+    else
+      # Agent not in registry — check for persona files to auto-discover
+      persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
+      display = name
+
+      if Dir.exist?(persona_dir) && Dir.glob(File.join(persona_dir, "**", "*.md")).any?
+        puts "Found existing persona files at #{persona_dir}"
+      end
+
+      existing = { "display_name" => display, "local" => true }
+      puts "✓ Created registry entry for '#{display}' (local)"
+    end
+
+    # Apply CLI provider override
+    if cli_provider
+      existing["cli_provider"] = cli_provider
+      puts "  CLI provider: #{cli_provider}"
+    end
+
+    # Apply role override
+    if roles
+      resolved_role = roles.size == 1 ? roles.first : roles
+      existing["role"] = resolved_role
+      puts "  Role: #{roles.join(", ")}"
+    end
+
+    # Interactive env var setup (tokens for this machine)
+    if $stdin.tty?
+      current_env = existing["env"] || {}
+      puts ""
+
+      # Detect what env vars might be needed from other agents' patterns
+      env_keys_in_use = registry.values.select { |e| e.is_a?(Hash) && e["env"] }.flat_map { |e| e["env"].keys }.uniq
+      suggested_keys = env_keys_in_use - current_env.keys
+
+      if suggested_keys.any?
+        puts "Other agents use these env vars: #{suggested_keys.join(", ")}"
+        puts "Set them for #{existing["display_name"] || name}? (blank to skip each)"
+        puts ""
+        suggested_keys.each do |key|
+          print "  #{key}: "
+          value = $stdin.gets&.strip
+          if value && !value.empty?
+            current_env[key] = value
+            puts "    ✓ Set"
+          end
+        end
+      else
+        print "Add env vars interactively? [y/N]: "
+        answer = $stdin.gets&.strip&.downcase
+        if answer == "y"
+          puts "Enter KEY=VALUE pairs (blank line to finish):"
+          loop do
+            print "  "
+            line = $stdin.gets&.strip
+            break if line.nil? || line.empty?
+
+            k, v = line.split("=", 2)
+            if k && v && !k.empty?
+              current_env[k.strip] = v.strip
+              puts "    ✓ Set #{k.strip}"
+            else
+              puts "    ⚠ Expected KEY=VALUE format"
+            end
+          end
+        end
+      end
+
+      existing["env"] = current_env if current_env.any?
+    end
+
+    # Write registry
+    registry[agent_key] = existing
+    File.write(agent_registry_file, JSON.pretty_generate(registry))
+
+    # Initialize brain collections
+    unless skip_brain
+      puts ""
+      brain_init(existing["display_name"] || name)
+    end
+
+    # Notify plugins (same hooks as create — plugins can set up tokens, Discord bots, etc.)
+    notify_plugins_agent_created(agent_key, existing)
+
+    # Notify running server to reload
+    notify_server_reload
+
+    puts ""
+    puts "✓ Agent '#{existing["display_name"] || name}' is ready on this machine."
+    puts ""
+    puts "Next steps:"
+    puts "  brainiac agent #{agent_key} env <KEY> <VALUE>   # Add tokens if needed"
+    puts "  brainiac restart                                 # Reload server"
+
   when nil
     puts <<~HELP
       Usage: brainiac agent <name> <command> [args]
@@ -1972,12 +2122,14 @@ when "agent"
              brainiac agent default [name]
              brainiac agent create <name> [options]
              brainiac agent remove <name>
+             brainiac agent standup <name> [options]
 
       Commands:
         list                              List all agents in the registry
         default [name]                    Show or set the default agent
         create <name> [options]           Add a new agent to the registry
         remove <name>                     Remove an agent from the registry
+        standup <name> [options]          Stand up an existing agent on this machine
         <name> show                       Show agent configuration (tokens redacted)
         <name> set <field> <value>        Update a config field (local, cli, role, persona, display_name)
         <name> env <KEY> <VALUE>          Set an env var for an agent
@@ -1990,6 +2142,11 @@ when "agent"
         --cli <provider>     Set CLI provider (default: kiro)
         --persona <text>     Create a persona style file
 
+      Standup options:
+        --cli <provider>     Override CLI provider for this machine
+        --role <role>        Override/set roles (comma-separated)
+        --no-brain           Skip brain/qmd initialization
+
       Examples:
         brainiac agent list
         brainiac agent default Sherlock
@@ -1997,6 +2154,8 @@ when "agent"
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
         brainiac agent remove SecurityBot
+        brainiac agent standup Sherlock
+        brainiac agent standup Galen --cli grok
         brainiac agent sherlock set local true
         brainiac agent sherlock set persona "Dry, sardonic"
         brainiac agent sherlock set role code-reviewer,general-engineer
@@ -3213,7 +3372,7 @@ when "help", "--help", "-h", nil
         brainiac cron <command>         Manage scheduled agent tasks
         brainiac provider <command>     Manage CLI providers
         brainiac role <command>         Manage agent roles
-        brainiac agent <command>        Manage agent registry (env, list, show)
+        brainiac agent <command>        Manage agent registry (create, standup, env, list, show)
         brainiac config                 Configure Brainiac CLI
         brainiac path                   Show Brainiac config directory
         brainiac version                Show version
