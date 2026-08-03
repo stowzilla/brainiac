@@ -466,7 +466,12 @@ def handle_cron_completion(job, project, agent_name, agent_config_name, log_file
   update_cron_job_state(job)
 
   if File.exist?(response_file)
-    LOG.info "[Cron] Job #{job[:id]} completed. Response: #{File.read(response_file)[0..100]}..."
+    response_content = File.read(response_file).strip
+    LOG.info "[Cron] Job #{job[:id]} completed. Response: #{response_content[0..100]}..."
+
+    if job[:notify_target] && !response_content.empty?
+      notify_cron_output(job, response_content, agent_name: agent_name)
+    end
   else
     LOG.warn "[Cron] Job #{job[:id]} produced no response"
   end
