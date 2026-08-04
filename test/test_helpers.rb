@@ -206,11 +206,11 @@ class TestHelpers < Minitest::Test
     FileUtils.rm_f(WORK_ITEM_MAP_FILE)
     wid = register_work_item(branch: "override-branch", project: "brainiac", agent: "Galen")
 
-    success = update_work_item_overrides(work_item_id: wid, cli_provider: "grok", model: "claude-opus-4.6")
+    success = update_work_item_overrides(work_item_id: wid, cli_provider: "grok", model: "claude-opus-4.5")
     assert success
     info = find_work_item_by_id(wid)
     assert_equal "grok", info["overrides"]["cli_provider"]
-    assert_equal "claude-opus-4.6", info["overrides"]["model"]
+    assert_equal "claude-opus-4.5", info["overrides"]["model"]
     assert_nil info["overrides"]["effort"]
   end
 
@@ -270,14 +270,14 @@ class TestHelpers < Minitest::Test
     wid = register_work_item(branch: "resolve-inline-test", project: "brainiac", agent: "Galen")
     update_work_item_overrides(work_item_id: wid, cli_provider: "grok")
 
-    resolved = resolve_work_item_overrides(work_item_id: wid, inline_cli_provider: "kiro", inline_model: "claude-opus-4.6")
+    resolved = resolve_work_item_overrides(work_item_id: wid, inline_cli_provider: "kiro", inline_model: "claude-opus-4.5")
     assert_equal "kiro", resolved[:cli_provider]
-    assert_equal "claude-opus-4.6", resolved[:model]
+    assert_equal "claude-opus-4.5", resolved[:model]
 
     # Verify it was persisted
     stored = work_item_overrides_for(work_item_id: wid)
     assert_equal "kiro", stored["cli_provider"]
-    assert_equal "claude-opus-4.6", stored["model"]
+    assert_equal "claude-opus-4.5", stored["model"]
   end
 
   def test_resolve_work_item_overrides_no_work_item
@@ -301,7 +301,7 @@ class TestHelpers < Minitest::Test
 
   def test_detect_model_from_inline_text
     config = PROJECTS["marketplace"]
-    assert_equal "claude-opus-4.6", detect_model(config, text: "[opus] do the thing")
+    assert_equal "claude-opus-4.5", detect_model(config, text: "[opus] do the thing")
   end
 
   def test_detect_model_from_tags

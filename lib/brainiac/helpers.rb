@@ -585,7 +585,7 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
   if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
     allowed = resolved["allowed_models"] || {}
-    # Pass the model if it's a mapped value (e.g. "claude-opus-4.6") or the key itself is mapped
+    # Pass the model if it's a mapped value (e.g. "claude-opus-4.5") or the key itself is mapped
     is_known = allowed.value?(model) || allowed.key?(model)
     cmd.push(resolved["agent_model_flag"], model) if is_known
   end

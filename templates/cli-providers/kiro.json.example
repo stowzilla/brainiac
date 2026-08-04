@@ -7,7 +7,7 @@
   "prompt_mode": "stdin",
   "resume_flag": "--resume",
   "models": {
-    "opus": "claude-opus-4.6",
+    "opus": "claude-opus-4.5",
     "sonnet": "claude-sonnet-4.6",
     "haiku": "claude-haiku-4.5",
     "deepseek": "deepseek-3.2",
