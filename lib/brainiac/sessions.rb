@@ -201,6 +201,25 @@ def find_supersedable_session(supersede_key)
   nil
 end
 
+# Find any active session for the same supersede key, regardless of time window.
+# Used for queued context injection — when a follow-up arrives past the supersede window,
+# we queue it instead of spawning a second agent.
+def find_active_session_for_key(supersede_key)
+  ACTIVE_SESSIONS_MUTEX.synchronize do
+    ACTIVE_SESSIONS.each do |key, info|
+      next unless info[:supersede_key] == supersede_key
+
+      begin
+        Process.kill(0, info[:pid])
+        return info.merge(session_key: key)
+      rescue Errno::ESRCH, Errno::EPERM
+        next
+      end
+    end
+  end
+  nil
+end
+
 # Kill a session's process. Returns true if killed.
 def kill_session(session_key)
   ACTIVE_SESSIONS_MUTEX.synchronize do
