@@ -492,7 +492,11 @@ end
 def intent_skip?(message, agent_name:, source: nil, channel: nil, context: nil)
   return false unless message && agent_name && intent_config["enabled"]
 
+  # Some channels always require a response (e.g. PR comments are inherently directed at the agent).
+  bypass_channels = intent_config["bypass_channels"] || %w[github]
   intent_channel = channel || source&.to_s || "conversation"
+  return false if bypass_channels.any? { |bc| intent_channel.to_s.downcase.include?(bc) }
+
   unless check_intent(message, agent_name: agent_name, channel: intent_channel, context: context)
     LOG.info "[Intent] Skipping dispatch for #{agent_name} — message classified as not requiring response"
     return true
@@ -503,7 +507,7 @@ end
 
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
-              message: nil, channel: nil, context: nil)
+              message: nil, channel: nil, context: nil, env: {})
   # Intent gate: if a raw message is provided, check whether the agent should respond.
   return nil if intent_skip?(message, agent_name: agent_name, source: source, channel: channel, context: context)
 
@@ -527,7 +531,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort, prompt_file: prompt_file, resume: should_resume)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
-  spawn_env = agent_env_for(agent_name)
+  spawn_env = agent_env_for(agent_name).merge(env)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
   LOG.info "Prompt written to #{prompt_file}"
