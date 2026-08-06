@@ -9,7 +9,7 @@ _brainiac() {
   local brainiac_dir="${BRAINIAC_DIR:-$HOME/.brainiac}"
 
   # Top-level commands (built-in + installed plugins)
-  local commands="server start stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects card-map handler plugin install uninstall plugins"
+  local commands="server start stop restart logs status register unregister list show brain cron provider role agent config path version help setup projects project card-map handler plugin install uninstall plugins"
 
   # Add installed plugin names as top-level commands
   if [[ -f "$brainiac_dir/plugins.json" ]]; then
@@ -180,14 +180,38 @@ _brainiac() {
       esac
       ;;
 
-    projects)
+    projects|project)
       case $cword in
         2)
-          COMPREPLY=($(compgen -W "list default" -- "$cur"))
+          COMPREPLY=($(compgen -W "list show default update unset help" -- "$cur"))
           ;;
         3)
-          if [[ "${words[2]}" == "default" ]]; then
+          local subcmd="${words[2]}"
+          if [[ "$subcmd" == "default" || "$subcmd" == "show" || "$subcmd" == "update" || "$subcmd" == "unset" ]]; then
             COMPREPLY=($(compgen -W "$(_brainiac_projects)" -- "$cur"))
+          fi
+          ;;
+        4)
+          local subcmd="${words[2]}"
+          if [[ "$subcmd" == "update" || "$subcmd" == "unset" ]]; then
+            COMPREPLY=($(compgen -W "repo_path github_repo fizzy_tags fizzy_board cli_provider agent_name agent_model default_branch" -- "$cur"))
+          fi
+          ;;
+        5)
+          local subcmd="${words[2]}"
+          local field="${words[4]}"
+          if [[ "$subcmd" == "update" ]]; then
+            case "$field" in
+              cli_provider)
+                COMPREPLY=($(compgen -W "$(_brainiac_providers)" -- "$cur"))
+                ;;
+              agent_model)
+                COMPREPLY=($(compgen -W "auto opus sonnet haiku deepseek minimax qwen" -- "$cur"))
+                ;;
+              agent_name)
+                COMPREPLY=($(compgen -W "$(_brainiac_agents)" -- "$cur"))
+                ;;
+            esac
           fi
           ;;
       esac
