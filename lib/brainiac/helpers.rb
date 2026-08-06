@@ -492,7 +492,11 @@ end
 def intent_skip?(message, agent_name:, source: nil, channel: nil, context: nil)
   return false unless message && agent_name && intent_config["enabled"]
 
+  # Some channels always require a response (e.g. PR comments are inherently directed at the agent).
+  bypass_channels = intent_config["bypass_channels"] || %w[github]
   intent_channel = channel || source&.to_s || "conversation"
+  return false if bypass_channels.any? { |bc| intent_channel.to_s.downcase.include?(bc) }
+
   unless check_intent(message, agent_name: agent_name, channel: intent_channel, context: context)
     LOG.info "[Intent] Skipping dispatch for #{agent_name} — message classified as not requiring response"
     return true
