@@ -63,7 +63,7 @@ _brainiac() {
     plugin)
       case $cword in
         2)
-          COMPREPLY=($(compgen -W "new switch" -- "$cur"))
+          COMPREPLY=($(compgen -W "new switch list" -- "$cur"))
           ;;
         3)
           # For "plugin switch", suggest installed plugin names
