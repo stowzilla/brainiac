@@ -3298,11 +3298,178 @@ when "plugin"
     puts "  brainiac install #{plugin_name} --path #{output_dir}"
     puts "  brainiac restart"
 
+  when "switch"
+    plugin_name = ARGV.shift
+    branch_name = ARGV.shift
+
+    unless plugin_name && branch_name
+      puts "Usage: brainiac plugin switch <name> <branch>"
+      puts ""
+      puts "Switches a local plugin to a different branch (via git worktrees)."
+      puts "Useful for testing plugin changes from a PR before releasing."
+      puts ""
+      puts "Examples:"
+      puts "  brainiac plugin switch fizzy fix-fallback-for-followups-20260813"
+      puts "  brainiac plugin switch fizzy main       # switch back to main"
+      puts ""
+      puts "After switching, restart the server: brainiac restart"
+      exit 1
+    end
+
+    plugin_name = plugin_name.sub(/^brainiac-/, "")
+
+    plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
+    unless File.exist?(plugins_file)
+      puts "Error: No plugins installed (plugins.json not found)."
+      exit 1
+    end
+
+    plugins_config = JSON.parse(File.read(plugins_file))
+    plugin_idx = (plugins_config["plugins"] || []).index { |p| (p.is_a?(Hash) ? p["name"] : p.to_s) == plugin_name }
+
+    unless plugin_idx
+      puts "Error: Plugin '#{plugin_name}' is not installed."
+      exit 1
+    end
+
+    entry = plugins_config["plugins"][plugin_idx]
+    unless entry.is_a?(Hash) && entry["path"]
+      puts "Error: Plugin '#{plugin_name}' is not a local-path plugin."
+      puts "  Only plugins installed with --path support branch switching."
+      exit 1
+    end
+
+    current_path = entry["path"]
+    gem_name = "brainiac-#{plugin_name}"
+
+    # Determine the base repo path (strip worktree suffix like --branch-name)
+    base_path = current_path.sub(/--[^\/]+$/, "")
+    unless Dir.exist?(base_path)
+      puts "Error: Base repo not found at #{base_path}"
+      exit 1
+    end
+
+    # Get the default branch of the repo
+    default_branch, _, db_status = Open3.capture3("git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short", chdir: base_path)
+    default_branch = default_branch.strip.sub("origin/", "") if db_status.success?
+    default_branch = "main" unless db_status.success? && !default_branch.empty?
+
+    # If switching to the default branch, just point back to the base path
+    if branch_name == default_branch
+      if current_path == base_path
+        puts "Plugin '#{plugin_name}' is already on #{default_branch}."
+        exit 0
+      end
+
+      plugins_config["plugins"][plugin_idx]["path"] = base_path
+      File.write(plugins_file, JSON.pretty_generate(plugins_config))
+      puts "✓ Switched plugin '#{plugin_name}' back to #{default_branch}"
+      puts "  Path: #{base_path}"
+      puts "  Restart the server to apply: brainiac restart"
+      exit 0
+    end
+
+    # Fetch latest to make sure the branch is available
+    puts "Fetching latest from origin..."
+    _out, _err, fetch_status = Open3.capture3("git", "fetch", "origin", chdir: base_path)
+    unless fetch_status.success?
+      puts "Warning: git fetch failed — continuing with local state."
+    end
+
+    # Check if a worktree already exists for this branch
+    worktree_list, _, wt_status = Open3.capture3("git", "worktree", "list", "--porcelain", chdir: base_path)
+    target_worktree = nil
+
+    if wt_status.success?
+      # Parse porcelain output to find worktrees on the target branch
+      worktrees = worktree_list.split("\n\n").map do |block|
+        wt = {}
+        block.each_line do |line|
+          case line
+          when /^worktree (.+)/
+            wt[:path] = Regexp.last_match(1).strip
+          when /^branch refs\/heads\/(.+)/
+            wt[:branch] = Regexp.last_match(1).strip
+          end
+        end
+        wt
+      end.select { |wt| wt[:path] && wt[:branch] }
+
+      target_worktree = worktrees.find { |wt| wt[:branch] == branch_name }
+    end
+
+    if target_worktree
+      # Worktree already exists — just update the path
+      new_path = target_worktree[:path]
+      if current_path == new_path
+        puts "Plugin '#{plugin_name}' is already on branch '#{branch_name}'."
+        exit 0
+      end
+
+      plugins_config["plugins"][plugin_idx]["path"] = new_path
+      File.write(plugins_file, JSON.pretty_generate(plugins_config))
+      puts "✓ Switched plugin '#{plugin_name}' to branch '#{branch_name}'"
+      puts "  Path: #{new_path}"
+      puts "  Restart the server to apply: brainiac restart"
+    else
+      # Check if branch exists remotely or locally
+      branch_exists = false
+      check_cmd, _, check_status = Open3.capture3("git", "rev-parse", "--verify", "origin/#{branch_name}", chdir: base_path)
+      branch_exists = check_status.success?
+
+      unless branch_exists
+        # Try local branch
+        _, _, local_status = Open3.capture3("git", "rev-parse", "--verify", branch_name, chdir: base_path)
+        branch_exists = local_status.success?
+      end
+
+      unless branch_exists
+        puts "Error: Branch '#{branch_name}' not found (checked local and origin)."
+        puts ""
+        puts "Available remote branches:"
+        branches_out, = Open3.capture3("git", "branch", "-r", "--list", "origin/*", chdir: base_path)
+        branches_out.each_line do |line|
+          branch = line.strip.sub("origin/", "")
+          next if branch.include?("HEAD")
+
+          puts "  #{branch}"
+        end
+        exit 1
+      end
+
+      # Create a new worktree
+      worktree_dir = "#{base_path}--#{branch_name}"
+      puts "Creating worktree at #{worktree_dir}..."
+
+      # If the branch exists on origin but not locally, track it
+      _, _, local_check = Open3.capture3("git", "rev-parse", "--verify", branch_name, chdir: base_path)
+      if !local_check.success? && check_status.success?
+        # Remote branch exists but not local — create tracking branch in worktree
+        _, stderr, wt_status = Open3.capture3("git", "worktree", "add", "--track", "-b", branch_name, worktree_dir, "origin/#{branch_name}", chdir: base_path)
+      else
+        # Local branch exists — use it directly
+        _, stderr, wt_status = Open3.capture3("git", "worktree", "add", worktree_dir, branch_name, chdir: base_path)
+      end
+
+      unless wt_status.success?
+        puts "Error: Failed to create worktree:"
+        puts "  #{stderr.strip}"
+        exit 1
+      end
+
+      plugins_config["plugins"][plugin_idx]["path"] = worktree_dir
+      File.write(plugins_file, JSON.pretty_generate(plugins_config))
+      puts "✓ Switched plugin '#{plugin_name}' to branch '#{branch_name}'"
+      puts "  Worktree: #{worktree_dir}"
+      puts "  Restart the server to apply: brainiac restart"
+    end
+
   else
     puts "Usage: brainiac plugin <command>"
     puts ""
     puts "Commands:"
     puts "  new <name>                   Generate a new plugin gem skeleton"
+    puts "  switch <name> <branch>       Switch a local plugin to a different branch"
     puts ""
     puts "Managing installed plugins:"
     puts "  brainiac install <name>      Install a plugin"
@@ -3361,6 +3528,7 @@ when "help", "--help", "-h", nil
 
       Plugin Commands:
         plugin new <name>                Generate a new plugin gem skeleton
+        plugin switch <name> <branch>    Switch a local plugin to a branch (for testing)
         install <name>                   Install a plugin (gem install brainiac-<name>)
         uninstall <name>                 Remove a plugin
         update [name]                    Update brainiac + all plugins, or a specific plugin
