@@ -111,7 +111,17 @@ deploy_script = <<~BASH
   fi
   rm -f "$logfile"
   echo
-  if [ $status -eq 0 ]; then echo "✅ Deploy complete"; else echo "❌ Deploy failed (exit $status)"; fi
+  if [ $status -eq 0 ]; then
+    echo "✅ Deploy complete"
+    curl -s -X POST http://localhost:4567/api/deployments/#{Shellwords.escape(env_key)} \
+      -H "Content-Type: application/json" \
+      -d '{"worktree": #{worktree.to_json}, "deployed_by": "waybar"}' > /dev/null 2>&1
+  else
+    echo "❌ Deploy failed (exit $status)"
+    curl -s -X POST http://localhost:4567/api/deployments/#{Shellwords.escape(env_key)}/failed \
+      -H "Content-Type: application/json" \
+      -d '{}' > /dev/null 2>&1
+  fi
   echo
   echo "Press any key to close..."
   read -n 1

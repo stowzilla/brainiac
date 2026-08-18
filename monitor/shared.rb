@@ -205,7 +205,17 @@ def deploy_bash_script(env_key, worktree:, aws_profile: nil)
     fi
     rm -f "$logfile"
     echo
-    if [ $status -eq 0 ]; then echo "✅ Deploy complete"; else echo "❌ Deploy failed (exit $status)"; fi
+    if [ $status -eq 0 ]; then
+      echo "✅ Deploy complete"
+      curl -s -X POST http://localhost:4567/api/deployments/#{env_key.shellescape} \
+        -H "Content-Type: application/json" \
+        -d '{"worktree": #{worktree.to_json}, "deployed_by": "waybar"}' > /dev/null 2>&1
+    else
+      echo "❌ Deploy failed (exit $status)"
+      curl -s -X POST http://localhost:4567/api/deployments/#{env_key.shellescape}/failed \
+        -H "Content-Type: application/json" \
+        -d '{}' > /dev/null 2>&1
+    fi
     echo "Press Enter to close..."
     read
   BASH
