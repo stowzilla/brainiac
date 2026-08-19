@@ -527,6 +527,84 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
   SKILL
 end
 
+SCREENSHOT_CREDS_FILE = File.join(BRAINIAC_DIR, "tmp", "screenshot-creds.json")
+
+# Resolve all op:// references in deployments.json and write to a secure cache file.
+# This allows screenshot commands to work without re-authenticating with 1Password.
+def resolve_screenshot_credentials(quiet: false)
+  deployments_file = File.join(BRAINIAC_DIR, "deployments.json")
+  unless File.exist?(deployments_file)
+    puts "  ⚠ No deployments.json found, skipping credential resolution." unless quiet
+    return false
+  end
+
+  deployments = JSON.parse(File.read(deployments_file))
+  environments = deployments["environments"] || {}
+
+  # Collect all unique op:// references
+  op_refs = {}
+  environments.each do |_env_name, env_config|
+    screenshot = env_config["screenshot"]
+    next unless screenshot
+
+    (screenshot["customers"] || {}).each { |_email, ref| op_refs[ref] = nil }
+    (screenshot["employees"] || {}).each { |_email, ref| op_refs[ref] = nil }
+  end
+
+  if op_refs.empty?
+    puts "  ⚠ No screenshot credentials to resolve." unless quiet
+    return false
+  end
+
+  puts "  Resolving #{op_refs.size} credential(s) from 1Password..." unless quiet
+
+  # Resolve each unique op:// reference
+  failed = []
+  op_refs.each_key do |ref|
+    password, status = Open3.capture2("op", "read", ref)
+    if status.success?
+      op_refs[ref] = password.chomp
+    else
+      failed << ref
+    end
+  end
+
+  if failed.any?
+    puts "  ❌ Failed to resolve #{failed.size} credential(s):" unless quiet
+    failed.each { |ref| puts "     #{ref}" } unless quiet
+    return false
+  end
+
+  # Write resolved credentials to cache file with restrictive permissions
+  cache_dir = File.join(BRAINIAC_DIR, "tmp")
+  FileUtils.mkdir_p(cache_dir)
+  File.write(SCREENSHOT_CREDS_FILE, JSON.pretty_generate(op_refs))
+  File.chmod(0o600, SCREENSHOT_CREDS_FILE)
+
+  puts "  ✓ Screenshot credentials cached (#{op_refs.size} resolved)" unless quiet
+  true
+rescue JSON::ParserError => e
+  puts "  ❌ Failed to parse deployments.json: #{e.message}" unless quiet
+  false
+end
+
+# Read a resolved credential from the cache file, falling back to `op read`.
+def read_screenshot_credential(op_ref)
+  # Try cache first
+  if File.exist?(SCREENSHOT_CREDS_FILE)
+    creds = JSON.parse(File.read(SCREENSHOT_CREDS_FILE))
+    return creds[op_ref] if creds[op_ref]
+  end
+
+  # Fallback: resolve directly via op read
+  password, status = Open3.capture2("op", "read", op_ref)
+  return password.chomp if status.success?
+
+  nil
+rescue JSON::ParserError
+  nil
+end
+
 def start_server(daemon: false)
   # Resolve the real path of the brainiac script (follows symlinks)
   receiver_path = File.join(BRAINIAC_ROOT, "receiver.rb")
@@ -543,6 +621,9 @@ def start_server(daemon: false)
     puts "Run 'brainiac stop' or 'brainiac restart' to manage it."
     exit 1
   end
+
+  # Pre-resolve screenshot credentials from 1Password (so agents can screenshot without re-auth)
+  resolve_screenshot_credentials
 
   if daemon
     # Daemon mode: start in background (like the old behavior)
@@ -3311,11 +3392,12 @@ when "plugin"
   end
 
 when "screenshot"
-  # Resolve screenshot credentials from deployments.json and delegate to project's screenshot script.
+  # Resolve screenshot credentials from cached file and delegate to project's screenshot script.
   # Usage: brainiac screenshot [app-name] [page-path] [--env ENV] [extra args...]
   #
-  # Reads ~/.brainiac/deployments.json to resolve credentials via `op read`,
-  # then exports SCREENSHOT_* env vars and runs the project's scripts/screenshot-page.sh.
+  # Credentials are resolved from 1Password at server start and cached in
+  # ~/.brainiac/tmp/screenshot-creds.json. Falls back to `op read` if cache is missing.
+  # Run `brainiac screenshot resolve` to manually refresh the cache.
 
   deployments_file = File.join(BRAINIAC_DIR, "deployments.json")
   unless File.exist?(deployments_file)
@@ -3341,6 +3423,15 @@ when "screenshot"
       end
     end
 
+  when "resolve"
+    puts "Resolving screenshot credentials from 1Password..."
+    if resolve_screenshot_credentials(quiet: false)
+      puts "\nCredentials cached at #{SCREENSHOT_CREDS_FILE}"
+      puts "Screenshots will use the cache — no 1Password re-auth needed."
+    else
+      abort "\nFailed to resolve credentials. Ensure `op` is signed in."
+    end
+
   when "help", "--help", "-h", nil
     puts <<~HELP
       brainiac screenshot — Take screenshots with credentials from deployments.json
@@ -3348,8 +3439,9 @@ when "screenshot"
       Usage:
         brainiac screenshot <app-name> <page-path> [options]
 
-      Resolves credentials from ~/.brainiac/deployments.json using 1Password CLI (`op read`),
-      then runs the project's scripts/screenshot-page.sh with SCREENSHOT_* env vars exported.
+      Credentials are resolved from 1Password at server start and cached in
+      #{SCREENSHOT_CREDS_FILE} (mode 0600). Use `brainiac screenshot resolve`
+      to manually refresh the cache.
 
       Options:
         --env ENV           Environment to use (default: auto-detect from project owner)
@@ -3359,6 +3451,7 @@ when "screenshot"
         All other args are passed through to screenshot-page.sh
 
       Commands:
+        brainiac screenshot resolve     Resolve and cache credentials from 1Password
         brainiac screenshot envs        List environments with screenshot config
         brainiac screenshot help        Show this help
 
@@ -3425,11 +3518,9 @@ when "screenshot"
       abort "Error: Customer email '#{email}' not found in #{env_name} screenshot config. Available: #{customers.keys.join(", ")}" unless op_ref
     end
 
-    # Resolve password from 1Password
-    puts "Resolving credentials from 1Password..."
-    password, status = Open3.capture2("op", "read", op_ref)
-    abort "Error: Failed to resolve password from 1Password (op read #{op_ref}). Is op signed in?" unless status.success?
-    password = password.chomp
+    # Resolve password (from cache or 1Password directly)
+    password = read_screenshot_credential(op_ref)
+    abort "Error: Failed to resolve password for #{op_ref}. Run 'brainiac screenshot resolve' or 'brainiac restart' to refresh the cache." unless password
 
     # Determine project path
     projects = load_projects
