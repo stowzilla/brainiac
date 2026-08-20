@@ -543,12 +543,12 @@ def resolve_screenshot_credentials(quiet: false)
 
   # Collect all unique op:// references
   op_refs = {}
-  environments.each do |_env_name, env_config|
+  environments.each_value do |env_config|
     screenshot = env_config["screenshot"]
     next unless screenshot
 
-    (screenshot["customers"] || {}).each { |_email, ref| op_refs[ref] = nil }
-    (screenshot["employees"] || {}).each { |_email, ref| op_refs[ref] = nil }
+    (screenshot["customers"] || {}).each_value { |ref| op_refs[ref] = nil }
+    (screenshot["employees"] || {}).each_value { |ref| op_refs[ref] = nil }
   end
 
   if op_refs.empty?
@@ -1268,17 +1268,10 @@ when "projects", "project"
         exit 1
       end
       parsed_value = File.expand_path(value)
-      unless Dir.exist?(parsed_value)
-        puts "Warning: Path does not exist: #{parsed_value}"
-      end
-    when "github_repo", "fizzy_board", "cli_provider", "agent_name", "agent_model", "default_branch"
-      unless value && !value.empty?
-        puts "Error: Value required."
-        exit 1
-      end
-      parsed_value = value
+      puts "Warning: Path does not exist: #{parsed_value}" unless Dir.exist?(parsed_value)
     else
-      # Allow setting arbitrary fields for forward-compatibility
+      # Handles known fields (github_repo, fizzy_board, cli_provider, agent_name, agent_model,
+      # default_branch) and arbitrary fields for forward-compatibility
       unless value && !value.empty?
         puts "Error: Value required."
         exit 1
@@ -3400,9 +3393,7 @@ when "screenshot"
   # Run `brainiac screenshot resolve` to manually refresh the cache.
 
   deployments_file = File.join(BRAINIAC_DIR, "deployments.json")
-  unless File.exist?(deployments_file)
-    abort "Error: #{deployments_file} not found. Run 'brainiac setup' or create it manually."
-  end
+  abort "Error: #{deployments_file} not found. Run 'brainiac setup' or create it manually." unless File.exist?(deployments_file)
 
   deployments = JSON.parse(File.read(deployments_file))
   environments = deployments["environments"] || {}
@@ -3486,9 +3477,7 @@ when "screenshot"
       else
         passthrough_args << arg
         # If the flag takes a value, pass it through too
-        if arg.start_with?("--") && !arg.include?("=") && ARGV.first && !ARGV.first.start_with?("--")
-          passthrough_args << ARGV.shift
-        end
+        passthrough_args << ARGV.shift if arg.start_with?("--") && !arg.include?("=") && ARGV.first && !ARGV.first.start_with?("--")
       end
     end
 
@@ -3520,7 +3509,9 @@ when "screenshot"
 
     # Resolve password (from cache or 1Password directly)
     password = read_screenshot_credential(op_ref)
-    abort "Error: Failed to resolve password for #{op_ref}. Run 'brainiac screenshot resolve' or 'brainiac restart' to refresh the cache." unless password
+    unless password
+      abort "Error: Failed to resolve password for #{op_ref}. Run 'brainiac screenshot resolve' or 'brainiac restart' to refresh the cache."
+    end
 
     # Determine project path
     projects = load_projects
@@ -3530,13 +3521,7 @@ when "screenshot"
     else
       # Try to find project from current directory or env config
       project = projects.find { |_k, p| p["repo_path"] == Dir.pwd }&.last
-      project ||= projects[env_config["project"]]&.then { |p| p }
-      project ||= projects[projects.find { |_k, p| p.is_a?(Hash) && p["repo_path"] }&.last&.dig("repo_path") ? nil : nil]
-
-      # Fallback: use env's project key
-      if project.nil? && env_config["project"]
-        project = projects[env_config["project"]]
-      end
+      project ||= projects[env_config["project"]]
     end
 
     abort "Error: Could not determine project. Use --project KEY." unless project
@@ -3549,7 +3534,7 @@ when "screenshot"
       "SCREENSHOT_CUSTOMER_EMAIL" => (app_name == "ops-app" ? (customers.keys.first || email) : email),
       "SCREENSHOT_CUSTOMER_PASSWORD" => password,
       "SCREENSHOT_OPS_EMAIL" => (app_name == "ops-app" ? email : (employees.keys.first || email)),
-      "SCREENSHOT_OPS_PASSWORD" => password,
+      "SCREENSHOT_OPS_PASSWORD" => password
     }
 
     # Also set environment-specific email vars
