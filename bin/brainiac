@@ -527,6 +527,84 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
   SKILL
 end
 
+SCREENSHOT_CREDS_FILE = File.join(BRAINIAC_DIR, "tmp", "screenshot-creds.json")
+
+# Resolve all op:// references in deployments.json and write to a secure cache file.
+# This allows screenshot commands to work without re-authenticating with 1Password.
+def resolve_screenshot_credentials(quiet: false)
+  deployments_file = File.join(BRAINIAC_DIR, "deployments.json")
+  unless File.exist?(deployments_file)
+    puts "  ⚠ No deployments.json found, skipping credential resolution." unless quiet
+    return false
+  end
+
+  deployments = JSON.parse(File.read(deployments_file))
+  environments = deployments["environments"] || {}
+
+  # Collect all unique op:// references
+  op_refs = {}
+  environments.each_value do |env_config|
+    screenshot = env_config["screenshot"]
+    next unless screenshot
+
+    (screenshot["customers"] || {}).each_value { |ref| op_refs[ref] = nil }
+    (screenshot["employees"] || {}).each_value { |ref| op_refs[ref] = nil }
+  end
+
+  if op_refs.empty?
+    puts "  ⚠ No screenshot credentials to resolve." unless quiet
+    return false
+  end
+
+  puts "  Resolving #{op_refs.size} credential(s) from 1Password..." unless quiet
+
+  # Resolve each unique op:// reference
+  failed = []
+  op_refs.each_key do |ref|
+    password, status = Open3.capture2("op", "read", ref)
+    if status.success?
+      op_refs[ref] = password.chomp
+    else
+      failed << ref
+    end
+  end
+
+  if failed.any?
+    puts "  ❌ Failed to resolve #{failed.size} credential(s):" unless quiet
+    failed.each { |ref| puts "     #{ref}" } unless quiet
+    return false
+  end
+
+  # Write resolved credentials to cache file with restrictive permissions
+  cache_dir = File.join(BRAINIAC_DIR, "tmp")
+  FileUtils.mkdir_p(cache_dir)
+  File.write(SCREENSHOT_CREDS_FILE, JSON.pretty_generate(op_refs))
+  File.chmod(0o600, SCREENSHOT_CREDS_FILE)
+
+  puts "  ✓ Screenshot credentials cached (#{op_refs.size} resolved)" unless quiet
+  true
+rescue JSON::ParserError => e
+  puts "  ❌ Failed to parse deployments.json: #{e.message}" unless quiet
+  false
+end
+
+# Read a resolved credential from the cache file, falling back to `op read`.
+def read_screenshot_credential(op_ref)
+  # Try cache first
+  if File.exist?(SCREENSHOT_CREDS_FILE)
+    creds = JSON.parse(File.read(SCREENSHOT_CREDS_FILE))
+    return creds[op_ref] if creds[op_ref]
+  end
+
+  # Fallback: resolve directly via op read
+  password, status = Open3.capture2("op", "read", op_ref)
+  return password.chomp if status.success?
+
+  nil
+rescue JSON::ParserError
+  nil
+end
+
 def start_server(daemon: false)
   # Resolve the real path of the brainiac script (follows symlinks)
   receiver_path = File.join(BRAINIAC_ROOT, "receiver.rb")
@@ -543,6 +621,9 @@ def start_server(daemon: false)
     puts "Run 'brainiac stop' or 'brainiac restart' to manage it."
     exit 1
   end
+
+  # Pre-resolve screenshot credentials from 1Password (so agents can screenshot without re-auth)
+  resolve_screenshot_credentials
 
   if daemon
     # Daemon mode: start in background (like the old behavior)
@@ -1187,17 +1268,10 @@ when "projects", "project"
         exit 1
       end
       parsed_value = File.expand_path(value)
-      unless Dir.exist?(parsed_value)
-        puts "Warning: Path does not exist: #{parsed_value}"
-      end
-    when "github_repo", "fizzy_board", "cli_provider", "agent_name", "agent_model", "default_branch"
-      unless value && !value.empty?
-        puts "Error: Value required."
-        exit 1
-      end
-      parsed_value = value
+      puts "Warning: Path does not exist: #{parsed_value}" unless Dir.exist?(parsed_value)
     else
-      # Allow setting arbitrary fields for forward-compatibility
+      # Handles known fields (github_repo, fizzy_board, cli_provider, agent_name, agent_model,
+      # default_branch) and arbitrary fields for forward-compatibility
       unless value && !value.empty?
         puts "Error: Value required."
         exit 1
@@ -3310,6 +3384,183 @@ when "plugin"
     puts "  brainiac plugins             List installed plugins"
   end
 
+when "screenshot"
+  # Resolve screenshot credentials from cached file and delegate to project's screenshot script.
+  # Usage: brainiac screenshot [app-name] [page-path] [--env ENV] [extra args...]
+  #
+  # Credentials are resolved from 1Password at server start and cached in
+  # ~/.brainiac/tmp/screenshot-creds.json. Falls back to `op read` if cache is missing.
+  # Run `brainiac screenshot resolve` to manually refresh the cache.
+
+  deployments_file = File.join(BRAINIAC_DIR, "deployments.json")
+  abort "Error: #{deployments_file} not found. Run 'brainiac setup' or create it manually." unless File.exist?(deployments_file)
+
+  deployments = JSON.parse(File.read(deployments_file))
+  environments = deployments["environments"] || {}
+
+  sub = ARGV.shift
+  case sub
+  when "envs", "list"
+    environments.each do |key, env|
+      screenshot = env["screenshot"]
+      if screenshot
+        customers = (screenshot["customers"] || {}).keys
+        employees = (screenshot["employees"] || {}).keys
+        puts "  #{key} (#{env["label"]})"
+        puts "    Customers: #{customers.join(", ")}" if customers.any?
+        puts "    Employees: #{employees.join(", ")}" if employees.any?
+      else
+        puts "  #{key} (#{env["label"]}) — no screenshot config"
+      end
+    end
+
+  when "resolve"
+    puts "Resolving screenshot credentials from 1Password..."
+    if resolve_screenshot_credentials(quiet: false)
+      puts "\nCredentials cached at #{SCREENSHOT_CREDS_FILE}"
+      puts "Screenshots will use the cache — no 1Password re-auth needed."
+    else
+      abort "\nFailed to resolve credentials. Ensure `op` is signed in."
+    end
+
+  when "help", "--help", "-h", nil
+    puts <<~HELP
+      brainiac screenshot — Take screenshots with credentials from deployments.json
+
+      Usage:
+        brainiac screenshot <app-name> <page-path> [options]
+
+      Credentials are resolved from 1Password at server start and cached in
+      #{SCREENSHOT_CREDS_FILE} (mode 0600). Use `brainiac screenshot resolve`
+      to manually refresh the cache.
+
+      Options:
+        --env ENV           Environment to use (default: auto-detect from project owner)
+        --customer EMAIL    Use specific customer email (default: first in list)
+        --employee EMAIL    Use specific employee email (default: first in list)
+        --project KEY       Project key (default: current directory or default project)
+        All other args are passed through to screenshot-page.sh
+
+      Commands:
+        brainiac screenshot resolve     Resolve and cache credentials from 1Password
+        brainiac screenshot envs        List environments with screenshot config
+        brainiac screenshot help        Show this help
+
+      Examples:
+        brainiac screenshot ops-app /api-explorer
+        brainiac screenshot ops-app /inventory --env dev04
+        brainiac screenshot app /dashboard --env dev02
+    HELP
+
+  else
+    # Parse flags from remaining args
+    app_name = sub
+    page_path = ARGV.shift
+    abort "Error: page path required. Usage: brainiac screenshot <app-name> <page-path> [options]" unless page_path
+
+    env_name = nil
+    customer_email = nil
+    employee_email = nil
+    project_key = nil
+    passthrough_args = []
+
+    while (arg = ARGV.shift)
+      case arg
+      when "--env"
+        env_name = ARGV.shift
+      when "--customer"
+        customer_email = ARGV.shift
+      when "--employee"
+        employee_email = ARGV.shift
+      when "--project"
+        project_key = ARGV.shift
+      else
+        passthrough_args << arg
+        # If the flag takes a value, pass it through too
+        passthrough_args << ARGV.shift if arg.start_with?("--") && !arg.include?("=") && ARGV.first && !ARGV.first.start_with?("--")
+      end
+    end
+
+    # Determine environment (default: dev02 for Linux)
+    env_name ||= case RUBY_PLATFORM
+                 when /darwin/ then "dev01"
+                 else "dev02"
+                 end
+
+    env_config = environments[env_name]
+    abort "Error: Environment '#{env_name}' not found in deployments.json. Available: #{environments.keys.join(", ")}" unless env_config
+
+    screenshot_config = env_config["screenshot"]
+    abort "Error: No 'screenshot' config for environment '#{env_name}' in deployments.json." unless screenshot_config
+
+    customers = screenshot_config["customers"] || {}
+    employees = screenshot_config["employees"] || {}
+
+    # Resolve which email to use
+    if app_name == "ops-app"
+      email = employee_email || employees.keys.first
+      op_ref = employees[email]
+      abort "Error: Employee email '#{email}' not found in #{env_name} screenshot config. Available: #{employees.keys.join(", ")}" unless op_ref
+    else
+      email = customer_email || customers.keys.first
+      op_ref = customers[email]
+      abort "Error: Customer email '#{email}' not found in #{env_name} screenshot config. Available: #{customers.keys.join(", ")}" unless op_ref
+    end
+
+    # Resolve password (from cache or 1Password directly)
+    password = read_screenshot_credential(op_ref)
+    unless password
+      abort "Error: Failed to resolve password for #{op_ref}. Run 'brainiac screenshot resolve' or 'brainiac restart' to refresh the cache."
+    end
+
+    # Determine project path
+    projects = load_projects
+    if project_key
+      project = projects[project_key]
+      abort "Error: Project '#{project_key}' not found." unless project
+    else
+      # Try to find project from current directory or env config
+      project = projects.find { |_k, p| p["repo_path"] == Dir.pwd }&.last
+      project ||= projects[env_config["project"]]
+    end
+
+    abort "Error: Could not determine project. Use --project KEY." unless project
+    repo_path = project["repo_path"]
+    script_path = File.join(repo_path, "scripts", "screenshot-page.sh")
+    abort "Error: Screenshot script not found at #{script_path}" unless File.exist?(script_path)
+
+    # Build environment
+    screenshot_env = {
+      "SCREENSHOT_CUSTOMER_EMAIL" => (app_name == "ops-app" ? (customers.keys.first || email) : email),
+      "SCREENSHOT_CUSTOMER_PASSWORD" => password,
+      "SCREENSHOT_OPS_EMAIL" => (app_name == "ops-app" ? email : (employees.keys.first || email)),
+      "SCREENSHOT_OPS_PASSWORD" => password
+    }
+
+    # Also set environment-specific email vars
+    env_upper = env_name.upcase.tr("-", "_")
+    screenshot_env["SCREENSHOT_#{env_upper}_CUSTOMER_EMAIL"] = customers.keys.first if customers.any?
+
+    # Run the screenshot script
+    cmd = [script_path, app_name, page_path, "", ""] + passthrough_args
+    puts "Taking screenshot: #{app_name} #{page_path} (env: #{env_name}, user: #{email})"
+    puts "Running: #{cmd.join(" ")}"
+
+    pid = spawn(screenshot_env, *cmd, chdir: repo_path)
+    Process.wait(pid)
+
+    if $CHILD_STATUS.success?
+      # Find the most recent screenshot
+      attachments_dir = File.join(repo_path, ".fizzy-attachments")
+      if Dir.exist?(attachments_dir)
+        latest = Dir.glob(File.join(attachments_dir, "*.png")).max_by { |f| File.mtime(f) }
+        puts "\n✅ Screenshot saved: #{latest}" if latest
+      end
+    else
+      abort "\n❌ Screenshot failed (exit #{$CHILD_STATUS.exitstatus})"
+    end
+  end
+
 when "version", "--version", "-v"
   puts "brainiac #{BRAINIAC_VERSION}"
 
@@ -3351,6 +3602,7 @@ when "help", "--help", "-h", nil
         brainiac provider <command>     Manage CLI providers
         brainiac role <command>         Manage agent roles
         brainiac agent <command>        Manage agent registry (env, list, show)
+        brainiac screenshot <app> <path> Take screenshot with 1Password credentials
         brainiac config                 Configure Brainiac CLI
         brainiac path                   Show Brainiac config directory
         brainiac version                Show version
