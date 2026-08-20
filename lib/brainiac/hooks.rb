@@ -17,6 +17,8 @@
 #   :build_brain_context — When building brain context (plugins add source-specific queries)
 #   :pre_dispatch       — Before dispatching an agent (plugins can inject config)
 #   :post_comment       — After an agent posts a comment/response
+#   :resolve_base_branch — Resolve custom base branch for worktree creation
+#   :resolve_pr_target   — Resolve custom PR target branch (instead of default branch)
 #
 # Usage (in plugin .register):
 #   Brainiac.on(:agent_completed) do |ctx|

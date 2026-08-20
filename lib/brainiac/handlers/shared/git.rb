@@ -106,6 +106,40 @@ def run_project_hook(repo_path, hook_name, extra_env: {})
   end
 end
 
+# Resolve the base branch for a new worktree.
+# Emits :resolve_base_branch hook — plugins can override the default (origin/main).
+# Returns a ref string (e.g., "origin/main", "epic/my-feature").
+#
+# @param repo_path [String] Path to the git repo
+# @param card_number [Integer, String, nil] Fizzy card number (if applicable)
+# @param project_key [String, nil] Brainiac project key
+# @return [String] Base ref for the worktree
+def resolve_base_branch(repo_path:, card_number: nil, project_key: nil)
+  results = Brainiac.emit(:resolve_base_branch,
+                          repo_path: repo_path, card_number: card_number, project_key: project_key)
+  # First non-nil result wins (plugins return a branch name or nil to skip)
+  custom = results.compact.first
+  if custom
+    LOG.info "Using custom base branch '#{custom}' (from plugin hook)"
+    custom
+  else
+    "origin/#{get_default_branch(repo_path)}"
+  end
+end
+
+# Resolve the PR target branch for a card.
+# Emits :resolve_pr_target hook — plugins can override the default branch.
+#
+# @param repo_path [String] Path to the git repo
+# @param card_number [Integer, String, nil] Fizzy card number
+# @param project_key [String, nil] Brainiac project key
+# @return [String, nil] Target branch name (without origin/ prefix), or nil for default
+def resolve_pr_target(repo_path:, card_number: nil, project_key: nil)
+  results = Brainiac.emit(:resolve_pr_target,
+                          repo_path: repo_path, card_number: card_number, project_key: project_key)
+  results.compact.first
+end
+
 # Create or reuse a git worktree for a given branch.
 # Returns the worktree path on success.
 def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: nil)
