@@ -13,11 +13,15 @@ class TestEpicTest < Minitest::Test
   end
 
   def test_greet_with_empty_string
-    assert_equal "Hello, !", EpicTest.greet("")
+    assert_equal "Hello, stranger!", EpicTest.greet("")
   end
 
   def test_greet_with_nil
-    assert_equal "Hello, !", EpicTest.greet(nil)
+    assert_equal "Hello, stranger!", EpicTest.greet(nil)
+  end
+
+  def test_greet_with_whitespace_only
+    assert_equal "Hello, stranger!", EpicTest.greet("   ")
   end
 
   def test_greet_with_spaces_in_name
