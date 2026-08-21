@@ -1,4 +1,3 @@
-require_relative "brainiac/joke"
 require_relative "brainiac/hooks"
 require_relative "brainiac/config"
 require_relative "brainiac/users"
