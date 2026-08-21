@@ -9,6 +9,7 @@ require_relative "brainiac/prompts"
 require_relative "brainiac/helpers"
 require_relative "brainiac/intent"
 require_relative "brainiac/cron"
+require_relative "brainiac/joke"
 require_relative "brainiac/plugins"
 
 # Namespace for gem-based plugins (brainiac-whatsapp, brainiac-slack, etc.)
