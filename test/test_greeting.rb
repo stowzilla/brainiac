@@ -11,7 +11,7 @@ class TestGreeting < Minitest::Test
   end
 
   def test_hello_empty_string
-    assert_equal "Hello, !", Brainiac::Greeting.hello("")
+    assert_equal "Hello, World!", Brainiac::Greeting.hello("")
   end
 
   def test_hello_with_spaces
@@ -23,6 +23,10 @@ class TestGreeting < Minitest::Test
   end
 
   def test_hello_with_nil
-    assert_equal "Hello, !", Brainiac::Greeting.hello(nil)
+    assert_equal "Hello, World!", Brainiac::Greeting.hello(nil)
+  end
+
+  def test_hello_with_whitespace_only
+    assert_equal "Hello, World!", Brainiac::Greeting.hello("   ")
   end
 end
