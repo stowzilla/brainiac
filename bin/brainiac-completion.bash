@@ -63,7 +63,18 @@ _brainiac() {
     plugin)
       case $cword in
         2)
-          COMPREPLY=($(compgen -W "new" -- "$cur"))
+          COMPREPLY=($(compgen -W "new switch list" -- "$cur"))
+          ;;
+        3)
+          # For "plugin switch", suggest installed plugin names
+          if [[ "${COMP_WORDS[2]}" == "switch" && -f "$brainiac_dir/plugins.json" ]]; then
+            local installed
+            installed=$(ruby -rjson -e '
+              config = JSON.parse(File.read(ARGV[0]))
+              (config["plugins"] || []).select { |p| p.is_a?(Hash) && p["path"] }.each { |p| puts p["name"] }
+            ' "$brainiac_dir/plugins.json" 2>/dev/null)
+            COMPREPLY=($(compgen -W "$installed" -- "$cur"))
+          fi
           ;;
       esac
       ;;
