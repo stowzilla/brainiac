@@ -208,14 +208,7 @@ end
 def stop_server
   pid = find_server_pid
 
-  unless pid
-    puts "No running Brainiac server found."
-    return false
-  end
-
-  puts "Stopping Brainiac server (PID: #{pid})..."
-
-  # Also stop the monitor daemon
+  # Stop the monitor daemon regardless of server PID
   daemon_pid_file = "/tmp/brainiac-daemon.pid"
   if File.exist?(daemon_pid_file)
     daemon_pid = File.read(daemon_pid_file).strip.to_i
@@ -228,38 +221,59 @@ def stop_server
     File.delete(daemon_pid_file)
   end
 
-  begin
-    Process.kill("TERM", pid)
+  # Kill the known server PID
+  if pid
+    puts "Stopping Brainiac server (PID: #{pid})..."
+    kill_pid(pid)
+  end
 
-    # Wait up to 5 seconds for graceful shutdown
-    5.times do
-      sleep 2
-      next if process_running?(pid)
+  # After killing the known PID, find anything still holding port 4567.
+  # This catches orphaned processes from self-restarts, stale PIDs, or child processes.
+  lingering = find_port_holders(4567) - [pid].compact
+  if lingering.any?
+    puts "Cleaning up #{lingering.size} orphaned process(es) on port 4567..."
+    lingering.each { |lpid| kill_pid(lpid, quiet: true) }
+  end
 
-      puts "✓ Server stopped."
-      FileUtils.rm_f(PID_FILE)
-      return true
-    end
+  FileUtils.rm_f(PID_FILE)
 
-    # Force kill if still running
-    puts "Server didn't stop gracefully, forcing..."
-    Process.kill("KILL", pid)
-    sleep 1
-
-    FileUtils.rm_f(PID_FILE)
-    puts "✓ Server stopped (forced)."
+  if pid || lingering.any?
+    puts "✓ Server stopped."
     true
-  rescue Errno::ESRCH
-    puts "✓ Server already stopped."
-    FileUtils.rm_f(PID_FILE)
-    true
-  rescue Errno::EPERM
-    puts "Error: Permission denied. Try running with sudo or check process ownership."
-    false
-  rescue StandardError => e
-    puts "Error stopping server: #{e.message}"
+  else
+    puts "No running Brainiac server found."
     false
   end
+end
+
+# Kill a single process: TERM first, KILL if it doesn't exit within 5s.
+def kill_pid(pid, quiet: false)
+  Process.kill("TERM", pid)
+
+  5.times do
+    sleep 1
+    return true unless process_running?(pid)
+  end
+
+  puts "  PID #{pid} didn't stop gracefully, forcing..." unless quiet
+  Process.kill("KILL", pid)
+  sleep 1
+  true
+rescue Errno::ESRCH
+  true # Already dead
+rescue Errno::EPERM
+  puts "Error: Permission denied to stop PID #{pid}." unless quiet
+  false
+end
+
+# Find all PIDs listening on a given port via lsof.
+def find_port_holders(port)
+  output, status = Open3.capture2("lsof", "-ti", ":#{port}")
+  return [] unless status.success?
+
+  output.strip.split("\n").map(&:to_i).select(&:positive?)
+rescue StandardError
+  []
 end
 
 def update_handler_config(name, enabled)
