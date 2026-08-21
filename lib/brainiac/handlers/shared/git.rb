@@ -4,6 +4,31 @@
 #
 # All git-related utilities live here. Handlers call these instead of
 # reimplementing git worktree/branch logic.
+#
+# NOTE: Methods that need to be accessible from Sinatra route handlers
+# are wrapped in GitHelpers module and registered with Sinatra.
+
+# Module containing git helpers that need to be accessible from Sinatra routes.
+# These are registered as Sinatra helpers in receiver.rb so plugins can call them.
+module GitHelpers
+  def resolve_base_branch(repo_path:, card_number: nil, project_key: nil)
+    results = Brainiac.emit(:resolve_base_branch,
+                            repo_path: repo_path, card_number: card_number, project_key: project_key)
+    custom = results.compact.first
+    if custom
+      LOG.info "Using custom base branch '#{custom}' (from plugin hook)"
+      custom
+    else
+      "origin/#{get_default_branch(repo_path)}"
+    end
+  end
+
+  def resolve_pr_target(repo_path:, card_number: nil, project_key: nil)
+    results = Brainiac.emit(:resolve_pr_target,
+                            repo_path: repo_path, card_number: card_number, project_key: project_key)
+    results.compact.first
+  end
+end
 
 # Debounced repo git fetch — avoids fetching the same repo multiple times within a short window.
 REPO_LAST_FETCH = {}

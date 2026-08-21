@@ -114,8 +114,13 @@ else
   LOG.info "[Intent] Disabled (enable in brainiac.json → intent.enabled: true)"
 end
 
-# --- Dashboard authentication ---
+# --- Sinatra helpers ---
 
+# Register GitHelpers so plugins can call resolve_pr_target, resolve_base_branch
+# from within Sinatra route handlers
+helpers GitHelpers
+
+# Dashboard authentication helpers
 helpers do
   def authenticate_dashboard!
     return unless DASHBOARD_TOKEN # No token configured = no auth (local-only mode)
