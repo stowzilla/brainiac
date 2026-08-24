@@ -1,0 +1,18 @@
+{
+  "binary": "codex",
+  "default_args": "exec --dangerously-bypass-approvals-and-sandbox",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "effort_flag": null,
+  "prompt_mode": "stdin",
+  "resume_flag": null,
+  "list_models_command": "codex debug models",
+  "models": {
+    "sol": "gpt-5.6-sol",
+    "terra": "gpt-5.6-terra",
+    "luna": "gpt-5.6-luna",
+    "5.5": "gpt-5.5",
+    "5.2": "gpt-5.2",
+    "auto": "gpt-5.6-terra"
+  }
+}

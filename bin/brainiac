@@ -1980,14 +1980,18 @@ when "provider"
       exit 1
     end
 
+    # Filter hidden models (e.g. codex "visibility": "hide") unless none are visible
+    visible_models = models.select { |m| m["visibility"].nil? || m["visibility"] != "hide" }
+    visible_models = models if visible_models.empty?
+
     # Display models in a table
-    puts "Available models for '#{name}' (#{models.size} total):"
+    puts "Available models for '#{name}' (#{visible_models.size} visible, #{models.size} total):"
     puts ""
-    models.each do |m|
-      model_id = m["model_id"] || m["model_name"] || "unknown"
-      desc = m["description"] || ""
+    visible_models.each do |m|
+      model_id = m["model_id"] || "unknown"
+      desc = m["description"] || m["display_name"] || ""
       rate = m["rate_multiplier"] ? "#{m["rate_multiplier"]}x" : (m["rate"] || "")
-      marker = m == models.first || m["model_id"] == data["default_model"] ? "*" : " "
+      marker = m == visible_models.first || m["model_id"] == data["default_model"] ? "*" : " "
       if desc.empty?
         puts "  #{marker} #{model_id}"
       else
@@ -1998,11 +2002,11 @@ when "provider"
     # Show which are mapped vs unmapped
     configured = data["models"] || {}
     configured_ids = configured.values
-    unmapped = models.select { |m| id = m["model_id"] || m["model_name"]; !configured_ids.include?(id) && !configured.key?(id) }
+    unmapped = visible_models.select { |m| id = m["model_id"]; !configured_ids.include?(id) && !configured.key?(id) }
     unless unmapped.empty?
       puts ""
       puts "#{unmapped.size} model(s) not in your provider's 'models' map:"
-      unmapped.each { |m| puts "  - #{m["model_id"] || m["model_name"]}" }
+      unmapped.each { |m| puts "  - #{m["model_id"]}" }
       puts ""
       puts "Run 'brainiac provider sync-models #{name}' to add them."
     end
@@ -2043,14 +2047,17 @@ when "provider"
     added = []
 
     models.each do |m|
-      model_id = m["model_id"] || m["model_name"]
+      model_id = m["model_id"]
       next unless model_id
+
+      # Skip hidden models (e.g. codex internal models)
+      next if m["visibility"] == "hide"
 
       # Skip if already mapped (as key or value)
       next if new_models.value?(model_id) || new_models.key?(model_id)
 
       # Generate a short key: strip common prefixes, use the base name
-      short_key = model_id.sub(/^claude-/, "").sub(/^grok-/, "").gsub(/[^a-z0-9]/, "-").gsub(/-+/, "-").sub(/-$/, "")
+      short_key = generate_short_model_key(model_id)
       # If the short key already exists, use the full model_id as the key
       short_key = model_id if new_models.key?(short_key)
       new_models[short_key] = model_id

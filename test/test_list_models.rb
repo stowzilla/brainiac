@@ -171,4 +171,103 @@ class TestListModels < Minitest::Test
     assert_equal "model-b", models[1]["model_id"]
     assert_equal "model-c", models[2]["model_id"]
   end
+
+  def test_parse_list_models_output_normalizes_slug_to_model_id
+    # Codex debug models uses "slug" instead of "model_id"
+    json_output = <<~JSON
+      {"models":[{"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","description":"Frontier model.","visibility":"list"},{"slug":"gpt-5.2","display_name":"GPT-5.2","description":"Older model.","visibility":"list"}]}
+    JSON
+
+    models = parse_list_models_output(json_output)
+    assert_equal 2, models.size
+    assert_equal "gpt-5.6-sol", models[0]["model_id"]
+    assert_equal "gpt-5.2", models[1]["model_id"]
+    assert_equal "GPT-5.6-Sol", models[0]["display_name"]
+    assert_equal "Frontier model.", models[0]["description"]
+  end
+
+  def test_parse_list_models_output_preserves_visibility_field
+    json_output = <<~JSON
+      {"models":[{"slug":"gpt-5.6-sol","visibility":"list"},{"slug":"codex-auto-review","visibility":"hide"}]}
+    JSON
+
+    models = parse_list_models_output(json_output)
+    assert_equal 2, models.size
+    assert_equal "list", models[0]["visibility"]
+    assert_equal "hide", models[1]["visibility"]
+  end
+
+  def test_normalize_model_list_leaves_model_id_intact
+    models = [{ "model_id" => "auto", "description" => "Auto" }]
+    result = normalize_model_list(models)
+    assert_equal "auto", result[0]["model_id"]
+  end
+
+  def test_normalize_model_list_converts_slug
+    models = [{ "slug" => "gpt-5.5", "display_name" => "GPT-5.5" }]
+    result = normalize_model_list(models)
+    assert_equal "gpt-5.5", result[0]["model_id"]
+    refute result[0].key?("slug")
+  end
+
+  def test_normalize_model_list_converts_model_name
+    models = [{ "model_name" => "claude-sonnet-4.6" }]
+    result = normalize_model_list(models)
+    assert_equal "claude-sonnet-4.6", result[0]["model_id"]
+    refute result[0].key?("model_name")
+  end
+
+  def test_parse_list_models_output_raw_array_with_slug
+    # Codex might output a raw JSON array (without wrapping "models" key)
+    json_output = '[{"slug":"gpt-5.6-sol","display_name":"Sol"},{"slug":"gpt-5.2","display_name":"5.2"}]'
+
+    models = parse_list_models_output(json_output)
+    assert_equal 2, models.size
+    assert_equal "gpt-5.6-sol", models[0]["model_id"]
+    assert_equal "gpt-5.2", models[1]["model_id"]
+  end
+
+  # --- generate_short_model_key tests ---
+
+  def test_generate_short_model_key_strips_claude_prefix
+    assert_equal "sonnet-4-6", generate_short_model_key("claude-sonnet-4.6")
+    assert_equal "opus-4-6", generate_short_model_key("claude-opus-4.6")
+    assert_equal "haiku-4-5", generate_short_model_key("claude-haiku-4.5")
+  end
+
+  def test_generate_short_model_key_strips_grok_prefix
+    assert_equal "build", generate_short_model_key("grok-build")
+    assert_equal "3", generate_short_model_key("grok-3")
+  end
+
+  def test_generate_short_model_key_strips_gpt_prefix
+    assert_equal "4o", generate_short_model_key("GPT-4o")
+    assert_equal "5-6-sol", generate_short_model_key("GPT-5.6-Sol")
+  end
+
+  def test_generate_short_model_key_handles_mixed_case
+    assert_equal "deepseek-v3", generate_short_model_key("DeepSeek-V3")
+    assert_equal "minimax-m2-5", generate_short_model_key("MiniMax-M2.5")
+    assert_equal "qwen3-coder-next", generate_short_model_key("Qwen3-Coder-Next")
+  end
+
+  def test_generate_short_model_key_handles_already_lowercase
+    assert_equal "deepseek-3-2", generate_short_model_key("deepseek-3.2")
+    assert_equal "auto", generate_short_model_key("auto")
+  end
+
+  def test_generate_short_model_key_strips_leading_and_trailing_dashes
+    # A model like "GPT-4o" after prefix strip and downcase becomes "4o" — no leading dash
+    assert_equal "4o", generate_short_model_key("GPT-4o")
+    # An edge case: model id that starts with a special char after prefix strip
+    assert_equal "test", generate_short_model_key(".test.")
+  end
+
+  def test_generate_short_model_key_collapses_multiple_dashes
+    assert_equal "some-long-model-name", generate_short_model_key("some--long---model----name")
+  end
+
+  def test_generate_short_model_key_all_uppercase
+    assert_equal "turbo", generate_short_model_key("TURBO")
+  end
 end

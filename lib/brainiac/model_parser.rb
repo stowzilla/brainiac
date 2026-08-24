@@ -9,35 +9,46 @@ require "json"
 # Supports JSON output with a "models" array, or plain text lines with model names.
 # Normalizes various field names (slug, model_name) to "model_id" for consistency.
 def parse_list_models_output(output)
-  # Try parsing the entire output as JSON first (handles well-formed JSON from any CLI)
-  data = JSON.parse(output)
-  if data.is_a?(Hash) && data["models"].is_a?(Array)
-    return normalize_model_list(data["models"])
-  end
-  return normalize_model_list(data) if data.is_a?(Array)
+  return nil if output.nil? || output.strip.empty?
 
-  nil
-rescue JSON::ParserError
+  # Try parsing the entire output as JSON first (handles well-formed JSON from any CLI)
+  begin
+    data = JSON.parse(output)
+    if data.is_a?(Hash) && data["models"].is_a?(Array)
+      return normalize_model_list(data["models"])
+    end
+    return normalize_model_list(data) if data.is_a?(Array)
+  rescue JSON::ParserError
+    # Not pure JSON — try to extract JSON from mixed output
+  end
+
   # Some CLIs output non-JSON text before the JSON (like kiro-cli with --format json).
-  # Try to extract a JSON object containing a "models" key.
-  json_match = output.match(/\{.*"models"\s*:\s*\[.*\]/m)
-  if json_match
+  # Find the first line containing a JSON object with "models" and try parsing from there.
+  lines = output.lines
+  lines.each_with_index do |line, idx|
+    next unless line.include?('"models"') && line.strip.start_with?("{")
+
+    json_candidate = lines[idx..].join
     begin
-      data = JSON.parse(json_match[0])
-      return normalize_model_list(data["models"]) if data["models"].is_a?(Array)
+      data = JSON.parse(json_candidate)
+      if data.is_a?(Hash) && data["models"].is_a?(Array)
+        return normalize_model_list(data["models"])
+      end
     rescue JSON::ParserError
-      # Continue to text fallback
+      # Try next candidate
     end
   end
 
-  # Try to extract a standalone JSON array
-  array_match = output.match(/\[.*\]/m)
-  if array_match
+  # Try to find a standalone JSON array starting with [{
+  lines.each_with_index do |line, idx|
+    next unless line.strip.start_with?("[{") || line.strip.start_with?("[")
+
+    json_candidate = lines[idx..].join
     begin
-      data = JSON.parse(array_match[0])
-      return normalize_model_list(data) if data.is_a?(Array)
+      data = JSON.parse(json_candidate)
+      return normalize_model_list(data) if data.is_a?(Array) && data.first.is_a?(Hash)
     rescue JSON::ParserError
-      # Continue to text fallback
+      # Try next candidate
     end
   end
 
@@ -61,6 +72,24 @@ def parse_list_models_text(output)
     end
   end
   models.empty? ? nil : models
+end
+
+# Generate a short key from a model_id for use in the models config map.
+# Strips common provider prefixes, lowercases, and normalizes to kebab-case.
+# Examples:
+#   "claude-sonnet-4.6" => "sonnet-4-6"
+#   "GPT-4o"            => "4o"
+#   "DeepSeek-V3"       => "deepseek-v3"
+def generate_short_model_key(model_id)
+  model_id
+    .downcase
+    .sub(/^claude-/, "")
+    .sub(/^grok-/, "")
+    .sub(/^gpt-/, "")
+    .gsub(/[^a-z0-9]/, "-")
+    .gsub(/-+/, "-")
+    .sub(/^-/, "")
+    .sub(/-$/, "")
 end
 
 # Normalize model hashes to always have "model_id" as the primary identifier.
