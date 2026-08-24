@@ -1,18 +1,28 @@
 {
   "binary": "codex",
-  "default_args": "exec --dangerously-bypass-approvals-and-sandbox",
-  "agent_flag": null,
+  "default_args": "--full-auto",
+  "agent_flag": "--profile",
   "model_flag": "--model",
   "effort_flag": null,
+  "effort_config_key": "model_reasoning_effort",
+  "config_override_flag": "-c",
+  "effort_map": {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "xhigh"
+  },
   "prompt_mode": "stdin",
-  "resume_flag": null,
+  "cwd_flag": "-C",
+  "resume_flag": "-c",
+  "output_last_message_flag": "-o",
   "list_models_command": "codex debug models",
   "models": {
-    "sol": "gpt-5.6-sol",
-    "terra": "gpt-5.6-terra",
-    "luna": "gpt-5.6-luna",
-    "5.5": "gpt-5.5",
-    "5.2": "gpt-5.2",
-    "auto": "gpt-5.6-terra"
-  }
+    "o3": "o3",
+    "o4-mini": "o4-mini",
+    "gpt5": "gpt-5.5",
+    "auto": "o4-mini"
+  },
+  "efforts": ["low", "medium", "high", "xhigh", "max"]
 }
