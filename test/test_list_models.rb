@@ -288,4 +288,87 @@ class TestListModels < Minitest::Test
   def test_generate_short_model_key_all_uppercase
     assert_equal "turbo", generate_short_model_key("TURBO")
   end
+
+  def test_generate_short_model_key_empty_string
+    assert_equal "", generate_short_model_key("")
+  end
+
+  def test_generate_short_model_key_prefix_only
+    # "claude-" after prefix strip and dash cleanup becomes empty
+    assert_equal "", generate_short_model_key("claude-")
+  end
+
+  # --- parse_list_models_output nil/edge case tests ---
+
+  def test_parse_list_models_output_nil_input
+    assert_nil parse_list_models_output(nil)
+  end
+
+  # --- normalize_model_list robustness tests ---
+
+  def test_normalize_model_list_skips_non_hash_elements
+    models = [{ "model_id" => "auto" }, "garbage", 42, nil, { "slug" => "gpt-5" }]
+    result = normalize_model_list(models)
+    assert_equal 2, result.size
+    assert_equal "auto", result[0]["model_id"]
+    assert_equal "gpt-5", result[1]["model_id"]
+  end
+
+  def test_normalize_model_list_does_not_mutate_original
+    original = { "slug" => "gpt-5", "display_name" => "GPT-5" }
+    models = [original]
+    normalize_model_list(models)
+    assert_equal "gpt-5", original["slug"], "Original hash should not be mutated"
+    refute original.key?("model_id"), "Original hash should not gain model_id"
+  end
+
+  # --- parse_list_models_text edge cases ---
+
+  def test_parse_list_models_text_skips_default_prefix_lines
+    text_output = <<~TEXT
+      Available models (* = default):
+      Default model: auto
+
+      * auto                 1.00x credits      Models chosen by task
+        claude-sonnet-4.6    1.30x credits      Claude Sonnet 4.6 model
+    TEXT
+
+    models = parse_list_models_text(text_output)
+    assert_equal 2, models.size
+    assert_equal "auto", models[0]["model_id"]
+    assert_equal "claude-sonnet-4.6", models[1]["model_id"]
+  end
+
+  # --- pretty-printed JSON parsing (bug 2 regression test) ---
+
+  def test_parse_list_models_output_pretty_printed_json_with_banner
+    output = <<~OUTPUT
+      INFO: fetching model list...
+      {
+        "models": [{"model_id": "auto"}, {"model_id": "claude-sonnet-4.6"}]
+      }
+    OUTPUT
+
+    models = parse_list_models_output(output)
+    assert_equal 2, models.size
+    assert_equal "auto", models[0]["model_id"]
+    assert_equal "claude-sonnet-4.6", models[1]["model_id"]
+  end
+
+  def test_parse_list_models_output_pretty_printed_json_multiline
+    output = <<~OUTPUT
+      {
+        "models": [
+          {"model_id": "auto", "description": "Auto"},
+          {"model_id": "opus", "description": "Opus"}
+        ],
+        "default_model": "auto"
+      }
+    OUTPUT
+
+    models = parse_list_models_output(output)
+    assert_equal 2, models.size
+    assert_equal "auto", models[0]["model_id"]
+    assert_equal "opus", models[1]["model_id"]
+  end
 end

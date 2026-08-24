@@ -21,10 +21,11 @@ def parse_list_models_output(output)
   end
 
   # Some CLIs output non-JSON text before the JSON (like kiro-cli with --format json).
-  # Find the first line containing a JSON object with "models" and try parsing from there.
+  # Try parsing from any line that starts with "{" — handles both single-line JSON and
+  # pretty-printed JSON where "models" is on a subsequent line.
   lines = output.lines
   lines.each_with_index do |line, idx|
-    next unless line.include?('"models"') && line.strip.start_with?("{")
+    next unless line.strip.start_with?("{")
 
     json_candidate = lines[idx..].join
     begin
@@ -96,8 +97,9 @@ end
 
 # Normalize model hashes to always have "model_id" as the primary identifier.
 # Handles various CLI output formats: "slug" (codex), "model_name" (generic), "model_id" (kiro-cli).
+# Silently skips non-Hash elements (e.g. strings or numbers in a mixed array).
 def normalize_model_list(models)
-  models.map do |m|
+  models.select { |m| m.is_a?(Hash) }.map do |m|
     next m if m["model_id"]
 
     m = m.dup
