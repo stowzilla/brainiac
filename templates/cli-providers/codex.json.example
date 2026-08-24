@@ -5,6 +5,7 @@
   "model_flag": "--model",
   "effort_flag": null,
   "prompt_mode": "stdin",
+  "cwd_flag": "-C",
   "resume_flag": null,
   "models": {
     "o3": "o3",
