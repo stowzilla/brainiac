@@ -596,10 +596,12 @@ def build_cron_agent_cmd(job, project, prompt_file: nil)
   resolved = resolve_project_cli_config(project, agent_name: job[:agent])
   agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
   cmd = [resolved["agent_cli"]]
+  # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
+  cmd.push(resolved["cwd_flag"], project["repo_path"]) if resolved["cwd_flag"] && project["repo_path"]
   cmd.push(agent_flag, agent_config_name) if agent_flag
   cmd.concat(resolved["agent_cli_args"].split)
   cmd.push(resolved["agent_model_flag"], job[:model]) if resolved["agent_model_flag"]&.length&.positive? && job[:model]
-  cmd.push(resolved["agent_effort_flag"], job[:effort]) if resolved["agent_effort_flag"]&.length&.positive? && job[:effort]
+  append_effort_to_cmd(cmd, job[:effort], resolved)
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
   cmd
 end

@@ -1,18 +1,30 @@
 {
   "binary": "codex",
-  "default_args": "exec --dangerously-bypass-approvals-and-sandbox",
+  "default_args": "--full-auto",
   "agent_flag": "--profile",
   "model_flag": "--model",
   "effort_flag": null,
-  "prompt_mode": "flag",
-  "prompt_flag": "--prompt-file",
-  "resume_flag": null,
-  "resume_args": "exec resume --last --dangerously-bypass-approvals-and-sandbox",
+  "effort_config_key": "model_reasoning_effort",
+  "config_override_flag": "-c",
+  "effort_map": {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "xhigh"
+  },
+  "prompt_mode": "stdin",
+  "cwd_flag": "-C",
+  "resume_flag": "-c",
+  "resume_args": "exec resume --last --full-auto",
   "session_dir": "~/.codex/sessions",
+  "output_last_message_flag": "-o",
   "models": {
     "o3": "o3",
     "o4-mini": "o4-mini",
+    "gpt5": "gpt-5.5",
     "codex-mini": "codex-mini-latest",
     "auto": "o4-mini"
-  }
+  },
+  "efforts": ["low", "medium", "high", "xhigh", "max"]
 }

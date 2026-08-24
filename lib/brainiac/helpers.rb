@@ -28,17 +28,12 @@ def load_cli_provider(provider_name)
   config["agent_flag"] = raw.key?("agent_flag") ? raw["agent_flag"] : "--agent"
   # prompt_mode: "stdin" (default) or "flag" — how the prompt is delivered.
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
-  config["prompt_flag"] = raw["prompt_flag"] if raw["prompt_flag"]
-  # resume_flag: when set, follow-up dispatches use this flag to continue the
-  # most recent session in the working directory (e.g. "-c" or "--continue").
-  config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
-  # resume_args: when set, replaces default_args entirely for resumed sessions.
-  # Used by CLIs where resume is a subcommand (e.g. "exec resume --last ...")
-  # rather than a simple flag appended to the normal command.
-  config["resume_args"] = raw["resume_args"] if raw["resume_args"]
-  # session_dir: centralized session storage directory (e.g. "~/.codex/sessions").
-  # Used to detect prior sessions when the CLI doesn't store state in the project dir.
-  config["session_dir"] = raw["session_dir"] if raw["session_dir"]
+  # Copy optional fields from raw config when present.
+  # Each field controls a specific CLI behavior — see comments in the template.
+  %w[prompt_flag resume_flag resume_args session_dir output_last_message_flag
+     cwd_flag config_override_flag effort_config_key effort_map].each do |key|
+    config[key] = raw[key] if raw[key]
+  end
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -606,14 +601,17 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   FileUtils.mkdir_p(File.dirname(log_file))
 
   prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
-  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort, prompt_file: prompt_file, resume: should_resume)
+  output_file = prepare_output_file(resolved, log_name, timestamp)
+
+  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,
+                                  prompt_file: prompt_file, resume: should_resume,
+                                  output_file: output_file, chdir: chdir)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
-  LOG.info "Prompt written to #{prompt_file}"
-  LOG.info "Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
+  LOG.info "Prompt: #{prompt_file} | Output: #{output_file || "none"} | Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
   LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
@@ -633,6 +631,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
       prompt_file: prompt_file, chdir: chdir, source: source,
       source_context: source_context, project_config: project_config,
       card_number: card_number, skip_column_move: skip_column_move,
+      output_file: output_file,
       head_before: head_before, status_before: status_before,
       project_key_for_restart: project_key_for_restart
     )
@@ -653,38 +652,101 @@ def write_agent_prompt_file(prompt, log_name, timestamp)
   prompt_file
 end
 
+# Generate output file path for structured output capture (--output-last-message).
+# Returns nil if the provider doesn't support it.
+def prepare_output_file(resolved, log_name, timestamp)
+  return nil unless resolved["output_last_message_flag"]
+
+  output_dir = File.join(BRAINIAC_DIR, "tmp", "output")
+  FileUtils.mkdir_p(output_dir)
+  File.join(output_dir, "agent-#{log_name}-#{timestamp}.md")
+end
+
+# Read the structured output file written by the agent CLI (--output-last-message).
+# Returns the file content as a string, or nil if the file doesn't exist or is empty.
+def read_output_file(output_file)
+  return nil unless output_file && File.exist?(output_file)
+
+  content = File.read(output_file).strip
+  if content.empty?
+    LOG.info "[Output] Output file exists but is empty: #{output_file}"
+    return nil
+  end
+
+  LOG.info "[Output] Captured structured output (#{content.bytesize} bytes) from #{output_file}"
+  content
+rescue StandardError => e
+  LOG.warn "[Output] Failed to read output file #{output_file}: #{e.message}"
+  nil
+end
+
 # Build the CLI command array for an agent invocation.
 # When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
 # When resume is truthy and the provider has a resume_flag, adds it to continue the last session.
 # When resume is :resume_args, uses resume_args as the args instead of default_args (subcommand-based resume).
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false)
+# When output_file is provided and the provider has output_last_message_flag, appends it.
+# When chdir is provided and the provider has a cwd_flag, appends it so the CLI
+# itself switches to the working directory (e.g. `codex -C /path/to/project`).
+# rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil)
   cmd = [resolved["agent_cli"]]
+  # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
+  # This is added early so it appears before subcommands/args (global option).
+  cmd.push(resolved["cwd_flag"], chdir) if resolved["cwd_flag"] && chdir
   # agent_flag controls how the agent identity is passed. Defaults to "--agent".
   # Provider configs can set it to a different flag or null to suppress entirely.
   agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
   cmd.push(agent_flag, agent_config_name) if agent_flag && agent_config_name
   # When resuming via subcommand (resume_args), replace default_args entirely.
-  # e.g. "exec --bypass" becomes "exec resume --last --bypass"
+  # e.g. "exec --full-auto" becomes "exec resume --last --full-auto"
   args = resume == :resume_args && resolved["resume_args"] ? resolved["resume_args"] : resolved["agent_cli_args"]
   cmd.concat(args.split)
-  append_model_flag(cmd, model, resolved)
-  cmd.push(resolved["agent_effort_flag"], effort) if resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty? && effort
+  # Only pass --model if the model is a valid ID for this provider.
+  # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
+  if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
+    allowed = resolved["allowed_models"] || {}
+    # Pass the model if it's a mapped value (e.g. "claude-opus-4.5") or the key itself is mapped
+    is_known = allowed.value?(model) || allowed.key?(model)
+    cmd.push(resolved["agent_model_flag"], model) if is_known
+  end
+  append_effort_to_cmd(cmd, effort, resolved) if effort
   # Resume via flag (simple append, e.g. grok -c or kiro --resume) — only when not using resume_args
   cmd.push(resume) if resume && resume != :resume_args && resume.is_a?(String)
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
+  # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
+  cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
 end
 
-# Append --model flag if the model is valid for this provider.
-def append_model_flag(cmd, model, resolved)
-  return unless model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
+# Map a Brainiac effort level through the provider's effort_map (if any).
+# Returns the mapped level, or the original level if no mapping exists.
+def map_effort_level(effort, resolved)
+  return nil unless effort
 
-  allowed = resolved["allowed_models"] || {}
-  is_known = allowed.value?(model) || allowed.key?(model)
-  cmd.push(resolved["agent_model_flag"], model) if is_known
+  effort_map = resolved["effort_map"]
+  return effort unless effort_map
+
+  effort_map[effort] || effort
 end
 
+# Append effort flags to a command array based on provider config.
+# Handles both dedicated effort flags (--effort high) and config overrides (-c 'key="value"').
+def append_effort_to_cmd(cmd, effort, resolved)
+  return unless effort
+
+  mapped_effort = map_effort_level(effort, resolved)
+  return unless mapped_effort
+
+  if resolved["effort_config_key"]
+    flag = resolved["config_override_flag"] || "-c"
+    cmd.push(flag, "#{resolved["effort_config_key"]}=\"#{mapped_effort}\"")
+  elsif resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty?
+    cmd.push(resolved["agent_effort_flag"], mapped_effort)
+  end
+end
+
+# Append --model flag if the model is valid for this provider.
 def handle_agent_completion(**ctx)
   agent_exit_status = $CHILD_STATUS.exitstatus
   agent_signaled = $CHILD_STATUS.signaled?
@@ -698,6 +760,9 @@ def handle_agent_completion(**ctx)
     )
   end
 
+  # Read structured output if the provider wrote to an output file (--output-last-message).
+  output_content = read_output_file(ctx[:output_file])
+
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
                 card_number: ctx[:card_number] || ctx[:source_context]&.dig(:card_number),
@@ -709,7 +774,12 @@ def handle_agent_completion(**ctx)
                 source_context: ctx[:source_context],
                 project_config: ctx[:project_config],
                 skip_column_move: ctx[:skip_column_move],
-                prompt_file: ctx[:prompt_file])
+                prompt_file: ctx[:prompt_file],
+                output_file: ctx[:output_file],
+                output_content: output_content)
+
+  # Clean up the output file after hook emission (content already captured above).
+  FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
 
   qmd_out, qmd_status = Open3.capture2e("qmd", "update")
   if qmd_status.success?
