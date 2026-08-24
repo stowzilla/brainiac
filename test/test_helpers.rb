@@ -304,13 +304,13 @@ class TestHelpers < Minitest::Test
   def test_load_cli_provider_with_profile_agent_flag
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
     File.write(File.join(provider_dir, "codex.json"), JSON.generate({
-      "binary" => "codex",
-      "default_args" => "exec --sandbox workspace-write -",
-      "agent_flag" => "--profile",
-      "model_flag" => "--model",
-      "prompt_mode" => "stdin",
-      "models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
-    }))
+                                                                      "binary" => "codex",
+                                                                      "default_args" => "exec --sandbox workspace-write -",
+                                                                      "agent_flag" => "--profile",
+                                                                      "model_flag" => "--model",
+                                                                      "prompt_mode" => "stdin",
+                                                                      "models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
+                                                                    }))
 
     config = load_cli_provider("codex")
     assert_equal "codex", config["agent_cli"]
@@ -324,13 +324,13 @@ class TestHelpers < Minitest::Test
   def test_load_cli_provider_with_null_agent_flag
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
     File.write(File.join(provider_dir, "grok-test.json"), JSON.generate({
-      "binary" => "grok",
-      "default_args" => "--always-approve",
-      "agent_flag" => nil,
-      "model_flag" => "--model",
-      "prompt_mode" => "flag",
-      "prompt_flag" => "--prompt-file"
-    }))
+                                                                          "binary" => "grok",
+                                                                          "default_args" => "--always-approve",
+                                                                          "agent_flag" => nil,
+                                                                          "model_flag" => "--model",
+                                                                          "prompt_mode" => "flag",
+                                                                          "prompt_flag" => "--prompt-file"
+                                                                        }))
 
     config = load_cli_provider("grok-test")
     assert_equal "grok", config["agent_cli"]
@@ -342,9 +342,9 @@ class TestHelpers < Minitest::Test
   def test_load_cli_provider_missing_agent_flag_defaults_to_agent
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
     File.write(File.join(provider_dir, "minimal.json"), JSON.generate({
-      "binary" => "some-cli",
-      "default_args" => ""
-    }))
+                                                                        "binary" => "some-cli",
+                                                                        "default_args" => ""
+                                                                      }))
 
     config = load_cli_provider("minimal")
     assert_equal "--agent", config["agent_flag"]
@@ -401,19 +401,6 @@ class TestHelpers < Minitest::Test
     cmd = build_agent_cmd(resolved, agent_config_name: nil)
     assert_equal %w[codex exec -], cmd
     refute_includes cmd, "--profile"
-  end
-
-  def test_build_agent_cmd_resume_flag
-    resolved = {
-      "agent_cli" => "kiro-cli",
-      "agent_flag" => "--agent",
-      "agent_cli_args" => "chat --no-interactive",
-      "agent_model_flag" => "--model",
-      "allowed_models" => {},
-      "resume_flag" => "--resume"
-    }
-    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", resume: true)
-    assert_includes cmd, "--resume"
   end
 
   def test_build_agent_cmd_prompt_flag_mode
@@ -484,6 +471,143 @@ class TestHelpers < Minitest::Test
     refute intent_skip?("do the thing", agent_name: "Sherlock", source: :discord)
   ensure
     BRAINIAC_CONFIG.replace(original)
+  end
+
+  # --- prior_session_exists? tests ---
+
+  def test_prior_session_exists_with_dotdir
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, ".grok"))
+      assert prior_session_exists?(dir, "grok")
+    end
+  end
+
+  def test_prior_session_exists_with_recent_log
+    Dir.mktmpdir do |dir|
+      tmp = File.join(dir, "tmp")
+      FileUtils.mkdir_p(tmp)
+      FileUtils.touch(File.join(tmp, "agent-test-20260824.log"))
+      assert prior_session_exists?(dir, "somecli")
+    end
+  end
+
+  def test_prior_session_exists_with_stale_log
+    Dir.mktmpdir do |dir|
+      tmp = File.join(dir, "tmp")
+      FileUtils.mkdir_p(tmp)
+      log_file = File.join(tmp, "agent-test-20260820.log")
+      FileUtils.touch(log_file, mtime: Time.now - 100_000)
+      refute prior_session_exists?(dir, "somecli")
+    end
+  end
+
+  def test_prior_session_exists_no_markers
+    Dir.mktmpdir do |dir|
+      refute prior_session_exists?(dir, "codex")
+    end
+  end
+
+  def test_prior_session_exists_with_centralized_session_dir
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "24")
+      FileUtils.mkdir_p(session_dir)
+
+      # Write a session file with matching cwd
+      session_data = { "timestamp" => "2026-08-24T12:00:00Z", "ordinal" => 0,
+                       "type" => "session_meta",
+                       "payload" => { "session_id" => "test-123", "cwd" => target_cwd } }
+      File.write(File.join(session_dir, "session-test.jsonl"), JSON.generate(session_data))
+
+      assert prior_session_exists?(target_cwd, "codex", session_dir: File.join(dir, "sessions"))
+    end
+  end
+
+  def test_prior_session_exists_centralized_wrong_cwd
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "24")
+      FileUtils.mkdir_p(session_dir)
+
+      # Write a session file with a DIFFERENT cwd
+      session_data = { "timestamp" => "2026-08-24T12:00:00Z", "ordinal" => 0,
+                       "type" => "session_meta",
+                       "payload" => { "session_id" => "test-456", "cwd" => "/some/other/path" } }
+      File.write(File.join(session_dir, "session-other.jsonl"), JSON.generate(session_data))
+
+      refute prior_session_exists?(target_cwd, "codex", session_dir: File.join(dir, "sessions"))
+    end
+  end
+
+  def test_prior_session_exists_centralized_stale_session
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "20")
+      FileUtils.mkdir_p(session_dir)
+
+      session_data = { "timestamp" => "2026-08-20T12:00:00Z", "ordinal" => 0,
+                       "type" => "session_meta",
+                       "payload" => { "session_id" => "test-old", "cwd" => target_cwd } }
+      session_file = File.join(session_dir, "session-old.jsonl")
+      File.write(session_file, JSON.generate(session_data))
+      FileUtils.touch(session_file, mtime: Time.now - 100_000)
+
+      refute prior_session_exists?(target_cwd, "codex", session_dir: File.join(dir, "sessions"))
+    end
+  end
+
+  # --- load_cli_provider tests ---
+
+  def test_load_cli_provider_with_resume_args_and_session_dir
+    provider_file = File.join(CLI_PROVIDERS_DIR, "test-codex.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "codex",
+                                              "default_args" => "exec --dangerously-bypass-approvals-and-sandbox",
+                                              "agent_flag" => nil,
+                                              "model_flag" => "--model",
+                                              "prompt_mode" => "stdin",
+                                              "resume_flag" => nil,
+                                              "resume_args" => "exec resume --last --dangerously-bypass-approvals-and-sandbox",
+                                              "session_dir" => "~/.codex/sessions",
+                                              "models" => { "o3" => "o3" }
+                                            }))
+
+    config = load_cli_provider("test-codex")
+    assert_equal "codex", config["agent_cli"]
+    assert_equal "exec resume --last --dangerously-bypass-approvals-and-sandbox", config["resume_args"]
+    assert_equal "~/.codex/sessions", config["session_dir"]
+    assert_nil config["resume_flag"]  # null in JSON should not be included
+    assert_nil config["agent_flag"]   # explicitly null to suppress agent name
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
+
+  def test_load_cli_provider_without_resume_args
+    provider_file = File.join(CLI_PROVIDERS_DIR, "test-grok.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "grok",
+                                              "default_args" => "--always-approve",
+                                              "agent_flag" => nil,
+                                              "model_flag" => "--model",
+                                              "prompt_mode" => "flag",
+                                              "prompt_flag" => "--prompt-file",
+                                              "resume_flag" => "-c",
+                                              "models" => { "build" => "grok-build" }
+                                            }))
+
+    config = load_cli_provider("test-grok")
+    assert_equal "grok", config["agent_cli"]
+    assert_equal "-c", config["resume_flag"]
+    assert_nil config["resume_args"]
+    assert_nil config["session_dir"]
+  ensure
+    FileUtils.rm_f(provider_file)
   end
 
   # --- build_agent_cmd tests ---
@@ -559,7 +683,7 @@ class TestHelpers < Minitest::Test
     assert_equal "--full-auto", cmd[3]
   end
 
-  def test_build_agent_cmd_with_resume_flag
+  def test_build_agent_cmd_resume_flag
     resolved = {
       "agent_cli" => "grok",
       "agent_flag" => nil,
@@ -567,8 +691,43 @@ class TestHelpers < Minitest::Test
       "resume_flag" => "-c",
       "prompt_mode" => "stdin"
     }
-    cmd = build_agent_cmd(resolved, resume: true)
-    assert_includes cmd, "-c"
+    cmd = build_agent_cmd(resolved, resume: "-c")
+    assert_equal %w[grok --always-approve -c], cmd
+  end
+
+  def test_build_agent_cmd_resume_args_replaces_default_args
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "exec --dangerously-bypass-approvals-and-sandbox",
+      "resume_args" => "exec resume --last --dangerously-bypass-approvals-and-sandbox"
+    }
+    cmd = build_agent_cmd(resolved, resume: :resume_args)
+    assert_equal %w[codex exec resume --last --dangerously-bypass-approvals-and-sandbox], cmd
+  end
+
+  def test_build_agent_cmd_resume_args_with_model
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "exec --dangerously-bypass-approvals-and-sandbox",
+      "resume_args" => "exec resume --last --dangerously-bypass-approvals-and-sandbox",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
+    }
+    cmd = build_agent_cmd(resolved, model: "o4-mini", resume: :resume_args)
+    assert_equal %w[codex exec resume --last --dangerously-bypass-approvals-and-sandbox --model o4-mini], cmd
+  end
+
+  def test_build_agent_cmd_no_resume_uses_default_args
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "exec --dangerously-bypass-approvals-and-sandbox",
+      "resume_args" => "exec resume --last --dangerously-bypass-approvals-and-sandbox"
+    }
+    cmd = build_agent_cmd(resolved, resume: false)
+    assert_equal %w[codex exec --dangerously-bypass-approvals-and-sandbox], cmd
   end
 
   def test_build_agent_cmd_with_standard_effort_flag
@@ -670,6 +829,110 @@ class TestHelpers < Minitest::Test
     assert_equal 'model_reasoning_effort="high"', cmd[idx + 1]
   end
 
+  # --- resume_viable? tests ---
+
+  def test_resume_viable_with_resume_args_and_matching_session
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "24")
+      FileUtils.mkdir_p(session_dir)
+      session_data = { "payload" => { "cwd" => target_cwd } }
+      File.write(File.join(session_dir, "session.jsonl"), JSON.generate(session_data))
+
+      provider_file = File.join(CLI_PROVIDERS_DIR, "test-resume-viable.json")
+      File.write(provider_file, JSON.generate({
+                                                "binary" => "codex",
+                                                "default_args" => "exec --bypass",
+                                                "agent_flag" => nil,
+                                                "resume_args" => "exec resume --last --bypass",
+                                                "session_dir" => File.join(dir, "sessions")
+                                              }))
+
+      project_config = { "cli_provider" => "test-resume-viable", "repo_path" => target_cwd }
+      assert resume_viable?(project_config: project_config, chdir: target_cwd)
+    ensure
+      FileUtils.rm_f(provider_file)
+    end
+  end
+
+  def test_resume_viable_false_when_no_resume_support
+    project_config = { "repo_path" => "/tmp" }
+    refute resume_viable?(project_config: project_config, chdir: "/tmp")
+  end
+
+  def test_resume_viable_false_when_no_matching_session
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      # Empty sessions dir — no matching sessions
+      session_dir = File.join(dir, "sessions")
+      FileUtils.mkdir_p(session_dir)
+
+      provider_file = File.join(CLI_PROVIDERS_DIR, "test-resume-viable2.json")
+      File.write(provider_file, JSON.generate({
+                                                "binary" => "codex",
+                                                "default_args" => "exec --bypass",
+                                                "agent_flag" => nil,
+                                                "resume_args" => "exec resume --last --bypass",
+                                                "session_dir" => session_dir
+                                              }))
+
+      project_config = { "cli_provider" => "test-resume-viable2", "repo_path" => target_cwd }
+      refute resume_viable?(project_config: project_config, chdir: target_cwd)
+    ensure
+      FileUtils.rm_f(provider_file)
+    end
+  end
+
+  # --- resolve_resume tests ---
+
+  def test_resolve_resume_returns_false_when_not_requested
+    resolved = { "resume_flag" => "--resume", "agent_cli" => "kiro-cli" }
+    refute resolve_resume(false, resolved, "/tmp")
+  end
+
+  def test_resolve_resume_returns_false_when_no_flag_or_args
+    resolved = { "agent_cli" => "codex" }
+    refute resolve_resume(true, resolved, "/tmp")
+  end
+
+  def test_resolve_resume_returns_resume_args_symbol
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "24")
+      FileUtils.mkdir_p(session_dir)
+      session_data = { "payload" => { "cwd" => target_cwd } }
+      File.write(File.join(session_dir, "session.jsonl"), JSON.generate(session_data))
+
+      resolved = {
+        "agent_cli" => "codex",
+        "resume_args" => "exec resume --last --dangerously-bypass-approvals-and-sandbox",
+        "session_dir" => File.join(dir, "sessions")
+      }
+      result = resolve_resume(true, resolved, target_cwd)
+      assert_equal :resume_args, result
+    end
+  end
+
+  def test_resolve_resume_returns_flag_string
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, ".grok"))
+      resolved = {
+        "agent_cli" => "grok",
+        "resume_flag" => "-c"
+      }
+      result = resolve_resume(true, resolved, dir)
+      assert_equal "-c", result
+    end
+  end
+
+  # --- map_effort_level tests ---
+
   def test_map_effort_level_with_map
     resolved = { "effort_map" => { "max" => "xhigh", "low" => "minimal" } }
     assert_equal "xhigh", map_effort_level("max", resolved)
@@ -686,6 +949,8 @@ class TestHelpers < Minitest::Test
     resolved = { "effort_map" => { "max" => "xhigh" } }
     assert_nil map_effort_level(nil, resolved)
   end
+
+  # --- load_cli_provider tests (cwd/effort) ---
 
   def test_load_cli_provider_with_cwd_flag
     provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "codex-test.json")
