@@ -37,8 +37,7 @@ def parse_list_models_output(output)
 
   # Try to find a standalone JSON array starting with [{ (e.g. codex debug models raw output)
   # Intentionally separate loop: {models:[]} has priority over bare arrays
-  # rubocop:disable-next Style/CombinableLoops
-  lines.each_with_index do |line, idx|
+  lines.each_with_index do |line, idx| # rubocop:disable Style/CombinableLoops
     next unless line.strip.start_with?("[{", "[")
 
     json_candidate = lines[idx..].join
@@ -48,7 +47,7 @@ def parse_list_models_output(output)
     rescue JSON::ParserError
       # Try next candidate
     end
-  end
+  end # rubocop:enable Style/CombinableLoops
 
   # Fallback: parse plain text output (one model per line, or tabular format)
   parse_list_models_text(output)
