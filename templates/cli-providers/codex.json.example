@@ -1,0 +1,15 @@
+{
+  "binary": "codex",
+  "default_args": "exec --sandbox workspace-write -",
+  "agent_flag": "--profile",
+  "model_flag": "--model",
+  "effort_flag": null,
+  "prompt_mode": "stdin",
+  "resume_flag": null,
+  "models": {
+    "o3": "o3",
+    "o4-mini": "o4-mini",
+    "gpt5": "gpt-5.5",
+    "auto": "o4-mini"
+  }
+}

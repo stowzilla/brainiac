@@ -299,6 +299,137 @@ class TestHelpers < Minitest::Test
     refute_equal id1, id2
   end
 
+  # --- load_cli_provider tests ---
+
+  def test_load_cli_provider_with_profile_agent_flag
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "codex.json"), JSON.generate({
+      "binary" => "codex",
+      "default_args" => "exec --sandbox workspace-write -",
+      "agent_flag" => "--profile",
+      "model_flag" => "--model",
+      "prompt_mode" => "stdin",
+      "models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
+    }))
+
+    config = load_cli_provider("codex")
+    assert_equal "codex", config["agent_cli"]
+    assert_equal "--profile", config["agent_flag"]
+    assert_equal "exec --sandbox workspace-write -", config["agent_cli_args"]
+    assert_equal "--model", config["agent_model_flag"]
+    assert_equal "stdin", config["prompt_mode"]
+    assert_equal({ "o3" => "o3", "o4-mini" => "o4-mini" }, config["allowed_models"])
+  end
+
+  def test_load_cli_provider_with_null_agent_flag
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "grok-test.json"), JSON.generate({
+      "binary" => "grok",
+      "default_args" => "--always-approve",
+      "agent_flag" => nil,
+      "model_flag" => "--model",
+      "prompt_mode" => "flag",
+      "prompt_flag" => "--prompt-file"
+    }))
+
+    config = load_cli_provider("grok-test")
+    assert_equal "grok", config["agent_cli"]
+    assert_nil config["agent_flag"]
+    # nil agent_flag should be preserved (not compacted away)
+    assert config.key?("agent_flag")
+  end
+
+  def test_load_cli_provider_missing_agent_flag_defaults_to_agent
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "minimal.json"), JSON.generate({
+      "binary" => "some-cli",
+      "default_args" => ""
+    }))
+
+    config = load_cli_provider("minimal")
+    assert_equal "--agent", config["agent_flag"]
+  end
+
+  # --- build_agent_cmd tests ---
+
+  def test_build_agent_cmd_default_agent_flag
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "opus" => "claude-opus-4.5" }
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", model: "claude-opus-4.5")
+    assert_equal %w[kiro-cli --agent sherlock chat --no-interactive --model claude-opus-4.5], cmd
+  end
+
+  def test_build_agent_cmd_profile_agent_flag_for_codex
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => "--profile",
+      "agent_cli_args" => "exec --sandbox workspace-write -",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "o3" => "o3", "o4-mini" => "o4-mini" },
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", model: "o3")
+    assert_equal %w[codex --profile sherlock exec --sandbox workspace-write - --model o3], cmd
+  end
+
+  def test_build_agent_cmd_null_agent_flag_suppresses_agent_name
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock")
+    assert_equal %w[grok --always-approve], cmd
+    refute_includes cmd, "sherlock"
+  end
+
+  def test_build_agent_cmd_no_agent_config_name
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => "--profile",
+      "agent_cli_args" => "exec -",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: nil)
+    assert_equal %w[codex exec -], cmd
+    refute_includes cmd, "--profile"
+  end
+
+  def test_build_agent_cmd_resume_flag
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {},
+      "resume_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", resume: true)
+    assert_includes cmd, "--resume"
+  end
+
+  def test_build_agent_cmd_prompt_flag_mode
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {},
+      "prompt_mode" => "flag",
+      "prompt_flag" => "--prompt-file"
+    }
+    cmd = build_agent_cmd(resolved, prompt_file: "/tmp/prompt.md")
+    assert_equal %w[grok --always-approve --prompt-file /tmp/prompt.md], cmd
+  end
+
   def test_detect_model_from_inline_text
     config = PROJECTS["marketplace"]
     assert_equal "claude-opus-4.5", detect_model(config, text: "[opus] do the thing")
