@@ -1,0 +1,15 @@
+{
+  "binary": "codex",
+  "default_args": "exec --full-auto -",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "effort_flag": null,
+  "prompt_mode": "stdin",
+  "output_last_message_flag": "-o",
+  "models": {
+    "gpt4": "gpt-4.1",
+    "o3": "o3",
+    "o4-mini": "o4-mini",
+    "auto": "o4-mini"
+  }
+}

@@ -32,6 +32,9 @@ def load_cli_provider(provider_name)
   # resume_flag: when set, follow-up dispatches use this flag to continue the
   # most recent session in the working directory (e.g. "-c" or "--continue").
   config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
+  # output_last_message_flag: when set, the CLI writes the agent's final message to the given file path.
+  # Used to capture structured output from CLIs that support it (e.g. codex exec -o <path>).
+  config["output_last_message_flag"] = raw["output_last_message_flag"] if raw["output_last_message_flag"]
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -528,13 +531,17 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   FileUtils.mkdir_p(File.dirname(log_file))
 
   prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
-  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort, prompt_file: prompt_file, resume: should_resume)
+  output_file = prepare_output_file(resolved, log_name, timestamp)
+
+  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,
+                                  prompt_file: prompt_file, resume: should_resume, output_file: output_file)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
   LOG.info "Prompt written to #{prompt_file}"
+  LOG.info "Output capture: #{output_file}" if output_file
   LOG.info "Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
   LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 
@@ -555,6 +562,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
       prompt_file: prompt_file, chdir: chdir, source: source,
       source_context: source_context, project_config: project_config,
       card_number: card_number, skip_column_move: skip_column_move,
+      output_file: output_file,
       head_before: head_before, status_before: status_before,
       project_key_for_restart: project_key_for_restart
     )
@@ -575,10 +583,40 @@ def write_agent_prompt_file(prompt, log_name, timestamp)
   prompt_file
 end
 
+# Generate output file path for structured output capture (--output-last-message).
+# Returns nil if the provider doesn't support it.
+def prepare_output_file(resolved, log_name, timestamp)
+  return nil unless resolved["output_last_message_flag"]
+
+  output_dir = File.join(BRAINIAC_DIR, "tmp", "output")
+  FileUtils.mkdir_p(output_dir)
+  File.join(output_dir, "agent-#{log_name}-#{timestamp}.md")
+end
+
+# Read the structured output file written by the agent CLI (--output-last-message).
+# Returns the file content as a string, or nil if the file doesn't exist or is empty.
+def read_output_file(output_file)
+  return nil unless output_file && File.exist?(output_file)
+
+  content = File.read(output_file).strip
+  if content.empty?
+    LOG.info "[Output] Output file exists but is empty: #{output_file}"
+    return nil
+  end
+
+  LOG.info "[Output] Captured structured output (#{content.bytesize} bytes) from #{output_file}"
+  content
+rescue StandardError => e
+  LOG.warn "[Output] Failed to read output file #{output_file}: #{e.message}"
+  nil
+end
+
 # Build the CLI command array for an agent invocation.
 # When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
 # When resume is true and the provider has a resume_flag, adds it to continue the last session.
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false)
+# When output_file is provided and the provider has output_last_message_flag, appends it.
+# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil)
   cmd = [resolved["agent_cli"]]
   # agent_flag controls how the agent identity is passed. Defaults to "--agent".
   # Provider configs can set it to a different flag or null to suppress entirely.
@@ -598,8 +636,11 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   cmd.push(resolved["resume_flag"]) if resume && resolved["resume_flag"]
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
+  # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
+  cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
 end
+# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 def handle_agent_completion(**ctx)
   agent_exit_status = $CHILD_STATUS.exitstatus
@@ -614,6 +655,9 @@ def handle_agent_completion(**ctx)
     )
   end
 
+  # Read structured output if the provider wrote to an output file (--output-last-message).
+  output_content = read_output_file(ctx[:output_file])
+
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
                 card_number: ctx[:card_number] || ctx[:source_context]&.dig(:card_number),
@@ -625,7 +669,9 @@ def handle_agent_completion(**ctx)
                 source_context: ctx[:source_context],
                 project_config: ctx[:project_config],
                 skip_column_move: ctx[:skip_column_move],
-                prompt_file: ctx[:prompt_file])
+                prompt_file: ctx[:prompt_file],
+                output_file: ctx[:output_file],
+                output_content: output_content)
 
   qmd_out, qmd_status = Open3.capture2e("qmd", "update")
   if qmd_status.success?
