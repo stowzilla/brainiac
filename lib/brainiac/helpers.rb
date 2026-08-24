@@ -30,9 +30,12 @@ def load_cli_provider(provider_name)
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
   # Copy optional fields from raw config when present.
   # Each field controls a specific CLI behavior — see comments in the template.
-  %w[prompt_flag resume_flag resume_args session_dir output_last_message_flag
+  %w[prompt_flag list_models_command resume_flag resume_args session_dir output_last_message_flag
      cwd_flag config_override_flag effort_config_key effort_map].each do |key|
-    config[key] = raw[key] if raw[key]
+    next unless raw[key]
+    next if raw[key].respond_to?(:empty?) && raw[key].empty?
+
+    config[key] = raw[key]
   end
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
@@ -43,6 +46,30 @@ rescue JSON::ParserError => e
   LOG.warn "Failed to parse CLI provider '#{provider_name}': #{e.message}"
   {}
 end
+
+# Run a CLI provider's list_models_command and return the parsed model list.
+# Returns an array of model hashes on success, or nil on failure.
+# Each model hash contains at least: "model_id" (or "slug"/"model_name"), and optionally "description", etc.
+def list_models_for_provider(provider_name)
+  config = load_cli_provider(provider_name)
+  return nil if config.empty?
+
+  command = config["list_models_command"]
+  return nil unless command && !command.empty?
+
+  stdout, stderr, status = Open3.capture3(command)
+  unless status.success?
+    LOG.warn "list_models_command for '#{provider_name}' failed (exit #{status.exitstatus}): #{stderr.strip}"
+    return nil
+  end
+
+  parse_list_models_output(stdout)
+rescue StandardError => e
+  LOG.warn "Failed to run list_models_command for '#{provider_name}': #{e.message}"
+  nil
+end
+
+require_relative "model_parser"
 
 # Resolve CLI config for a project by merging provider defaults with project overrides.
 # Priority: cli_provider_override > agent-level cli_provider > project-level cli_provider > DEFAULT_PROJECT

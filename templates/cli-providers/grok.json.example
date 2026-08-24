@@ -7,6 +7,7 @@
   "prompt_mode": "flag",
   "prompt_flag": "--prompt-file",
   "resume_flag": "-c",
+  "list_models_command": "grok models",
   "models": {
     "build": "grok-build",
     "composer": "grok-composer-2.5-fast",

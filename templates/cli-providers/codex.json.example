@@ -19,6 +19,7 @@
   "resume_args": "exec resume --last --full-auto",
   "session_dir": "~/.codex/sessions",
   "output_last_message_flag": "-o",
+  "list_models_command": "codex debug models",
   "models": {
     "o3": "o3",
     "o4-mini": "o4-mini",
