@@ -19,7 +19,6 @@ DISCORD_CONFIG_FILE = File.join(BRAINIAC_DIR, "discord.json")
 
 index = ARGV.find { |a| !a.start_with?("--") }&.to_i
 unless index
-  puts({ text: "", tooltip: "", class: "" }.to_json)
   exit
 end
 
@@ -187,8 +186,9 @@ def generate_output(index)
   state = fetch_state
 
   if state["error"]
-    puts({ text: "", tooltip: "", class: "" }.to_json) if index.positive?
-    puts({ text: "⚠️", tooltip: "Brainiac Error: #{escape_pango(state["error"])}", class: "error" }.to_json) if index.zero?
+    return if index.positive?
+
+    puts({ text: "⚠️", tooltip: "Brainiac Error: #{escape_pango(state["error"])}", class: "error" }.to_json)
     return
   end
 
@@ -200,10 +200,7 @@ def generate_output(index)
   end
 
   session = sessions[index]
-  unless session
-    puts({ text: "", tooltip: "", class: "" }.to_json)
-    return
-  end
+  return unless session
 
   agent = session["agent"]
   emoji = AGENTS.dig(agent&.downcase, :emoji) || DEFAULT_EMOJI

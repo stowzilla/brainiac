@@ -70,13 +70,13 @@ end
 def generate_output(env_key)
   deployments = fetch_deployments
   unless deployments
-    puts({ text: "", tooltip: "#{env_key}: server unreachable", class: "error" }.to_json)
+    puts({ text: "⚠️", tooltip: "#{env_key}: server unreachable", class: "error" }.to_json)
     return
   end
 
   d = deployments.find { |dep| dep["env"] == env_key }
   unless d
-    puts({ text: "", tooltip: "#{env_key}: not configured", class: "error" }.to_json)
+    puts({ text: "⚠️", tooltip: "#{env_key}: not configured", class: "error" }.to_json)
     return
   end
 
@@ -88,16 +88,16 @@ def generate_output(env_key)
     status = d["last_deploy_status"]
 
     if status == "deploying"
-      dot = '<span color="#ffaa00">●</span>'
+      dot = "🟡"
       css_class = "deploy-deploying"
     elsif status == "failed"
-      dot = '<span color="#ff4444">●</span>'
+      dot = "🔴"
       css_class = "deploy-failed"
     elsif recent && status == "success"
-      dot = '<span color="#4488ff">●</span>'
+      dot = "🔵"
       css_class = "deploy-recent"
     else
-      dot = '<span color="#ff4444">●</span>'
+      dot = "🔴"
       css_class = "deploy-occupied"
     end
 
@@ -112,7 +112,7 @@ def generate_output(env_key)
                   end
     tooltip = "#{status_icon} #{label}: #{card}#{branch}#{" (#{ago})" if ago}\nClick: open URL | Right-click: deploy"
   else
-    dot = '<span color="#44ff44">●</span>'
+    dot = "🟢"
     css_class = "deploy-available"
     ago = time_ago(d["cleared_at"])
     last = d["last_card"] ? " (was ##{d["last_card"]})" : ""

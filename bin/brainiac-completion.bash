@@ -256,8 +256,9 @@ _brainiac() {
           puts "yes" if names.include?(ARGV[1])
         ' "$brainiac_dir/plugins.json" "$cmd" 2>/dev/null)
 
-        if [[ "$is_plugin" == "yes" && $cword -eq 2 ]]; then
+        if [[ "$is_plugin" == "yes" ]]; then
           # Get plugin subcommands via its CLI module
+          # Pass remaining words (after plugin name) for nested completion
           local subcmds
           subcmds=$(ruby -rjson -e '
             brainiac_dir = ENV["BRAINIAC_DIR"] || File.join(Dir.home, ".brainiac")
@@ -280,10 +281,16 @@ _brainiac() {
               pascal = ARGV[0].split(/[-_]/).map(&:capitalize).join
               mod = Brainiac::Plugins.const_get(pascal) if Brainiac::Plugins.const_defined?(pascal)
               if mod&.respond_to?(:completions)
-                puts mod.completions.join("\n")
+                args = ARGV[1..] || []
+                result = if mod.method(:completions).arity == 0
+                           args.empty? ? mod.completions : []
+                         else
+                           mod.completions(args)
+                         end
+                puts result.join("\n")
               end
             end
-          ' "$cmd" 2>/dev/null)
+          ' "$cmd" ${words[@]:2:$((cword-2))} 2>/dev/null)
           COMPREPLY=($(compgen -W "$subcmds" -- "$cur"))
         fi
       fi
