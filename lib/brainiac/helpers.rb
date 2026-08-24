@@ -38,6 +38,15 @@ def load_cli_provider(provider_name)
   # cwd_flag: when set, the working directory is passed as a CLI argument
   # (e.g. "-C" for Codex CLI) instead of relying solely on chdir.
   config["cwd_flag"] = raw["cwd_flag"] if raw["cwd_flag"]
+  # config_override_flag: flag for passing config overrides (e.g. "-c" for Codex CLI).
+  # Used when effort_config_key is set to pass effort as a config key=value pair.
+  config["config_override_flag"] = raw["config_override_flag"] if raw["config_override_flag"]
+  # effort_config_key: when set, effort is passed as a config override instead of a
+  # dedicated flag. E.g., for Codex CLI: -c 'model_reasoning_effort="high"'
+  config["effort_config_key"] = raw["effort_config_key"] if raw["effort_config_key"]
+  # effort_map: optional mapping from Brainiac effort levels to CLI-specific levels.
+  # E.g., { "low" => "low", "max" => "xhigh" } for Codex which doesn't support "max".
+  config["effort_map"] = raw["effort_map"] if raw["effort_map"]
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -640,7 +649,7 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
     is_known = allowed.value?(model) || allowed.key?(model)
     cmd.push(resolved["agent_model_flag"], model) if is_known
   end
-  cmd.push(resolved["agent_effort_flag"], effort) if resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty? && effort
+  append_effort_to_cmd(cmd, effort, resolved) if effort
   # Resume the most recent session in the working directory (for multi-turn CLIs like grok)
   cmd.push(resolved["resume_flag"]) if resume && resolved["resume_flag"]
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
@@ -650,6 +659,33 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   cmd
 end
 # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+
+# Map a Brainiac effort level through the provider's effort_map (if any).
+# Returns the mapped level, or the original level if no mapping exists.
+def map_effort_level(effort, resolved)
+  return nil unless effort
+
+  effort_map = resolved["effort_map"]
+  return effort unless effort_map
+
+  effort_map[effort] || effort
+end
+
+# Append effort flags to a command array based on provider config.
+# Handles both dedicated effort flags (--effort high) and config overrides (-c 'key="value"').
+def append_effort_to_cmd(cmd, effort, resolved)
+  return unless effort
+
+  mapped_effort = map_effort_level(effort, resolved)
+  return unless mapped_effort
+
+  if resolved["effort_config_key"]
+    flag = resolved["config_override_flag"] || "-c"
+    cmd.push(flag, "#{resolved["effort_config_key"]}=\"#{mapped_effort}\"")
+  elsif resolved["agent_effort_flag"] && !resolved["agent_effort_flag"].empty?
+    cmd.push(resolved["agent_effort_flag"], mapped_effort)
+  end
+end
 
 def handle_agent_completion(**ctx)
   agent_exit_status = $CHILD_STATUS.exitstatus

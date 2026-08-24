@@ -571,6 +571,122 @@ class TestHelpers < Minitest::Test
     assert_includes cmd, "-c"
   end
 
+  def test_build_agent_cmd_with_standard_effort_flag
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_flag" => "--agent",
+      "agent_effort_flag" => "--effort",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "opus" => "claude-opus-4.5" }
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", effort: "high")
+    assert_includes cmd, "--effort"
+    assert_includes cmd, "high"
+    idx = cmd.index("--effort")
+    assert_equal "high", cmd[idx + 1]
+  end
+
+  def test_build_agent_cmd_with_config_override_effort
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_cli_args" => "--full-auto",
+      "agent_flag" => nil,
+      "effort_config_key" => "model_reasoning_effort",
+      "config_override_flag" => "-c",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "gpt5" => "gpt-5.5" }
+    }
+    cmd = build_agent_cmd(resolved, effort: "high")
+    assert_includes cmd, "-c"
+    idx = cmd.index("-c")
+    assert_equal 'model_reasoning_effort="high"', cmd[idx + 1]
+    # Should NOT include --effort
+    refute_includes cmd, "--effort"
+  end
+
+  def test_build_agent_cmd_with_effort_map
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_cli_args" => "--full-auto",
+      "agent_flag" => nil,
+      "effort_config_key" => "model_reasoning_effort",
+      "config_override_flag" => "-c",
+      "effort_map" => { "max" => "xhigh", "low" => "low" },
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, effort: "max")
+    idx = cmd.index("-c")
+    assert_equal 'model_reasoning_effort="xhigh"', cmd[idx + 1]
+  end
+
+  def test_build_agent_cmd_effort_map_passthrough_unmapped
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_cli_args" => "--full-auto",
+      "agent_flag" => nil,
+      "effort_config_key" => "model_reasoning_effort",
+      "config_override_flag" => "-c",
+      "effort_map" => { "max" => "xhigh" },
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    # "medium" isn't in the map, so it passes through unchanged
+    cmd = build_agent_cmd(resolved, effort: "medium")
+    idx = cmd.index("-c")
+    assert_equal 'model_reasoning_effort="medium"', cmd[idx + 1]
+  end
+
+  def test_build_agent_cmd_no_effort_when_nil
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_cli_args" => "--full-auto",
+      "agent_flag" => nil,
+      "effort_config_key" => "model_reasoning_effort",
+      "config_override_flag" => "-c",
+      "agent_effort_flag" => "--effort",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, effort: nil)
+    refute_includes cmd, "-c"
+    refute_includes cmd, "--effort"
+  end
+
+  def test_build_agent_cmd_config_override_defaults_to_dash_c
+    # If config_override_flag is not set, defaults to "-c"
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_cli_args" => "--full-auto",
+      "agent_flag" => nil,
+      "effort_config_key" => "model_reasoning_effort",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, effort: "high")
+    assert_includes cmd, "-c"
+    idx = cmd.index("-c")
+    assert_equal 'model_reasoning_effort="high"', cmd[idx + 1]
+  end
+
+  def test_map_effort_level_with_map
+    resolved = { "effort_map" => { "max" => "xhigh", "low" => "minimal" } }
+    assert_equal "xhigh", map_effort_level("max", resolved)
+    assert_equal "minimal", map_effort_level("low", resolved)
+    assert_equal "medium", map_effort_level("medium", resolved) # passthrough
+  end
+
+  def test_map_effort_level_without_map
+    resolved = {}
+    assert_equal "high", map_effort_level("high", resolved)
+  end
+
+  def test_map_effort_level_nil_effort
+    resolved = { "effort_map" => { "max" => "xhigh" } }
+    assert_nil map_effort_level(nil, resolved)
+  end
+
   def test_load_cli_provider_with_cwd_flag
     provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "codex-test.json")
     File.write(provider_file, JSON.generate({
@@ -591,6 +707,32 @@ class TestHelpers < Minitest::Test
     FileUtils.rm_f(provider_file)
   end
 
+  def test_load_cli_provider_with_effort_config_key
+    # Write a codex-like provider config to the test cli-providers dir
+    provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "codex-effort-test.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "codex",
+                                              "default_args" => "--full-auto",
+                                              "agent_flag" => nil,
+                                              "model_flag" => "--model",
+                                              "effort_flag" => nil,
+                                              "effort_config_key" => "model_reasoning_effort",
+                                              "config_override_flag" => "-c",
+                                              "effort_map" => { "max" => "xhigh", "low" => "low" },
+                                              "prompt_mode" => "stdin",
+                                              "models" => { "gpt5" => "gpt-5.5" },
+                                              "efforts" => %w[low medium high xhigh max]
+                                            }))
+    config = load_cli_provider("codex-effort-test")
+    assert_equal "codex", config["agent_cli"]
+    assert_equal "model_reasoning_effort", config["effort_config_key"]
+    assert_equal "-c", config["config_override_flag"]
+    assert_equal({ "max" => "xhigh", "low" => "low" }, config["effort_map"])
+    assert_nil config["agent_effort_flag"] # effort_flag was nil, so it's compacted out
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
+
   def test_load_cli_provider_without_cwd_flag
     provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "kiro-test.json")
     File.write(provider_file, JSON.generate({
@@ -602,6 +744,36 @@ class TestHelpers < Minitest::Test
     config = load_cli_provider("kiro-test")
     refute config.key?("cwd_flag")
     assert_equal "kiro-cli", config["agent_cli"]
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
+
+  def test_full_integration_codex_effort_via_provider
+    # Write a codex-like provider config
+    provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "codex-int.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "codex",
+                                              "default_args" => "--full-auto",
+                                              "agent_flag" => nil,
+                                              "model_flag" => "--model",
+                                              "effort_flag" => nil,
+                                              "effort_config_key" => "model_reasoning_effort",
+                                              "config_override_flag" => "-c",
+                                              "effort_map" => { "max" => "xhigh" },
+                                              "prompt_mode" => "stdin",
+                                              "models" => { "gpt5" => "gpt-5.5" },
+                                              "efforts" => %w[low medium high xhigh max]
+                                            }))
+    # Resolve through the full pipeline
+    project_config = { "cli_provider" => "codex-int" }
+    resolved = resolve_project_cli_config(project_config)
+    cmd = build_agent_cmd(resolved, effort: "max")
+    # Should produce: codex --full-auto -c 'model_reasoning_effort="xhigh"'
+    assert_equal "codex", cmd[0]
+    assert_includes cmd, "-c"
+    idx = cmd.index("-c")
+    assert_equal 'model_reasoning_effort="xhigh"', cmd[idx + 1]
+    refute_includes cmd, "--effort"
   ensure
     FileUtils.rm_f(provider_file)
   end
