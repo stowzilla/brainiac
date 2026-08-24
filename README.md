@@ -226,11 +226,22 @@ Configure which AI CLI to use for dispatching agents. Each provider is a JSON fi
 
 ```json
 {
-  "agent_cli": "kiro-cli",
-  "agent_cli_args": "chat --trust-all-tools --no-interactive",
-  "agent_model_flag": "--model"
+  "binary": "kiro-cli",
+  "default_args": "chat --trust-all-tools --no-interactive",
+  "agent_flag": "--agent",
+  "model_flag": "--model"
 }
 ```
+
+The `agent_flag` field controls how agent identity is passed to the CLI. Different CLIs use different flags:
+
+| CLI | `agent_flag` | Example command |
+|-----|-------------|-----------------|
+| Kiro CLI | `"--agent"` | `kiro-cli --agent sherlock chat --no-interactive` |
+| Codex CLI | `"--profile"` | `codex --profile sherlock exec --sandbox workspace-write -` |
+| Grok CLI | `null` | `grok --always-approve` (no agent identity passed) |
+
+Set `agent_flag` to `null` to suppress passing the agent name entirely (for CLIs that don't support persona switching).
 
 Brainiac ships with example providers during setup. Your project config references which provider to use.
 

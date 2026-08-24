@@ -299,6 +299,137 @@ class TestHelpers < Minitest::Test
     refute_equal id1, id2
   end
 
+  # --- load_cli_provider tests ---
+
+  def test_load_cli_provider_with_profile_agent_flag
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "codex.json"), JSON.generate({
+      "binary" => "codex",
+      "default_args" => "exec --sandbox workspace-write -",
+      "agent_flag" => "--profile",
+      "model_flag" => "--model",
+      "prompt_mode" => "stdin",
+      "models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
+    }))
+
+    config = load_cli_provider("codex")
+    assert_equal "codex", config["agent_cli"]
+    assert_equal "--profile", config["agent_flag"]
+    assert_equal "exec --sandbox workspace-write -", config["agent_cli_args"]
+    assert_equal "--model", config["agent_model_flag"]
+    assert_equal "stdin", config["prompt_mode"]
+    assert_equal({ "o3" => "o3", "o4-mini" => "o4-mini" }, config["allowed_models"])
+  end
+
+  def test_load_cli_provider_with_null_agent_flag
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "grok-test.json"), JSON.generate({
+      "binary" => "grok",
+      "default_args" => "--always-approve",
+      "agent_flag" => nil,
+      "model_flag" => "--model",
+      "prompt_mode" => "flag",
+      "prompt_flag" => "--prompt-file"
+    }))
+
+    config = load_cli_provider("grok-test")
+    assert_equal "grok", config["agent_cli"]
+    assert_nil config["agent_flag"]
+    # nil agent_flag should be preserved (not compacted away)
+    assert config.key?("agent_flag")
+  end
+
+  def test_load_cli_provider_missing_agent_flag_defaults_to_agent
+    provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
+    File.write(File.join(provider_dir, "minimal.json"), JSON.generate({
+      "binary" => "some-cli",
+      "default_args" => ""
+    }))
+
+    config = load_cli_provider("minimal")
+    assert_equal "--agent", config["agent_flag"]
+  end
+
+  # --- build_agent_cmd tests ---
+
+  def test_build_agent_cmd_default_agent_flag
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "opus" => "claude-opus-4.5" }
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", model: "claude-opus-4.5")
+    assert_equal %w[kiro-cli --agent sherlock chat --no-interactive --model claude-opus-4.5], cmd
+  end
+
+  def test_build_agent_cmd_profile_agent_flag_for_codex
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => "--profile",
+      "agent_cli_args" => "exec --sandbox workspace-write -",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "o3" => "o3", "o4-mini" => "o4-mini" },
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", model: "o3")
+    assert_equal %w[codex --profile sherlock exec --sandbox workspace-write - --model o3], cmd
+  end
+
+  def test_build_agent_cmd_null_agent_flag_suppresses_agent_name
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock")
+    assert_equal %w[grok --always-approve], cmd
+    refute_includes cmd, "sherlock"
+  end
+
+  def test_build_agent_cmd_no_agent_config_name
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => "--profile",
+      "agent_cli_args" => "exec -",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {}
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: nil)
+    assert_equal %w[codex exec -], cmd
+    refute_includes cmd, "--profile"
+  end
+
+  def test_build_agent_cmd_resume_flag
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {},
+      "resume_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", resume: true)
+    assert_includes cmd, "--resume"
+  end
+
+  def test_build_agent_cmd_prompt_flag_mode
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "agent_model_flag" => "--model",
+      "allowed_models" => {},
+      "prompt_mode" => "flag",
+      "prompt_flag" => "--prompt-file"
+    }
+    cmd = build_agent_cmd(resolved, prompt_file: "/tmp/prompt.md")
+    assert_equal %w[grok --always-approve --prompt-file /tmp/prompt.md], cmd
+  end
+
   def test_detect_model_from_inline_text
     config = PROJECTS["marketplace"]
     assert_equal "claude-opus-4.5", detect_model(config, text: "[opus] do the thing")
@@ -353,5 +484,125 @@ class TestHelpers < Minitest::Test
     refute intent_skip?("do the thing", agent_name: "Sherlock", source: :discord)
   ensure
     BRAINIAC_CONFIG.replace(original)
+  end
+
+  # --- build_agent_cmd tests ---
+
+  def test_build_agent_cmd_basic
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "agent_model_flag" => "--model",
+      "agent_effort_flag" => "--effort",
+      "allowed_models" => { "opus" => "claude-opus-4.5" },
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", model: "claude-opus-4.5")
+    assert_equal %w[kiro-cli --agent sherlock chat --no-interactive --model claude-opus-4.5], cmd
+  end
+
+  def test_build_agent_cmd_with_cwd_flag
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--full-auto",
+      "agent_model_flag" => "-m",
+      "cwd_flag" => "-C",
+      "allowed_models" => { "o4-mini" => "o4-mini" },
+      "prompt_mode" => "flag",
+      "prompt_flag" => "--prompt-file"
+    }
+    cmd = build_agent_cmd(resolved, model: "o4-mini", chdir: "/home/user/projects/myapp", prompt_file: "/tmp/prompt.md")
+    assert_equal %w[codex -C /home/user/projects/myapp --full-auto -m o4-mini --prompt-file /tmp/prompt.md], cmd
+  end
+
+  def test_build_agent_cmd_cwd_flag_omitted_when_no_chdir
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--full-auto",
+      "cwd_flag" => "-C",
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved)
+    assert_equal %w[codex --full-auto], cmd
+    refute_includes cmd, "-C"
+  end
+
+  def test_build_agent_cmd_no_cwd_flag_in_config
+    resolved = {
+      "agent_cli" => "kiro-cli",
+      "agent_flag" => "--agent",
+      "agent_cli_args" => "chat --no-interactive",
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, agent_config_name: "sherlock", chdir: "/home/user/project")
+    # chdir is passed but no cwd_flag in config — should not appear in cmd
+    assert_equal %w[kiro-cli --agent sherlock chat --no-interactive], cmd
+    refute_includes cmd, "/home/user/project"
+  end
+
+  def test_build_agent_cmd_cwd_flag_position_before_args
+    resolved = {
+      "agent_cli" => "codex",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--full-auto --sandbox workspace-write",
+      "cwd_flag" => "-C",
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, chdir: "/tmp/worktree")
+    # -C should appear right after the binary, before default_args
+    assert_equal "codex", cmd[0]
+    assert_equal "-C", cmd[1]
+    assert_equal "/tmp/worktree", cmd[2]
+    assert_equal "--full-auto", cmd[3]
+  end
+
+  def test_build_agent_cmd_with_resume_flag
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "resume_flag" => "-c",
+      "prompt_mode" => "stdin"
+    }
+    cmd = build_agent_cmd(resolved, resume: true)
+    assert_includes cmd, "-c"
+  end
+
+  def test_load_cli_provider_with_cwd_flag
+    provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "codex-test.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "codex",
+                                              "default_args" => "--full-auto",
+                                              "agent_flag" => nil,
+                                              "model_flag" => "-m",
+                                              "cwd_flag" => "-C",
+                                              "prompt_mode" => "flag",
+                                              "prompt_flag" => "--prompt-file",
+                                              "models" => { "o4-mini" => "o4-mini" }
+                                            }))
+    config = load_cli_provider("codex-test")
+    assert_equal "-C", config["cwd_flag"]
+    assert_equal "codex", config["agent_cli"]
+    assert_nil config["agent_flag"]
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
+
+  def test_load_cli_provider_without_cwd_flag
+    provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "kiro-test.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "kiro-cli",
+                                              "default_args" => "chat --no-interactive",
+                                              "model_flag" => "--model",
+                                              "models" => { "opus" => "claude-opus-4.5" }
+                                            }))
+    config = load_cli_provider("kiro-test")
+    refute config.key?("cwd_flag")
+    assert_equal "kiro-cli", config["agent_cli"]
+  ensure
+    FileUtils.rm_f(provider_file)
   end
 end

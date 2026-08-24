@@ -35,6 +35,9 @@ def load_cli_provider(provider_name)
   # output_last_message_flag: when set, the CLI writes the agent's final message to the given file path.
   # Used to capture structured output from CLIs that support it (e.g. codex exec -o <path>).
   config["output_last_message_flag"] = raw["output_last_message_flag"] if raw["output_last_message_flag"]
+  # cwd_flag: when set, the working directory is passed as a CLI argument
+  # (e.g. "-C" for Codex CLI) instead of relying solely on chdir.
+  config["cwd_flag"] = raw["cwd_flag"] if raw["cwd_flag"]
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -534,7 +537,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   output_file = prepare_output_file(resolved, log_name, timestamp)
 
   cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,
-                                  prompt_file: prompt_file, resume: should_resume, output_file: output_file)
+                                  prompt_file: prompt_file, resume: should_resume,
+                                  output_file: output_file, chdir: chdir)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
@@ -615,9 +619,14 @@ end
 # When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
 # When resume is true and the provider has a resume_flag, adds it to continue the last session.
 # When output_file is provided and the provider has output_last_message_flag, appends it.
+# When chdir is provided and the provider has a cwd_flag, appends it so the CLI
+# itself switches to the working directory (e.g. `codex -C /path/to/project`).
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil)
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil)
   cmd = [resolved["agent_cli"]]
+  # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
+  # This is added early so it appears before subcommands/args (global option).
+  cmd.push(resolved["cwd_flag"], chdir) if resolved["cwd_flag"] && chdir
   # agent_flag controls how the agent identity is passed. Defaults to "--agent".
   # Provider configs can set it to a different flag or null to suppress entirely.
   agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
