@@ -14,9 +14,7 @@ def parse_list_models_output(output)
   # Try parsing the entire output as JSON first (handles well-formed JSON from any CLI)
   begin
     data = JSON.parse(output)
-    if data.is_a?(Hash) && data["models"].is_a?(Array)
-      return normalize_model_list(data["models"])
-    end
+    return normalize_model_list(data["models"]) if data.is_a?(Hash) && data["models"].is_a?(Array)
     return normalize_model_list(data) if data.is_a?(Array)
   rescue JSON::ParserError
     # Not pure JSON — try to extract JSON from mixed output
@@ -31,17 +29,17 @@ def parse_list_models_output(output)
     json_candidate = lines[idx..].join
     begin
       data = JSON.parse(json_candidate)
-      if data.is_a?(Hash) && data["models"].is_a?(Array)
-        return normalize_model_list(data["models"])
-      end
+      return normalize_model_list(data["models"]) if data.is_a?(Hash) && data["models"].is_a?(Array)
     rescue JSON::ParserError
       # Try next candidate
     end
   end
 
-  # Try to find a standalone JSON array starting with [{
+  # Try to find a standalone JSON array starting with [{ (e.g. codex debug models raw output)
+  # Intentionally separate loop: {models:[]} has priority over bare arrays
+  # rubocop:disable-next Style/CombinableLoops
   lines.each_with_index do |line, idx|
-    next unless line.strip.start_with?("[{") || line.strip.start_with?("[")
+    next unless line.strip.start_with?("[{", "[")
 
     json_candidate = lines[idx..].join
     begin
@@ -86,8 +84,7 @@ def generate_short_model_key(model_id)
     .sub(/^claude-/, "")
     .sub(/^grok-/, "")
     .sub(/^gpt-/, "")
-    .gsub(/[^a-z0-9]/, "-")
-    .gsub(/-+/, "-")
+    .gsub(/[^a-z0-9]/, "-").squeeze("-")
     .sub(/^-/, "")
     .sub(/-$/, "")
 end

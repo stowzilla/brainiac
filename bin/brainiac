@@ -1985,13 +1985,20 @@ when "provider"
     visible_models = models if visible_models.empty?
 
     # Display models in a table
+    default_model = data["default_model"]
+    # Use the provider's default_model field if set; mark first only if no explicit default is configured
+    has_explicit_default = default_model && visible_models.any? { |m| m["model_id"] == default_model }
     puts "Available models for '#{name}' (#{visible_models.size} visible, #{models.size} total):"
     puts ""
     visible_models.each do |m|
       model_id = m["model_id"] || "unknown"
       desc = m["description"] || m["display_name"] || ""
       rate = m["rate_multiplier"] ? "#{m["rate_multiplier"]}x" : (m["rate"] || "")
-      marker = m == visible_models.first || m["model_id"] == data["default_model"] ? "*" : " "
+      marker = if has_explicit_default
+                 m["model_id"] == default_model ? "*" : " "
+               else
+                 m == visible_models.first ? "*" : " "
+               end
       if desc.empty?
         puts "  #{marker} #{model_id}"
       else

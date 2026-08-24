@@ -57,7 +57,6 @@ def list_models_for_provider(provider_name)
   command = config["list_models_command"]
   return nil unless command && !command.empty?
 
-  require "open3"
   stdout, stderr, status = Open3.capture3(command)
   unless status.success?
     LOG.warn "list_models_command for '#{provider_name}' failed (exit #{status.exitstatus}): #{stderr.strip}"
