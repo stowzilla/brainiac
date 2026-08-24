@@ -15,13 +15,16 @@
   },
   "prompt_mode": "stdin",
   "cwd_flag": "-C",
-  "resume_flag": "-c",
+  "resume_flag": null,
+  "resume_args": "exec resume --last --full-auto",
+  "session_dir": "~/.codex/sessions",
   "output_last_message_flag": "-o",
   "list_models_command": "codex debug models",
   "models": {
     "o3": "o3",
     "o4-mini": "o4-mini",
     "gpt5": "gpt-5.5",
+    "codex-mini": "codex-mini-latest",
     "auto": "o4-mini"
   },
   "efforts": ["low", "medium", "high", "xhigh", "max"]

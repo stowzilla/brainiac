@@ -28,28 +28,15 @@ def load_cli_provider(provider_name)
   config["agent_flag"] = raw.key?("agent_flag") ? raw["agent_flag"] : "--agent"
   # prompt_mode: "stdin" (default) or "flag" — how the prompt is delivered.
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
-  config["prompt_flag"] = raw["prompt_flag"] if raw["prompt_flag"]
-  # list_models_command: shell command to discover available models from the CLI provider.
-  # Output should be JSON with a "models" array of objects containing at least "model_id".
-  config["list_models_command"] = raw["list_models_command"] if raw["list_models_command"] && !raw["list_models_command"].empty?
-  # resume_flag: when set, follow-up dispatches use this flag to continue the
-  # most recent session in the working directory (e.g. "-c" or "--continue").
-  config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
-  # output_last_message_flag: when set, the CLI writes the agent's final message to the given file path.
-  # Used to capture structured output from CLIs that support it (e.g. codex exec -o <path>).
-  config["output_last_message_flag"] = raw["output_last_message_flag"] if raw["output_last_message_flag"]
-  # cwd_flag: when set, the working directory is passed as a CLI argument
-  # (e.g. "-C" for Codex CLI) instead of relying solely on chdir.
-  config["cwd_flag"] = raw["cwd_flag"] if raw["cwd_flag"]
-  # config_override_flag: flag for passing config overrides (e.g. "-c" for Codex CLI).
-  # Used when effort_config_key is set to pass effort as a config key=value pair.
-  config["config_override_flag"] = raw["config_override_flag"] if raw["config_override_flag"]
-  # effort_config_key: when set, effort is passed as a config override instead of a
-  # dedicated flag. E.g., for Codex CLI: -c 'model_reasoning_effort="high"'
-  config["effort_config_key"] = raw["effort_config_key"] if raw["effort_config_key"]
-  # effort_map: optional mapping from Brainiac effort levels to CLI-specific levels.
-  # E.g., { "low" => "low", "max" => "xhigh" } for Codex which doesn't support "max".
-  config["effort_map"] = raw["effort_map"] if raw["effort_map"]
+  # Copy optional fields from raw config when present.
+  # Each field controls a specific CLI behavior — see comments in the template.
+  %w[prompt_flag list_models_command resume_flag resume_args session_dir output_last_message_flag
+     cwd_flag config_override_flag effort_config_key effort_map].each do |key|
+    next unless raw[key]
+    next if raw[key].respond_to?(:empty?) && raw[key].empty?
+
+    config[key] = raw[key]
+  end
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -478,17 +465,26 @@ end
 # Check if a prior CLI session exists in the given directory for the specified CLI binary.
 # This prevents resume attempts when the CLI provider changed (e.g., [cli:grok] in a thread
 # started by kiro-cli) or when the session was started on a different machine.
-def prior_session_exists?(chdir, agent_cli)
+# session_dir: optional centralized session directory (e.g. ~/.codex/sessions) for CLIs
+# that store session state globally rather than per-project.
+def prior_session_exists?(chdir, agent_cli, session_dir: nil)
   return false unless chdir && agent_cli
 
   cli_name = File.basename(agent_cli)
+
+  # Centralized session storage (e.g. Codex stores sessions in ~/.codex/sessions/).
+  # Search session files for ones that match the working directory (cwd field in session metadata).
+  if session_dir
+    expanded_session_dir = File.expand_path(session_dir)
+    return centralized_session_matches_cwd?(expanded_session_dir, chdir) if File.directory?(expanded_session_dir)
+  end
 
   # Check for CLI-specific session markers:
   # - grok uses .grok/ directory for session state
   # - kiro-cli uses .kiro-cli/ or similar
   # - Generic fallback: check tmp/ for agent logs from this CLI
-  session_dir = File.join(chdir, ".#{cli_name}")
-  return true if File.directory?(session_dir)
+  session_dir_local = File.join(chdir, ".#{cli_name}")
+  return true if File.directory?(session_dir_local)
 
   # Fallback: look for recent session logs in tmp/ that suggest this CLI ran here before.
   # This covers CLIs that don't leave a dotdir but do leave logs via brainiac.
@@ -503,9 +499,60 @@ rescue StandardError
   false
 end
 
+# Check if a centralized session directory has sessions matching the given cwd.
+# Supports CLIs that store sessions as .jsonl files in date-partitioned directories (YYYY/MM/DD/)
+# with a first-line JSON metadata object containing a "payload.cwd" field.
+# Only considers sessions from the last 24 hours as resumable.
+#
+# Performance note: Dir.glob("**/*.jsonl") stats every file in the session directory before
+# filtering by mtime. This is fine for typical usage (days/weeks of sessions) but could slow
+# down if the directory accumulates months of files. The 24-hour mtime cutoff limits actual
+# I/O (only recent files are read), but the glob itself still walks the full tree.
+def centralized_session_matches_cwd?(session_base_dir, target_cwd)
+  # Only check recent session files (last 24 hours) to avoid scanning the full history
+  cutoff = Time.now - 86_400
+  target_cwd_resolved = begin
+    File.realpath(target_cwd)
+  rescue StandardError
+    target_cwd
+  end
+
+  Dir.glob(File.join(session_base_dir, "**", "*.jsonl")).any? do |session_file|
+    next unless File.mtime(session_file) > cutoff
+
+    # Read just the first line to get session_meta with cwd
+    first_line = begin
+      File.open(session_file, &:readline)
+    rescue StandardError
+      next
+    end
+    meta = begin
+      JSON.parse(first_line)
+    rescue StandardError
+      next
+    end
+    session_cwd = meta.dig("payload", "cwd")
+    next unless session_cwd
+
+    session_cwd_resolved = begin
+      File.realpath(session_cwd)
+    rescue StandardError
+      session_cwd
+    end
+    session_cwd_resolved == target_cwd_resolved
+  end
+rescue StandardError
+  false
+end
+
 # Public helper: check if resume is viable for a given project + CLI provider combo.
-# Plugins should call this BEFORE building the prompt to decide between
-# render_resume_prompt (lean) and render_prompt (full context).
+# Plugins MUST use this method (not check resolved["resume_flag"] directly) to decide
+# whether a session can be resumed. This handles both flag-based resume (e.g. kiro --resume,
+# grok -c) and subcommand-based resume (e.g. codex exec resume --last).
+#
+# Call this BEFORE building the prompt to decide between:
+#   - render_resume_prompt (lean, for resumable sessions)
+#   - render_prompt with full context (for non-resumable sessions)
 #
 # Returns true if the CLI supports resume AND a prior session exists in the working directory.
 # When this returns false, plugins should use render_prompt with thread history as card_context
@@ -513,17 +560,24 @@ end
 def resume_viable?(project_config:, cli_provider: nil, agent_name: nil, chdir: nil)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
-  return false unless resolved["resume_flag"]
+  return false unless resolved["resume_flag"] || resolved["resume_args"]
 
-  prior_session_exists?(chdir, resolved["agent_cli"])
+  prior_session_exists?(chdir, resolved["agent_cli"], session_dir: resolved["session_dir"])
 end
 
 # Determine whether a session resume should actually happen.
-# Returns truthy (the resume flag string) if viable, false otherwise.
-# Logs a message when resume was requested but isn't possible.
+# Called by run_agent — plugins should NOT call this directly; pass `resume: true` to run_agent.
+#
+# Returns:
+#   - :resume_args — when the provider uses subcommand-based resume (build_agent_cmd replaces default_args)
+#   - String (the resume flag) — when the provider uses flag-based resume (appended to cmd)
+#   - false — when resume was not requested or not viable
 def resolve_resume(resume, resolved, chdir)
-  return false unless resume && resolved["resume_flag"]
-  return resolved["resume_flag"] if prior_session_exists?(chdir, resolved["agent_cli"])
+  return false unless resume && (resolved["resume_flag"] || resolved["resume_args"])
+  if prior_session_exists?(chdir, resolved["agent_cli"], session_dir: resolved["session_dir"])
+    # Return :resume_args when the provider uses subcommand-based resume (e.g. Codex exec resume)
+    return resolved["resume_args"] ? :resume_args : resolved["resume_flag"]
+  end
 
   LOG.info "[Dispatch] Resume requested but not viable for #{resolved["agent_cli"]} in #{chdir} — starting fresh session"
   false
@@ -548,6 +602,10 @@ def intent_skip?(message, agent_name:, source: nil, channel: nil, context: nil)
   false
 end
 
+# Dispatch an agent CLI process. Plugins call this with `resume: true` to request session
+# continuation — the method internally resolves whether to use flag-based resume (appending
+# e.g. --resume or -c) or subcommand-based resume (replacing default_args with resume_args).
+# Plugins should NOT build their own resume logic; pass `resume: true` and let core handle it.
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
               message: nil, channel: nil, context: nil, env: {})
@@ -581,9 +639,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   spawn_env = agent_env_for(agent_name).merge(env)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
-  LOG.info "Prompt written to #{prompt_file}"
-  LOG.info "Output capture: #{output_file}" if output_file
-  LOG.info "Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
+  LOG.info "Prompt: #{prompt_file} | Output: #{output_file || "none"} | Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
   LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
@@ -654,11 +710,12 @@ end
 
 # Build the CLI command array for an agent invocation.
 # When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
-# When resume is true and the provider has a resume_flag, adds it to continue the last session.
+# When resume is truthy and the provider has a resume_flag, adds it to continue the last session.
+# When resume is :resume_args, uses resume_args as the args instead of default_args (subcommand-based resume).
 # When output_file is provided and the provider has output_last_message_flag, appends it.
 # When chdir is provided and the provider has a cwd_flag, appends it so the CLI
 # itself switches to the working directory (e.g. `codex -C /path/to/project`).
-# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+# rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil)
   cmd = [resolved["agent_cli"]]
   # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
@@ -668,7 +725,10 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # Provider configs can set it to a different flag or null to suppress entirely.
   agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
   cmd.push(agent_flag, agent_config_name) if agent_flag && agent_config_name
-  cmd.concat(resolved["agent_cli_args"].split)
+  # When resuming via subcommand (resume_args), replace default_args entirely.
+  # e.g. "exec --full-auto" becomes "exec resume --last --full-auto"
+  args = resume == :resume_args && resolved["resume_args"] ? resolved["resume_args"] : resolved["agent_cli_args"]
+  cmd.concat(args.split)
   # Only pass --model if the model is a valid ID for this provider.
   # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
   if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
@@ -678,15 +738,14 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
     cmd.push(resolved["agent_model_flag"], model) if is_known
   end
   append_effort_to_cmd(cmd, effort, resolved) if effort
-  # Resume the most recent session in the working directory (for multi-turn CLIs like grok)
-  cmd.push(resolved["resume_flag"]) if resume && resolved["resume_flag"]
+  # Resume via flag (simple append, e.g. grok -c or kiro --resume) — only when not using resume_args
+  cmd.push(resume) if resume && resume != :resume_args && resume.is_a?(String)
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
   # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
   cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
 end
-# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 # Map a Brainiac effort level through the provider's effort_map (if any).
 # Returns the mapped level, or the original level if no mapping exists.
@@ -715,6 +774,7 @@ def append_effort_to_cmd(cmd, effort, resolved)
   end
 end
 
+# Append --model flag if the model is valid for this provider.
 def handle_agent_completion(**ctx)
   agent_exit_status = $CHILD_STATUS.exitstatus
   agent_signaled = $CHILD_STATUS.signaled?
