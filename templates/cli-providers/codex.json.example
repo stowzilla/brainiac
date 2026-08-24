@@ -5,6 +5,7 @@
   "model_flag": "--model",
   "effort_flag": null,
   "prompt_mode": "stdin",
+  "prompt_flag": null,
   "cwd_flag": "-C",
   "resume_flag": null,
   "models": {
