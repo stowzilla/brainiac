@@ -7,6 +7,7 @@
   "prompt_mode": "stdin",
   "cwd_flag": "-C",
   "resume_flag": null,
+  "output_last_message_flag": "-o",
   "models": {
     "o3": "o3",
     "o4-mini": "o4-mini",
