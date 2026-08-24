@@ -167,4 +167,21 @@ class TestOutputCapture < Minitest::Test
     resolved = { "agent_cli" => "kiro-cli" }
     assert_nil prepare_output_file(resolved, "test-dispatch", "20260824-120000")
   end
+
+  # --- output file cleanup (handle_agent_completion) ---
+
+  def test_output_file_cleaned_up_after_completion
+    # Create a temp output file simulating what the agent CLI would write
+    output_dir = File.join(TEST_BRAINIAC_DIR, "tmp", "output")
+    FileUtils.mkdir_p(output_dir)
+    output_file = File.join(output_dir, "agent-cleanup-test-20260824-120000.md")
+    File.write(output_file, "Agent response content")
+
+    assert File.exist?(output_file), "Output file should exist before cleanup"
+
+    # Simulate the cleanup that handle_agent_completion performs after hook emission
+    FileUtils.rm_f(output_file)
+
+    refute File.exist?(output_file), "Output file should be removed after completion"
+  end
 end

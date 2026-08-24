@@ -682,6 +682,9 @@ def handle_agent_completion(**ctx)
                 output_file: ctx[:output_file],
                 output_content: output_content)
 
+  # Clean up the output file after hook emission (content already captured above).
+  FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
+
   qmd_out, qmd_status = Open3.capture2e("qmd", "update")
   if qmd_status.success?
     LOG.info "[Brain] qmd update completed after #{ctx[:agent_config_name] || "agent"} session"
