@@ -29,6 +29,9 @@ def load_cli_provider(provider_name)
   # prompt_mode: "stdin" (default) or "flag" — how the prompt is delivered.
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
   config["prompt_flag"] = raw["prompt_flag"] if raw["prompt_flag"]
+  # list_models_command: shell command to discover available models from the CLI provider.
+  # Output should be JSON with a "models" array of objects containing at least "model_id".
+  config["list_models_command"] = raw["list_models_command"] if raw["list_models_command"] && !raw["list_models_command"].empty?
   # resume_flag: when set, follow-up dispatches use this flag to continue the
   # most recent session in the working directory (e.g. "-c" or "--continue").
   config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
@@ -40,6 +43,68 @@ def load_cli_provider(provider_name)
 rescue JSON::ParserError => e
   LOG.warn "Failed to parse CLI provider '#{provider_name}': #{e.message}"
   {}
+end
+
+# Run a CLI provider's list_models_command and return the parsed model list.
+# Returns an array of model hashes on success, or nil on failure.
+# Each model hash contains at least: "model_id", and optionally "model_name", "description", etc.
+def list_models_for_provider(provider_name)
+  config = load_cli_provider(provider_name)
+  return nil if config.empty?
+
+  command = config["list_models_command"]
+  return nil unless command && !command.empty?
+
+  require "open3"
+  stdout, stderr, status = Open3.capture3(command)
+  unless status.success?
+    LOG.warn "list_models_command for '#{provider_name}' failed (exit #{status.exitstatus}): #{stderr.strip}"
+    return nil
+  end
+
+  parse_list_models_output(stdout)
+rescue StandardError => e
+  LOG.warn "Failed to run list_models_command for '#{provider_name}': #{e.message}"
+  nil
+end
+
+# Parse the output of a list_models_command.
+# Supports JSON output with a "models" array, or plain text lines with model names.
+def parse_list_models_output(output)
+  # Try to extract JSON — some CLIs output non-JSON before the JSON (like kiro-cli with --format json)
+  json_match = output.match(/\{[^{}]*"models"\s*:\s*\[.*\]\s*[^{}]*\}/m)
+  if json_match
+    data = JSON.parse(json_match[0])
+    return data["models"] if data["models"].is_a?(Array)
+  end
+
+  # Fallback: try parsing the entire output as JSON
+  data = JSON.parse(output)
+  return data["models"] if data.is_a?(Hash) && data["models"].is_a?(Array)
+  return data if data.is_a?(Array)
+
+  nil
+rescue JSON::ParserError
+  # Fallback: parse plain text output (one model per line, or tabular format)
+  parse_list_models_text(output)
+end
+
+# Parse plain text model listing (e.g. "* auto   1.00x credits   Description here")
+def parse_list_models_text(output)
+  models = []
+  output.each_line do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?("Available") || line.start_with?("Default")
+
+    # Match lines like: "* auto   1.00x credits   Description" or "  claude-sonnet-4.6   1.30x credits   Desc"
+    if (m = line.match(/^[*\s]*(\S+)\s+(\d+\.\d+x\s+\w+)\s+(.+)$/))
+      models << { "model_id" => m[1], "rate" => m[2].strip, "description" => m[3].strip }
+    elsif (m = line.match(/^[*\s]*(\S+)\s*$/))
+      # Just a model name on a line
+      models << { "model_id" => m[1] }
+    end
+  end
+  models.empty? ? nil : models
 end
 
 # Resolve CLI config for a project by merging provider defaults with project overrides.

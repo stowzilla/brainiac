@@ -1025,6 +1025,45 @@ def brain_list
   puts "Run 'brainiac brain init <agent-name>' to set up a new agent."
 end
 
+# Parse the output of a list_models_command.
+# Supports JSON output with a "models" array, or plain text lines with model names.
+def parse_list_models_output(output)
+  # Try to extract JSON — some CLIs output non-JSON before the JSON (like kiro-cli with --format json)
+  json_match = output.match(/\{[^{}]*"models"\s*:\s*\[.*\]\s*[^{}]*\}/m)
+  if json_match
+    data = JSON.parse(json_match[0])
+    return data["models"] if data["models"].is_a?(Array)
+  end
+
+  # Fallback: try parsing the entire output as JSON
+  data = JSON.parse(output)
+  return data["models"] if data.is_a?(Hash) && data["models"].is_a?(Array)
+  return data if data.is_a?(Array)
+
+  nil
+rescue JSON::ParserError
+  # Fallback: parse plain text output (one model per line, or tabular format)
+  parse_list_models_text(output)
+end
+
+# Parse plain text model listing (e.g. "* auto   1.00x credits   Description here")
+def parse_list_models_text(output)
+  models = []
+  output.each_line do |line|
+    line = line.strip
+    next if line.empty? || line.start_with?("Available") || line.start_with?("Default")
+
+    # Match lines like: "* auto   1.00x credits   Description" or "  claude-sonnet-4.6   1.30x credits   Desc"
+    if (m = line.match(/^[*\s]*(\S+)\s+(\d+\.\d+x\s+\w+)\s+(.+)$/))
+      models << { "model_id" => m[1], "rate" => m[2].strip, "description" => m[3].strip }
+    elsif (m = line.match(/^[*\s]*(\S+)\s*$/))
+      # Just a model name on a line
+      models << { "model_id" => m[1] }
+    end
+  end
+  models.empty? ? nil : models
+end
+
 # Main CLI
 options = {}
 subcommand = ARGV.shift
@@ -1940,6 +1979,132 @@ when "provider"
     File.write(file, JSON.pretty_generate(scaffold))
     puts "Created #{file} — edit it to configure the provider."
 
+  when "list-models"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac provider list-models <name>"
+      exit 1
+    end
+    file = File.join(providers_dir, "#{name}.json")
+    unless File.exist?(file)
+      puts "Provider '#{name}' not found."
+      exit 1
+    end
+    data = JSON.parse(File.read(file))
+    command = data["list_models_command"]
+    if command.nil? || command.empty?
+      puts "Provider '#{name}' has no list_models_command configured."
+      puts "Edit #{file} and set \"list_models_command\" to a shell command that lists models."
+      puts "Example: \"kiro-cli chat --list-models --format json\""
+      exit 1
+    end
+
+    puts "Querying models from '#{name}' (#{command})..."
+    puts ""
+    require "open3"
+    stdout, stderr, status = Open3.capture3(command)
+    unless status.success?
+      puts "Command failed (exit #{status.exitstatus}):"
+      puts stderr.strip unless stderr.empty?
+      exit 1
+    end
+
+    models = parse_list_models_output(stdout)
+    if models.nil? || models.empty?
+      puts "No models found in command output."
+      puts "Raw output:"
+      puts stdout
+      exit 1
+    end
+
+    # Display models in a table
+    puts "Available models for '#{name}' (#{models.size} total):"
+    puts ""
+    models.each do |m|
+      model_id = m["model_id"] || m["model_name"] || "unknown"
+      desc = m["description"] || ""
+      rate = m["rate_multiplier"] ? "#{m["rate_multiplier"]}x" : (m["rate"] || "")
+      marker = m == models.first || m["model_id"] == data["default_model"] ? "*" : " "
+      if desc.empty?
+        puts "  #{marker} #{model_id}"
+      else
+        puts "  #{marker} %-25s %-15s %s" % [model_id, rate, desc]
+      end
+    end
+
+    # Show which are mapped vs unmapped
+    configured = data["models"] || {}
+    configured_ids = configured.values
+    unmapped = models.select { |m| id = m["model_id"] || m["model_name"]; !configured_ids.include?(id) && !configured.key?(id) }
+    unless unmapped.empty?
+      puts ""
+      puts "#{unmapped.size} model(s) not in your provider's 'models' map:"
+      unmapped.each { |m| puts "  - #{m["model_id"] || m["model_name"]}" }
+      puts ""
+      puts "Run 'brainiac provider sync-models #{name}' to add them."
+    end
+
+  when "sync-models"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac provider sync-models <name>"
+      exit 1
+    end
+    file = File.join(providers_dir, "#{name}.json")
+    unless File.exist?(file)
+      puts "Provider '#{name}' not found."
+      exit 1
+    end
+    data = JSON.parse(File.read(file))
+    command = data["list_models_command"]
+    if command.nil? || command.empty?
+      puts "Provider '#{name}' has no list_models_command configured."
+      exit 1
+    end
+
+    require "open3"
+    stdout, stderr, status = Open3.capture3(command)
+    unless status.success?
+      puts "Command failed (exit #{status.exitstatus}): #{stderr.strip}"
+      exit 1
+    end
+
+    models = parse_list_models_output(stdout)
+    if models.nil? || models.empty?
+      puts "No models found in command output."
+      exit 1
+    end
+
+    # Build a models map from discovered models: key = short name, value = model_id
+    existing_models = data["models"] || {}
+    new_models = existing_models.dup
+    added = []
+
+    models.each do |m|
+      model_id = m["model_id"] || m["model_name"]
+      next unless model_id
+
+      # Skip if already mapped (as key or value)
+      next if new_models.value?(model_id) || new_models.key?(model_id)
+
+      # Generate a short key: strip common prefixes, use the base name
+      short_key = model_id.sub(/^claude-/, "").sub(/^grok-/, "").gsub(/[^a-z0-9]/, "-").gsub(/-+/, "-").sub(/-$/, "")
+      # If the short key already exists, use the full model_id as the key
+      short_key = model_id if new_models.key?(short_key)
+      new_models[short_key] = model_id
+      added << "#{short_key} => #{model_id}"
+    end
+
+    if added.empty?
+      puts "All discovered models are already mapped. Nothing to sync."
+      exit 0
+    end
+
+    data["models"] = new_models
+    File.write(file, JSON.pretty_generate(data))
+    puts "Synced #{added.size} new model(s) to #{file}:"
+    added.each { |a| puts "  + #{a}" }
+
   else
     puts <<~HELP
       Usage: brainiac provider <command>
@@ -1948,6 +2113,8 @@ when "provider"
         list                 List configured CLI providers
         show <name>          Show provider configuration
         add <name>           Create a new provider config
+        list-models <name>   Query available models from the CLI provider
+        sync-models <name>   Add discovered models to provider config
     HELP
   end
 
