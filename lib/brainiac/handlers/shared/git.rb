@@ -174,7 +174,12 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   worktree_list = run_cmd("git", "worktree", "list", "--porcelain", chdir: repo_path)
 
   if File.directory?(worktree_path)
-    is_tracked = worktree_list.include?(worktree_path)
+    resolved_path = begin
+      File.realpath(worktree_path)
+    rescue StandardError
+      worktree_path
+    end
+    is_tracked = worktree_list.include?(worktree_path) || worktree_list.include?(resolved_path)
 
     if is_tracked
       LOG.info "Worktree directory #{worktree_path} is tracked by git"
@@ -195,7 +200,19 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   if branch_exists
     LOG.info "Branch #{branch} already exists, checking for existing worktree"
     worktree_list = run_cmd("git", "worktree", "list", "--porcelain", chdir: repo_path)
-    has_worktree = worktree_list.lines.any? { |line| line.strip == "worktree #{worktree_path}" }
+    # Resolve symlinks for comparison (macOS /var/folders vs /private/var/folders)
+    resolved_wt = begin
+      File.realpath(worktree_path)
+    rescue StandardError
+      worktree_path
+    end
+    has_worktree = worktree_list.lines.any? do |line|
+      stripped = line.strip
+      next false unless stripped.start_with?("worktree ")
+
+      listed_path = stripped.sub("worktree ", "")
+      listed_path == worktree_path || listed_path == resolved_wt
+    end
 
     if has_worktree && File.directory?(worktree_path)
       LOG.info "Reusing existing worktree at #{worktree_path}"

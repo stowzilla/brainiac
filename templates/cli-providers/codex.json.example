@@ -1,0 +1,18 @@
+{
+  "binary": "codex",
+  "default_args": "exec --dangerously-bypass-approvals-and-sandbox",
+  "agent_flag": "--profile",
+  "model_flag": "--model",
+  "effort_flag": null,
+  "prompt_mode": "flag",
+  "prompt_flag": "--prompt-file",
+  "resume_flag": null,
+  "resume_args": "exec resume --last --dangerously-bypass-approvals-and-sandbox",
+  "session_dir": "~/.codex/sessions",
+  "models": {
+    "o3": "o3",
+    "o4-mini": "o4-mini",
+    "codex-mini": "codex-mini-latest",
+    "auto": "o4-mini"
+  }
+}

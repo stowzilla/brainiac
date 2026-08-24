@@ -113,7 +113,7 @@ def validate_intent_model!(config)
   end
 
   true
-rescue Errno::ECONNREFUSED
+rescue Errno::ECONNREFUSED, Socket::ResolutionError, Errno::EADDRNOTAVAIL
   raise "Ollama is not running at #{config["endpoint"]}. Start it with: ollama serve"
 rescue Net::OpenTimeout, Net::ReadTimeout
   LOG.warn "[Intent] Could not validate model (Ollama timed out) — will check at first use"

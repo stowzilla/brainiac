@@ -453,7 +453,7 @@ def prior_session_exists?(chdir, agent_cli, session_dir: nil)
   # Search session files for ones that match the working directory (cwd field in session metadata).
   if session_dir
     expanded_session_dir = File.expand_path(session_dir)
-    return codex_session_exists_for_cwd?(expanded_session_dir, chdir) if File.directory?(expanded_session_dir)
+    return centralized_session_matches_cwd?(expanded_session_dir, chdir) if File.directory?(expanded_session_dir)
   end
 
   # Check for CLI-specific session markers:
@@ -476,11 +476,16 @@ rescue StandardError
   false
 end
 
-# Check if a Codex-style centralized session directory has sessions for the given cwd.
-# Codex stores sessions as .jsonl files in date-partitioned directories (YYYY/MM/DD/).
-# The first line of each session file contains session_meta with the cwd.
+# Check if a centralized session directory has sessions matching the given cwd.
+# Supports CLIs that store sessions as .jsonl files in date-partitioned directories (YYYY/MM/DD/)
+# with a first-line JSON metadata object containing a "payload.cwd" field.
 # Only considers sessions from the last 24 hours as resumable.
-def codex_session_exists_for_cwd?(session_base_dir, target_cwd)
+#
+# Performance note: Dir.glob("**/*.jsonl") stats every file in the session directory before
+# filtering by mtime. This is fine for typical usage (days/weeks of sessions) but could slow
+# down if the directory accumulates months of files. The 24-hour mtime cutoff limits actual
+# I/O (only recent files are read), but the glob itself still walks the full tree.
+def centralized_session_matches_cwd?(session_base_dir, target_cwd)
   # Only check recent session files (last 24 hours) to avoid scanning the full history
   cutoff = Time.now - 86_400
   target_cwd_resolved = begin
