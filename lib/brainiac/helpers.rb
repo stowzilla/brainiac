@@ -523,8 +523,13 @@ rescue StandardError
 end
 
 # Public helper: check if resume is viable for a given project + CLI provider combo.
-# Plugins should call this BEFORE building the prompt to decide between
-# render_resume_prompt (lean) and render_prompt (full context).
+# Plugins MUST use this method (not check resolved["resume_flag"] directly) to decide
+# whether a session can be resumed. This handles both flag-based resume (e.g. kiro --resume,
+# grok -c) and subcommand-based resume (e.g. codex exec resume --last).
+#
+# Call this BEFORE building the prompt to decide between:
+#   - render_resume_prompt (lean, for resumable sessions)
+#   - render_prompt with full context (for non-resumable sessions)
 #
 # Returns true if the CLI supports resume AND a prior session exists in the working directory.
 # When this returns false, plugins should use render_prompt with thread history as card_context
@@ -538,8 +543,12 @@ def resume_viable?(project_config:, cli_provider: nil, agent_name: nil, chdir: n
 end
 
 # Determine whether a session resume should actually happen.
-# Returns truthy (the resume flag string or :resume_args symbol) if viable, false otherwise.
-# Logs a message when resume was requested but isn't possible.
+# Called by run_agent — plugins should NOT call this directly; pass `resume: true` to run_agent.
+#
+# Returns:
+#   - :resume_args — when the provider uses subcommand-based resume (build_agent_cmd replaces default_args)
+#   - String (the resume flag) — when the provider uses flag-based resume (appended to cmd)
+#   - false — when resume was not requested or not viable
 def resolve_resume(resume, resolved, chdir)
   return false unless resume && (resolved["resume_flag"] || resolved["resume_args"])
   if prior_session_exists?(chdir, resolved["agent_cli"], session_dir: resolved["session_dir"])
@@ -570,6 +579,10 @@ def intent_skip?(message, agent_name:, source: nil, channel: nil, context: nil)
   false
 end
 
+# Dispatch an agent CLI process. Plugins call this with `resume: true` to request session
+# continuation — the method internally resolves whether to use flag-based resume (appending
+# e.g. --resume or -c) or subcommand-based resume (replacing default_args with resume_args).
+# Plugins should NOT build their own resume logic; pass `resume: true` and let core handle it.
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
               message: nil, channel: nil, context: nil, env: {})
