@@ -94,6 +94,8 @@ class TestListModels < Minitest::Test
     assert_equal "claude-sonnet-4.6", models[1]["model_id"]
     assert_equal "deepseek-3.2", models[2]["model_id"]
     assert_equal "1.00x credits", models[0]["rate"]
+    assert_equal true, models[0]["default"]
+    assert_nil models[1]["default"]
   end
 
   def test_parse_list_models_output_empty_string
@@ -170,6 +172,22 @@ class TestListModels < Minitest::Test
     assert_equal "model-a", models[0]["model_id"]
     assert_equal "model-b", models[1]["model_id"]
     assert_equal "model-c", models[2]["model_id"]
+  end
+
+  def test_parse_list_models_text_marks_default_model
+    text_output = <<~TEXT
+      Available models (* = default):
+
+      * auto                 1.00x credits      Models chosen by task
+        claude-sonnet-4.6    1.30x credits      Claude Sonnet 4.6 model
+        deepseek-3.2         0.25x credits      Experimental preview
+    TEXT
+
+    models = parse_list_models_text(text_output)
+    assert_equal 3, models.size
+    assert_equal true, models[0]["default"]
+    assert_nil models[1]["default"]
+    assert_nil models[2]["default"]
   end
 
   def test_parse_list_models_output_normalizes_slug_to_model_id

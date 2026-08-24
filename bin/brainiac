@@ -1986,8 +1986,9 @@ when "provider"
 
     # Display models in a table
     default_model = data["default_model"]
-    # Use the provider's default_model field if set; mark first only if no explicit default is configured
+    # Determine default: explicit default_model field > parsed "default" flag > first model
     has_explicit_default = default_model && visible_models.any? { |m| m["model_id"] == default_model }
+    has_parsed_default = !has_explicit_default && visible_models.any? { |m| m["default"] }
     puts "Available models for '#{name}' (#{visible_models.size} visible, #{models.size} total):"
     puts ""
     visible_models.each do |m|
@@ -1996,6 +1997,8 @@ when "provider"
       rate = m["rate_multiplier"] ? "#{m["rate_multiplier"]}x" : (m["rate"] || "")
       marker = if has_explicit_default
                  m["model_id"] == default_model ? "*" : " "
+               elsif has_parsed_default
+                 m["default"] ? "*" : " "
                else
                  m == visible_models.first ? "*" : " "
                end

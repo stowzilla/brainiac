@@ -54,18 +54,24 @@ def parse_list_models_output(output)
 end
 
 # Parse plain text model listing (e.g. "* auto   1.00x credits   Description here")
+# Lines prefixed with "*" are marked as the default model.
 def parse_list_models_text(output)
   models = []
   output.each_line do |line|
     line = line.strip
     next if line.empty? || line.start_with?("Available") || line.start_with?("Default")
 
+    is_default = line.start_with?("*")
+
     # Match lines like: "* auto   1.00x credits   Description" or "  claude-sonnet-4.6   1.30x credits   Desc"
     if (m = line.match(/^[*\s]*(\S+)\s+(\d+\.\d+x\s+\w+)\s+(.+)$/))
-      models << { "model_id" => m[1], "rate" => m[2].strip, "description" => m[3].strip }
+      entry = { "model_id" => m[1], "rate" => m[2].strip, "description" => m[3].strip }
+      entry["default"] = true if is_default
+      models << entry
     elsif (m = line.match(/^[*\s]*(\S+)\s*$/))
-      # Just a model name on a line
-      models << { "model_id" => m[1] }
+      entry = { "model_id" => m[1] }
+      entry["default"] = true if is_default
+      models << entry
     end
   end
   models.empty? ? nil : models
