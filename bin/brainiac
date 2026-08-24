@@ -2005,14 +2005,17 @@ when "provider"
       if desc.empty?
         puts "  #{marker} #{model_id}"
       else
-        puts "  #{marker} %-25s %-15s %s" % [model_id, rate, desc]
+        puts format("  %<marker>s %-25<model>s %-15<rate>s %<desc>s", marker: marker, model: model_id, rate: rate, desc: desc)
       end
     end
 
     # Show which are mapped vs unmapped
     configured = data["models"] || {}
     configured_ids = configured.values
-    unmapped = visible_models.select { |m| id = m["model_id"]; !configured_ids.include?(id) && !configured.key?(id) }
+    unmapped = visible_models.select do |m|
+      id = m["model_id"]
+      !configured_ids.include?(id) && !configured.key?(id)
+    end
     unless unmapped.empty?
       puts ""
       puts "#{unmapped.size} model(s) not in your provider's 'models' map:"
