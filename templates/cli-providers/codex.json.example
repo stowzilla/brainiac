@@ -1,0 +1,17 @@
+{
+  "binary": "codex",
+  "default_args": "--full-auto",
+  "agent_flag": null,
+  "model_flag": "-m",
+  "effort_flag": null,
+  "prompt_mode": "flag",
+  "prompt_flag": "--prompt-file",
+  "cwd_flag": "-C",
+  "resume_flag": null,
+  "models": {
+    "o4-mini": "o4-mini",
+    "gpt41": "gpt-4.1",
+    "o3": "o3",
+    "auto": "o4-mini"
+  }
+}

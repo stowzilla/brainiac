@@ -32,6 +32,9 @@ def load_cli_provider(provider_name)
   # resume_flag: when set, follow-up dispatches use this flag to continue the
   # most recent session in the working directory (e.g. "-c" or "--continue").
   config["resume_flag"] = raw["resume_flag"] if raw["resume_flag"]
+  # cwd_flag: when set, the working directory is passed as a CLI argument
+  # (e.g. "-C" for Codex CLI) instead of relying solely on chdir.
+  config["cwd_flag"] = raw["cwd_flag"] if raw["cwd_flag"]
   # Compact nil values except agent_flag (which uses nil to mean "don't pass agent name")
   agent_flag_value = config["agent_flag"]
   config.compact!
@@ -528,7 +531,9 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   FileUtils.mkdir_p(File.dirname(log_file))
 
   prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
-  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort, prompt_file: prompt_file, resume: should_resume)
+  cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name,
+                                  model: model, effort: effort, prompt_file: prompt_file,
+                                  resume: should_resume, chdir: chdir)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
@@ -578,8 +583,13 @@ end
 # Build the CLI command array for an agent invocation.
 # When prompt_file is provided and prompt_mode is "flag", appends the prompt as a CLI argument.
 # When resume is true and the provider has a resume_flag, adds it to continue the last session.
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false)
+# When chdir is provided and the provider has a cwd_flag, appends it so the CLI
+# itself switches to the working directory (e.g. `codex -C /path/to/project`).
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, chdir: nil) # rubocop:disable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity
   cmd = [resolved["agent_cli"]]
+  # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
+  # This is added early so it appears before subcommands/args (global option).
+  cmd.push(resolved["cwd_flag"], chdir) if resolved["cwd_flag"] && chdir
   # agent_flag controls how the agent identity is passed. Defaults to "--agent".
   # Provider configs can set it to a different flag or null to suppress entirely.
   agent_flag = resolved.key?("agent_flag") ? resolved["agent_flag"] : "--agent"
