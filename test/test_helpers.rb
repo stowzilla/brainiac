@@ -552,6 +552,64 @@ class TestHelpers < Minitest::Test
     assert_equal %w[codex exec --dangerously-bypass-approvals-and-sandbox], cmd
   end
 
+  # --- resume_viable? tests ---
+
+  def test_resume_viable_with_resume_args_and_matching_session
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      session_dir = File.join(dir, "sessions", "2026", "08", "24")
+      FileUtils.mkdir_p(session_dir)
+      session_data = { "payload" => { "cwd" => target_cwd } }
+      File.write(File.join(session_dir, "session.jsonl"), JSON.generate(session_data))
+
+      provider_file = File.join(CLI_PROVIDERS_DIR, "test-resume-viable.json")
+      File.write(provider_file, JSON.generate({
+                                                "binary" => "codex",
+                                                "default_args" => "exec --bypass",
+                                                "agent_flag" => nil,
+                                                "resume_args" => "exec resume --last --bypass",
+                                                "session_dir" => File.join(dir, "sessions")
+                                              }))
+
+      project_config = { "cli_provider" => "test-resume-viable", "repo_path" => target_cwd }
+      assert resume_viable?(project_config: project_config, chdir: target_cwd)
+    ensure
+      FileUtils.rm_f(provider_file)
+    end
+  end
+
+  def test_resume_viable_false_when_no_resume_support
+    project_config = { "repo_path" => "/tmp" }
+    refute resume_viable?(project_config: project_config, chdir: "/tmp")
+  end
+
+  def test_resume_viable_false_when_no_matching_session
+    Dir.mktmpdir do |dir|
+      target_cwd = File.join(dir, "project")
+      FileUtils.mkdir_p(target_cwd)
+
+      # Empty sessions dir — no matching sessions
+      session_dir = File.join(dir, "sessions")
+      FileUtils.mkdir_p(session_dir)
+
+      provider_file = File.join(CLI_PROVIDERS_DIR, "test-resume-viable2.json")
+      File.write(provider_file, JSON.generate({
+                                                "binary" => "codex",
+                                                "default_args" => "exec --bypass",
+                                                "agent_flag" => nil,
+                                                "resume_args" => "exec resume --last --bypass",
+                                                "session_dir" => session_dir
+                                              }))
+
+      project_config = { "cli_provider" => "test-resume-viable2", "repo_path" => target_cwd }
+      refute resume_viable?(project_config: project_config, chdir: target_cwd)
+    ensure
+      FileUtils.rm_f(provider_file)
+    end
+  end
+
   # --- resolve_resume tests ---
 
   def test_resolve_resume_returns_false_when_not_requested
