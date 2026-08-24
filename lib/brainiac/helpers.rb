@@ -544,8 +544,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   spawn_env = agent_env_for(agent_name).merge(env)
 
   LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
-  LOG.info "Prompt written to #{prompt_file}"
-  LOG.info "Output capture: #{output_file}" if output_file
+  LOG.info "Prompt written to #{prompt_file}#{", output capture: #{output_file}" if output_file}"
   LOG.info "Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
   LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
 

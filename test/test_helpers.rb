@@ -303,14 +303,15 @@ class TestHelpers < Minitest::Test
 
   def test_load_cli_provider_with_profile_agent_flag
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
-    File.write(File.join(provider_dir, "codex.json"), JSON.generate({
+    provider_data = {
       "binary" => "codex",
       "default_args" => "exec --sandbox workspace-write -",
       "agent_flag" => "--profile",
       "model_flag" => "--model",
       "prompt_mode" => "stdin",
       "models" => { "o3" => "o3", "o4-mini" => "o4-mini" }
-    }))
+    }
+    File.write(File.join(provider_dir, "codex.json"), JSON.generate(provider_data))
 
     config = load_cli_provider("codex")
     assert_equal "codex", config["agent_cli"]
@@ -323,14 +324,15 @@ class TestHelpers < Minitest::Test
 
   def test_load_cli_provider_with_null_agent_flag
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
-    File.write(File.join(provider_dir, "grok-test.json"), JSON.generate({
+    provider_data = {
       "binary" => "grok",
       "default_args" => "--always-approve",
       "agent_flag" => nil,
       "model_flag" => "--model",
       "prompt_mode" => "flag",
       "prompt_flag" => "--prompt-file"
-    }))
+    }
+    File.write(File.join(provider_dir, "grok-test.json"), JSON.generate(provider_data))
 
     config = load_cli_provider("grok-test")
     assert_equal "grok", config["agent_cli"]
@@ -341,10 +343,11 @@ class TestHelpers < Minitest::Test
 
   def test_load_cli_provider_missing_agent_flag_defaults_to_agent
     provider_dir = File.join(TEST_BRAINIAC_DIR, "cli-providers")
-    File.write(File.join(provider_dir, "minimal.json"), JSON.generate({
+    provider_data = {
       "binary" => "some-cli",
       "default_args" => ""
-    }))
+    }
+    File.write(File.join(provider_dir, "minimal.json"), JSON.generate(provider_data))
 
     config = load_cli_provider("minimal")
     assert_equal "--agent", config["agent_flag"]
