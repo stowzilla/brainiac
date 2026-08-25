@@ -716,7 +716,7 @@ end
 # When output_file is provided and the provider has output_last_message_flag, appends it.
 # When chdir is provided and the provider has a cwd_flag, appends it so the CLI
 # itself switches to the working directory (e.g. `codex -C /path/to/project`).
-# rubocop:disable-next Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil)
   cmd = [resolved["agent_cli"]]
   # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
@@ -749,6 +749,7 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
 end
+# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 # Map a Brainiac effort level through the provider's effort_map (if any).
 # Returns the mapped level, or the original level if no mapping exists.

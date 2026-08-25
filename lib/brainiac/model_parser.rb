@@ -99,7 +99,7 @@ end
 # Handles various CLI output formats: "slug" (codex), "model_name" (generic), "model_id" (kiro-cli).
 # Silently skips non-Hash elements (e.g. strings or numbers in a mixed array).
 def normalize_model_list(models)
-  models.select { |m| m.is_a?(Hash) }.map do |m|
+  models.grep(Hash).map do |m|
     next m if m["model_id"]
 
     m = m.dup
