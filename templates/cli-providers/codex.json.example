@@ -3,6 +3,7 @@
   "default_args": "--full-auto",
   "agent_flag": "--profile",
   "model_flag": "--model",
+  "agent_model": "gpt-5.6-terra",
   "effort_flag": null,
   "effort_config_key": "model_reasoning_effort",
   "config_override_flag": "-c",
@@ -21,11 +22,11 @@
   "output_last_message_flag": "-o",
   "list_models_command": "codex debug models",
   "models": {
-    "o3": "o3",
-    "o4-mini": "o4-mini",
-    "gpt5": "gpt-5.5",
-    "codex-mini": "codex-mini-latest",
-    "auto": "o4-mini"
+    "sol": "gpt-5.6-sol",
+    "terra": "gpt-5.6-terra",
+    "luna": "gpt-5.6-luna",
+    "gpt5.5": "gpt-5.5",
+    "auto": "gpt-5.6-terra"
   },
   "efforts": ["low", "medium", "high", "xhigh", "max"]
 }
