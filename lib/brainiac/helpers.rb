@@ -18,7 +18,9 @@ def load_cli_provider(provider_name)
     "agent_cli" => raw["binary"],
     "agent_cli_args" => raw["default_args"],
     "agent_model_flag" => raw["model_flag"],
+    "agent_model" => raw["agent_model"],
     "agent_effort_flag" => raw["effort_flag"],
+    "agent_effort" => raw["agent_effort"],
     "allowed_models" => raw["models"],
     "allowed_efforts" => raw["efforts"]
   }
@@ -732,9 +734,11 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
   if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
     allowed = resolved["allowed_models"] || {}
-    # Pass the model if it's a mapped value (e.g. "claude-opus-4.5") or the key itself is mapped
-    is_known = allowed.value?(model) || allowed.key?(model)
-    cmd.push(resolved["agent_model_flag"], model) if is_known
+    # If the model is a key in allowed_models, use the mapped value (e.g. "auto" -> "o4-mini")
+    # This handles cases where different projects use "auto" but each CLI provider maps it differently.
+    effective_model = allowed.key?(model) ? allowed[model] : model
+    is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
+    cmd.push(resolved["agent_model_flag"], effective_model) if is_known
   end
   append_effort_to_cmd(cmd, effort, resolved) if effort
   # Resume via flag (simple append, e.g. grok -c or kiro --resume) — only when not using resume_args
@@ -837,8 +841,10 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
   end
 end
 
-def detect_model(project_config, tags: [], text: "", cli_provider_override: nil)
-  resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider_override)
+def detect_model(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+  # If no explicit CLI provider override, check if the agent has one configured
+  effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
+  resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed_models = resolved["allowed_models"] || {}
   return resolved["agent_model"] if allowed_models.empty?
 
