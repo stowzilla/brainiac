@@ -10,6 +10,7 @@ require_relative "brainiac/helpers"
 require_relative "brainiac/intent"
 require_relative "brainiac/cron"
 require_relative "brainiac/plugins"
+require_relative "brainiac/suppliers"
 
 # Namespace for gem-based plugins (brainiac-whatsapp, brainiac-slack, etc.)
 module Brainiac
