@@ -865,8 +865,9 @@ end
 # Returns the effort level string (e.g. "high") or nil.
 # If the requested level isn't supported by the current model, returns the closest
 # lower level from allowed_efforts.
-def detect_effort(project_config, tags: [], text: "", cli_provider_override: nil)
-  resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider_override)
+def detect_effort(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+  effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
+  resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed = resolved["allowed_efforts"] || %w[low medium high xhigh max]
 
   # Inline tag: [effort:high] — works in any channel
