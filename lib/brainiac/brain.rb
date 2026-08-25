@@ -171,8 +171,10 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
   search_queries << agent_name
 
   # Plugin hook: source-specific brain queries (e.g., plugins inject source-specific knowledge)
+  # Passes card_number and agent_name so plugins like brainiac-basecamp can inject epic context
   plugin_queries = Brainiac.emit(:build_brain_context,
-                                 source: source, card_title: card_title, comment_body: comment_body)
+                                 source: source, card_title: card_title, comment_body: comment_body,
+                                 card_number: card_number, agent_name: agent_name)
   plugin_queries.flatten.compact.each do |query|
     knowledge_threads << Thread.new { query_brain(query, scope: :knowledge, max_results: 2) }
     search_queries << query
