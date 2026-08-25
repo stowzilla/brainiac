@@ -205,6 +205,7 @@ def wait_for_agents_to_finish
   end
 end
 
+# rubocop:disable Naming/PredicateMethod
 def stop_server
   pid = find_server_pid
 
@@ -245,6 +246,7 @@ def stop_server
     false
   end
 end
+# rubocop:enable Naming/PredicateMethod
 
 # Kill a single process: TERM first, KILL if it doesn't exit within 5s.
 def kill_pid(pid, quiet: false)
@@ -1024,6 +1026,9 @@ def brain_list
   puts ""
   puts "Run 'brainiac brain init <agent-name>' to set up a new agent."
 end
+
+# Model output parsing (shared with lib/brainiac/helpers.rb)
+require_relative "../lib/brainiac/model_parser"
 
 # Main CLI
 options = {}
@@ -1940,6 +1945,150 @@ when "provider"
     File.write(file, JSON.pretty_generate(scaffold))
     puts "Created #{file} — edit it to configure the provider."
 
+  when "list-models"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac provider list-models <name>"
+      exit 1
+    end
+    file = File.join(providers_dir, "#{name}.json")
+    unless File.exist?(file)
+      puts "Provider '#{name}' not found."
+      exit 1
+    end
+    data = JSON.parse(File.read(file))
+    command = data["list_models_command"]
+    if command.nil? || command.empty?
+      puts "Provider '#{name}' has no list_models_command configured."
+      puts "Edit #{file} and set \"list_models_command\" to a shell command that lists models."
+      puts "Example: \"kiro-cli chat --list-models --format json\""
+      exit 1
+    end
+
+    puts "Querying models from '#{name}' (#{command})..."
+    puts ""
+    stdout, stderr, status = Open3.capture3(command)
+    unless status.success?
+      puts "Command failed (exit #{status.exitstatus}):"
+      puts stderr.strip unless stderr.empty?
+      exit 1
+    end
+
+    models = parse_list_models_output(stdout)
+    if models.nil? || models.empty?
+      puts "No models found in command output."
+      puts "Raw output:"
+      puts stdout
+      exit 1
+    end
+
+    # Filter hidden models (e.g. codex "visibility": "hide") unless none are visible
+    visible_models = models.select { |m| m["visibility"].nil? || m["visibility"] != "hide" }
+    visible_models = models if visible_models.empty?
+
+    # Display models in a table
+    default_model = data["default_model"]
+    # Determine default: explicit default_model field > parsed "default" flag > first model
+    has_explicit_default = default_model && visible_models.any? { |m| m["model_id"] == default_model }
+    has_parsed_default = !has_explicit_default && visible_models.any? { |m| m["default"] }
+    puts "Available models for '#{name}' (#{visible_models.size} visible, #{models.size} total):"
+    puts ""
+    visible_models.each do |m|
+      model_id = m["model_id"] || "unknown"
+      desc = m["description"] || m["display_name"] || ""
+      rate = m["rate_multiplier"] ? "#{m["rate_multiplier"]}x" : (m["rate"] || "")
+      marker = if has_explicit_default
+                 m["model_id"] == default_model ? "*" : " "
+               elsif has_parsed_default
+                 m["default"] ? "*" : " "
+               else
+                 m == visible_models.first ? "*" : " "
+               end
+      if desc.empty?
+        puts "  #{marker} #{model_id}"
+      else
+        puts format("  %<marker>s %-25<model>s %-15<rate>s %<desc>s", marker: marker, model: model_id, rate: rate, desc: desc)
+      end
+    end
+
+    # Show which are mapped vs unmapped
+    configured = data["models"] || {}
+    configured_ids = configured.values
+    unmapped = visible_models.select do |m|
+      id = m["model_id"]
+      !configured_ids.include?(id) && !configured.key?(id)
+    end
+    unless unmapped.empty?
+      puts ""
+      puts "#{unmapped.size} model(s) not in your provider's 'models' map:"
+      unmapped.each { |m| puts "  - #{m["model_id"]}" }
+      puts ""
+      puts "Run 'brainiac provider sync-models #{name}' to add them."
+    end
+
+  when "sync-models"
+    name = ARGV[0]
+    unless name
+      puts "Usage: brainiac provider sync-models <name>"
+      exit 1
+    end
+    file = File.join(providers_dir, "#{name}.json")
+    unless File.exist?(file)
+      puts "Provider '#{name}' not found."
+      exit 1
+    end
+    data = JSON.parse(File.read(file))
+    command = data["list_models_command"]
+    if command.nil? || command.empty?
+      puts "Provider '#{name}' has no list_models_command configured."
+      exit 1
+    end
+
+    stdout, stderr, status = Open3.capture3(command)
+    unless status.success?
+      puts "Command failed (exit #{status.exitstatus}): #{stderr.strip}"
+      exit 1
+    end
+
+    models = parse_list_models_output(stdout)
+    if models.nil? || models.empty?
+      puts "No models found in command output."
+      exit 1
+    end
+
+    # Build a models map from discovered models: key = short name, value = model_id
+    existing_models = data["models"] || {}
+    new_models = existing_models.dup
+    added = []
+
+    models.each do |m|
+      model_id = m["model_id"]
+      next unless model_id
+
+      # Skip hidden models (e.g. codex internal models)
+      next if m["visibility"] == "hide"
+
+      # Skip if already mapped (as key or value)
+      next if new_models.value?(model_id) || new_models.key?(model_id)
+
+      # Generate a short key: strip common prefixes, use the base name
+      short_key = generate_short_model_key(model_id)
+      # If the short key already exists, use the full model_id as the key
+      short_key = model_id if new_models.key?(short_key)
+      new_models[short_key] = model_id
+      added << "#{short_key} => #{model_id}"
+    end
+
+    if added.empty?
+      puts "All discovered models are already mapped. Nothing to sync."
+      exit 0
+    end
+
+    data["models"] = new_models
+    File.write(file, JSON.pretty_generate(data))
+    puts "Synced #{added.size} new model(s) to #{file}:"
+    added.each { |a| puts "  + #{a}" }
+
   else
     puts <<~HELP
       Usage: brainiac provider <command>
@@ -1948,6 +2097,8 @@ when "provider"
         list                 List configured CLI providers
         show <name>          Show provider configuration
         add <name>           Create a new provider config
+        list-models <name>   Query available models from the CLI provider
+        sync-models <name>   Add discovered models to provider config
     HELP
   end
 
@@ -3474,7 +3625,7 @@ when "plugin"
     gem_name = "brainiac-#{plugin_name}"
 
     # Determine the base repo path (strip worktree suffix like --branch-name)
-    base_path = current_path.sub(/--[^\/]+$/, "")
+    base_path = current_path.sub(%r{--[^/]+$}, "")
     unless Dir.exist?(base_path)
       puts "Error: Base repo not found at #{base_path}"
       exit 1
@@ -3503,9 +3654,7 @@ when "plugin"
     # Fetch latest to make sure the branch is available
     puts "Fetching latest from origin..."
     _out, _err, fetch_status = Open3.capture3("git", "fetch", "origin", chdir: base_path)
-    unless fetch_status.success?
-      puts "Warning: git fetch failed — continuing with local state."
-    end
+    puts "Warning: git fetch failed — continuing with local state." unless fetch_status.success?
 
     # Check if a worktree already exists for this branch
     worktree_list, _, wt_status = Open3.capture3("git", "worktree", "list", "--porcelain", chdir: base_path)
@@ -3513,18 +3662,19 @@ when "plugin"
 
     if wt_status.success?
       # Parse porcelain output to find worktrees on the target branch
-      worktrees = worktree_list.split("\n\n").map do |block|
+      worktree_blocks = worktree_list.split("\n\n").map do |block|
         wt = {}
         block.each_line do |line|
           case line
           when /^worktree (.+)/
             wt[:path] = Regexp.last_match(1).strip
-          when /^branch refs\/heads\/(.+)/
+          when %r{^branch refs/heads/(.+)}
             wt[:branch] = Regexp.last_match(1).strip
           end
         end
         wt
-      end.select { |wt| wt[:path] && wt[:branch] }
+      end
+      worktrees = worktree_blocks.select { |wt| wt[:path] && wt[:branch] }
 
       target_worktree = worktrees.find { |wt| wt[:branch] == branch_name }
     end
@@ -3541,11 +3691,9 @@ when "plugin"
       File.write(plugins_file, JSON.pretty_generate(plugins_config))
       puts "✓ Switched plugin '#{plugin_name}' to branch '#{branch_name}'"
       puts "  Path: #{new_path}"
-      puts "  Restart the server to apply: brainiac restart"
     else
       # Check if branch exists remotely or locally
-      branch_exists = false
-      check_cmd, _, check_status = Open3.capture3("git", "rev-parse", "--verify", "origin/#{branch_name}", chdir: base_path)
+      _, _, check_status = Open3.capture3("git", "rev-parse", "--verify", "origin/#{branch_name}", chdir: base_path)
       branch_exists = check_status.success?
 
       unless branch_exists
@@ -3576,7 +3724,10 @@ when "plugin"
       _, _, local_check = Open3.capture3("git", "rev-parse", "--verify", branch_name, chdir: base_path)
       if !local_check.success? && check_status.success?
         # Remote branch exists but not local — create tracking branch in worktree
-        _, stderr, wt_status = Open3.capture3("git", "worktree", "add", "--track", "-b", branch_name, worktree_dir, "origin/#{branch_name}", chdir: base_path)
+        _, stderr, wt_status = Open3.capture3(
+          "git", "worktree", "add", "--track", "-b", branch_name, worktree_dir,
+          "origin/#{branch_name}", chdir: base_path
+        )
       else
         # Local branch exists — use it directly
         _, stderr, wt_status = Open3.capture3("git", "worktree", "add", worktree_dir, branch_name, chdir: base_path)
@@ -3592,8 +3743,8 @@ when "plugin"
       File.write(plugins_file, JSON.pretty_generate(plugins_config))
       puts "✓ Switched plugin '#{plugin_name}' to branch '#{branch_name}'"
       puts "  Worktree: #{worktree_dir}"
-      puts "  Restart the server to apply: brainiac restart"
     end
+    puts "  Restart the server to apply: brainiac restart"
 
   else
     puts "Usage: brainiac plugin <command>"

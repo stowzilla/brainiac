@@ -6,6 +6,7 @@
   "effort_flag": "--effort",
   "prompt_mode": "stdin",
   "resume_flag": "--resume",
+  "list_models_command": "kiro-cli chat --list-models --format json",
   "models": {
     "opus": "claude-opus-4.5",
     "sonnet": "claude-sonnet-4.6",

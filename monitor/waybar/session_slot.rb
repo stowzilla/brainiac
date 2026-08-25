@@ -18,9 +18,7 @@ INFRA_CMDS = %w[kiro-cli-chat ruby-lsp clangd gopls].freeze
 DISCORD_CONFIG_FILE = File.join(BRAINIAC_DIR, "discord.json")
 
 index = ARGV.find { |a| !a.start_with?("--") }&.to_i
-unless index
-  exit
-end
+exit unless index
 
 def load_discord_guild_id
   return nil unless File.exist?(DISCORD_CONFIG_FILE)

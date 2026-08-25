@@ -172,37 +172,12 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   base_ref ||= "origin/#{get_default_branch(repo_path)}"
 
   worktree_list = run_cmd("git", "worktree", "list", "--porcelain", chdir: repo_path)
-
-  if File.directory?(worktree_path)
-    is_tracked = worktree_list.include?(worktree_path)
-
-    if is_tracked
-      LOG.info "Worktree directory #{worktree_path} is tracked by git"
-    else
-      LOG.warn "Orphaned worktree directory found at #{worktree_path}, removing it"
-      begin
-        FileUtils.rm_rf(worktree_path)
-        LOG.info "Successfully removed orphaned directory"
-      rescue StandardError => e
-        LOG.error "Failed to remove orphaned directory: #{e.message}"
-        raise
-      end
-    end
-  end
+  cleanup_orphaned_worktree(worktree_path, worktree_list) if File.directory?(worktree_path)
 
   branch_exists = system("git", "rev-parse", "--verify", branch, chdir: repo_path, out: File::NULL, err: File::NULL)
 
   if branch_exists
-    LOG.info "Branch #{branch} already exists, checking for existing worktree"
-    worktree_list = run_cmd("git", "worktree", "list", "--porcelain", chdir: repo_path)
-    has_worktree = worktree_list.lines.any? { |line| line.strip == "worktree #{worktree_path}" }
-
-    if has_worktree && File.directory?(worktree_path)
-      LOG.info "Reusing existing worktree at #{worktree_path}"
-    else
-      LOG.info "Creating worktree from existing branch #{branch}"
-      run_cmd("git", "worktree", "add", worktree_path, branch, chdir: repo_path)
-    end
+    attach_or_create_worktree_for_branch(repo_path, branch, worktree_path)
   else
     LOG.info "Creating new branch #{branch} and worktree"
     run_cmd("git", "worktree", "add", "-b", branch, worktree_path, base_ref, chdir: repo_path)
@@ -213,6 +188,56 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   run_project_hook(repo_path, "worktree-setup", extra_env: { "WORKTREE_PATH" => worktree_path })
 
   worktree_path
+end
+
+# Remove an orphaned worktree directory (exists on disk but not tracked by git).
+# If the directory is tracked, logs and leaves it alone.
+def cleanup_orphaned_worktree(worktree_path, worktree_list)
+  resolved_path = begin
+    File.realpath(worktree_path)
+  rescue StandardError
+    worktree_path
+  end
+  is_tracked = worktree_list.include?(worktree_path) || worktree_list.include?(resolved_path)
+
+  if is_tracked
+    LOG.info "Worktree directory #{worktree_path} is tracked by git"
+  else
+    LOG.warn "Orphaned worktree directory found at #{worktree_path}, removing it"
+    begin
+      FileUtils.rm_rf(worktree_path)
+      LOG.info "Successfully removed orphaned directory"
+    rescue StandardError => e
+      LOG.error "Failed to remove orphaned directory: #{e.message}"
+      raise
+    end
+  end
+end
+
+# Attach an existing branch to a worktree, reusing it if already present.
+def attach_or_create_worktree_for_branch(repo_path, branch, worktree_path)
+  LOG.info "Branch #{branch} already exists, checking for existing worktree"
+  worktree_list = run_cmd("git", "worktree", "list", "--porcelain", chdir: repo_path)
+  # Resolve symlinks for comparison (macOS /var/folders vs /private/var/folders)
+  resolved_wt = begin
+    File.realpath(worktree_path)
+  rescue StandardError
+    worktree_path
+  end
+  has_worktree = worktree_list.lines.any? do |line|
+    stripped = line.strip
+    next false unless stripped.start_with?("worktree ")
+
+    listed_path = stripped.sub("worktree ", "")
+    listed_path == worktree_path || listed_path == resolved_wt
+  end
+
+  if has_worktree && File.directory?(worktree_path)
+    LOG.info "Reusing existing worktree at #{worktree_path}"
+  else
+    LOG.info "Creating worktree from existing branch #{branch}"
+    run_cmd("git", "worktree", "add", worktree_path, branch, chdir: repo_path)
+  end
 end
 
 # Find an existing worktree for a card by scanning the filesystem.
