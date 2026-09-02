@@ -186,6 +186,19 @@ module BeltEnvironment
   class << self
     include BeltHelpers
 
+    # Check whether an environment is configured in a worktree.
+    # `belt g environment` writes infrastructure/<env_name>/; that directory
+    # is the source of truth, not the ephemeral_envs.json tracking file.
+    #
+    # @param worktree [String] Path to the worktree
+    # @param env_name [String] Environment name (e.g. "fizzy-1299")
+    # @return [Boolean]
+    def environment_configured?(worktree:, env_name:)
+      return false unless worktree && env_name && File.directory?(worktree)
+
+      File.directory?(File.join(worktree, "infrastructure", env_name.to_s))
+    end
+
     # Create an ephemeral environment from a parent environment.
     #
     # @param worktree [String] Path to the worktree
