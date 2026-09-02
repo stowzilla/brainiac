@@ -226,19 +226,31 @@ module BeltEnvironment
 
     # Deploy to an environment.
     #
+    # Always non-interactive: `belt deploy` prompts "Apply these changes? [y/N]"
+    # unless `--auto` is passed. Open3.capture3 provides empty stdin, so without
+    # `--auto` belt prints "Cancelled." and still exits 0 — a silent no-op.
+    # Frontend-only uses `belt deploy frontend <env>` (subcommand first).
+    #
     # @param worktree [String] Path to the worktree
     # @param env_name [String] Environment name
     # @param frontend_only [Boolean] If true, only deploy frontend
     # @return [Boolean] True on success
-    def deploy(worktree:, env_name:, frontend_only: false)
+    def deploy(worktree:, env_name:, frontend_only: false, capture3: nil)
       return false unless belt_app?(worktree)
 
-      cmd = ["belt", "deploy", env_name]
-      cmd << "frontend" if frontend_only
+      cmd = deploy_command(env_name, frontend_only: frontend_only)
 
       LOG.info "[Belt] Deploying to '#{env_name}'#{frontend_only ? " (frontend only)" : ""}"
+      LOG.info "[Belt] Running: #{cmd.join(' ')} (in #{worktree})"
 
-      stdout, stderr, status = Open3.capture3(*cmd, chdir: worktree)
+      runner = capture3 || Open3.method(:capture3)
+      stdout, stderr, status = runner.call(*cmd, chdir: worktree)
+      log_cli_tail(stdout, stderr)
+
+      if deploy_cancelled?(stdout, stderr)
+        LOG.error "[Belt] Deploy to '#{env_name}' cancelled — non-interactive belt deploy needs --auto"
+        return false
+      end
 
       if status.success?
         LOG.info "[Belt] Successfully deployed to '#{env_name}'"
@@ -250,6 +262,16 @@ module BeltEnvironment
     rescue StandardError => e
       LOG.error "[Belt] Error deploying: #{e.message}"
       false
+    end
+
+    # argv for `belt deploy`. Extracted so tests can assert the command without
+    # stubbing Open3 for every call site.
+    def deploy_command(env_name, frontend_only: false)
+      if frontend_only
+        ["belt", "deploy", "frontend", env_name]
+      else
+        ["belt", "deploy", env_name, "--auto"]
+      end
     end
 
     # Destroy an ephemeral environment.
@@ -278,7 +300,7 @@ module BeltEnvironment
     end
 
     # Check if changes are frontend-only by examining the diff.
-    # Frontend-only changes can be deployed faster with `belt deploy <env> frontend`.
+    # Frontend-only changes can be deployed faster with `belt deploy frontend <env>`.
     #
     # @param worktree [String] Path to the worktree
     # @param base_branch [String, nil] Optional base (e.g. "master", "origin/main").
@@ -368,6 +390,20 @@ module BeltEnvironment
       status.success?
     rescue StandardError
       false
+    end
+
+    def deploy_cancelled?(stdout, stderr)
+      [stdout, stderr].any? { |s| s.to_s.match?(/\bCancelled\.?\s*$/) }
+    end
+
+    def log_cli_tail(stdout, stderr, limit: 25)
+      lines = []
+      lines.concat(stdout.to_s.lines) unless stdout.to_s.strip.empty?
+      lines.concat(stderr.to_s.lines.map { |l| "stderr: #{l}" }) unless stderr.to_s.strip.empty?
+      return if lines.empty?
+
+      tail = lines.last(limit).join
+      LOG.info "[Belt] Output (last #{[lines.size, limit].min} lines):\n#{tail}"
     end
   end
 end

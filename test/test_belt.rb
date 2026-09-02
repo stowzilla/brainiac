@@ -111,3 +111,111 @@ class TestBeltFrontendOnlyChanges < Minitest::Test
       raise("git #{args.join(' ')} failed")
   end
 end
+
+class TestBeltDeployCommand < Minitest::Test
+  FakeStatus = Struct.new(:success?)
+
+  def setup
+    @dir = Dir.mktmpdir("belt-deploy-test")
+    FileUtils.mkdir_p(File.join(@dir, "config"))
+    File.write(File.join(@dir, "config", "routes.rb"), "app.get '/x'\n")
+  end
+
+  def teardown
+    FileUtils.rm_rf(@dir)
+  end
+
+  def test_full_deploy_command_passes_auto
+    assert_equal ["belt", "deploy", "fizzy-1299", "--auto"],
+                 BeltEnvironment.deploy_command("fizzy-1299")
+  end
+
+  def test_frontend_only_command_uses_frontend_subcommand
+    assert_equal ["belt", "deploy", "frontend", "fizzy-1299"],
+                 BeltEnvironment.deploy_command("fizzy-1299", frontend_only: true)
+  end
+
+  def test_frontend_only_command_does_not_append_frontend_as_extra_arg
+    cmd = BeltEnvironment.deploy_command("fizzy-1299", frontend_only: true)
+    refute_equal ["belt", "deploy", "fizzy-1299", "frontend"], cmd
+  end
+
+  def test_cancelled_output_is_detected
+    stdout = "Apply these changes to fizzy-1299? [y/N] \nCancelled.\n"
+    assert BeltEnvironment.deploy_cancelled?(stdout, "")
+  end
+
+  def test_success_output_is_not_cancelled
+    refute BeltEnvironment.deploy_cancelled?("✅ Deployed fizzy-1299 successfully!\n", "")
+  end
+
+  def test_deploy_invokes_auto_flag
+    captured = capture_belt_cli(stdout: "✅ Deployed fizzy-1299 successfully!\n") do |fake|
+      BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+    end
+
+    assert_equal ["belt", "deploy", "fizzy-1299", "--auto"], captured[:args]
+    assert_equal @dir, captured[:kwargs][:chdir]
+  end
+
+  def test_deploy_frontend_only_invokes_frontend_subcommand
+    captured = capture_belt_cli(stdout: "✅ Frontend deployed to fizzy-1299!\n") do |fake|
+      BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", frontend_only: true, capture3: fake)
+    end
+
+    assert_equal ["belt", "deploy", "frontend", "fizzy-1299"], captured[:args]
+  end
+
+  def test_cancelled_deploy_is_failure_even_when_exit_zero
+    result = nil
+    capture_belt_cli(stdout: "Apply these changes to fizzy-1299? [y/N] \nCancelled.\n", success: true) do |fake|
+      result = BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+    end
+
+    refute result
+  end
+
+  def test_successful_deploy_returns_true
+    result = nil
+    capture_belt_cli(stdout: "✅ Deployed fizzy-1299 successfully!\n") do |fake|
+      result = BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+    end
+
+    assert result
+  end
+
+  def test_nonzero_exit_is_failure
+    result = nil
+    capture_belt_cli(stdout: "", stderr: "boom", success: false) do |fake|
+      result = BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+    end
+
+    refute result
+  end
+
+  def test_deploy_skipped_when_not_belt_app
+    empty = Dir.mktmpdir("not-belt")
+    called = false
+    fake = lambda { |*|
+      called = true
+      ["", "", FakeStatus.new(true)]
+    }
+    refute BeltEnvironment.deploy(worktree: empty, env_name: "fizzy-1299", capture3: fake)
+    refute called
+  ensure
+    FileUtils.rm_rf(empty)
+  end
+
+  private
+
+  def capture_belt_cli(stdout:, stderr: "", success: true)
+    captured = { args: nil, kwargs: nil }
+    fake = lambda { |*args, **kwargs|
+      captured[:args] = args
+      captured[:kwargs] = kwargs
+      [stdout, stderr, FakeStatus.new(success)]
+    }
+    yield fake
+    captured
+  end
+end
