@@ -281,12 +281,23 @@ module BeltEnvironment
     # Frontend-only changes can be deployed faster with `belt deploy <env> frontend`.
     #
     # @param worktree [String] Path to the worktree
-    # @param base_branch [String] Base branch to compare against (default: origin/main)
+    # @param base_branch [String, nil] Optional base (e.g. "master", "origin/main").
+    #   When omitted, uses origin/HEAD, then origin/main, then origin/master.
     # @return [Boolean] True if changes are frontend-only
-    def frontend_only_changes?(worktree:, base_branch: "origin/main")
-      stdout, _status = Open3.capture2("git", "diff", "--name-only", base_branch, chdir: worktree)
-      changed_files = stdout.strip.split("\n")
+    def frontend_only_changes?(worktree:, base_branch: nil)
+      base_ref = resolve_frontend_diff_base(worktree, base_branch)
+      unless base_ref
+        LOG.warn "[Belt] No base ref for frontend-only check in #{worktree}"
+        return false
+      end
 
+      stdout, stderr, status = Open3.capture3("git", "diff", "--name-only", base_ref, "--", chdir: worktree)
+      unless status.success?
+        LOG.warn "[Belt] Could not diff against #{base_ref}: #{stderr.strip}"
+        return false
+      end
+
+      changed_files = stdout.strip.split("\n")
       return false if changed_files.empty?
 
       # Frontend directories that don't affect backend
@@ -317,6 +328,45 @@ module BeltEnvironment
       end
     rescue StandardError => e
       LOG.warn "[Belt] Error checking frontend-only changes: #{e.message}"
+      false
+    end
+
+    # Resolve a git ref to diff against. Never assumes origin/main.
+    # Prefer an explicit PR/base branch, then origin/HEAD, then main/master.
+    def resolve_frontend_diff_base(worktree, explicit)
+      candidates = []
+      if explicit && !explicit.to_s.strip.empty?
+        ref = explicit.to_s.strip
+        ref = "origin/#{ref}" unless ref.include?("/")
+        candidates << ref
+      end
+
+      head = origin_head_branch(worktree)
+      candidates << "origin/#{head}" if head
+      candidates.concat(%w[origin/main origin/master])
+      candidates.uniq.find { |ref| git_commit?(worktree, ref) }
+    end
+
+    def origin_head_branch(worktree)
+      stdout, _stderr, status = Open3.capture3(
+        "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD",
+        chdir: worktree
+      )
+      return nil unless status.success?
+
+      name = stdout.strip.sub(%r{\Aorigin/}, "")
+      name.empty? ? nil : name
+    rescue StandardError
+      nil
+    end
+
+    def git_commit?(worktree, ref)
+      _stdout, _stderr, status = Open3.capture3(
+        "git", "rev-parse", "--verify", "#{ref}^{commit}",
+        chdir: worktree
+      )
+      status.success?
+    rescue StandardError
       false
     end
   end
