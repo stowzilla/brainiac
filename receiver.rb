@@ -28,6 +28,7 @@ require_relative "lib/brainiac/intent"
 require_relative "lib/brainiac/plugins"
 require_relative "lib/brainiac/handlers/shared/git"
 require_relative "lib/brainiac/handlers/shared/inline_tags"
+require_relative "lib/brainiac/handlers/shared/belt"
 
 # Namespace for gem-based plugins (brainiac-whatsapp, brainiac-slack, etc.)
 module Brainiac
@@ -119,6 +120,9 @@ end
 # Register GitHelpers so plugins can call resolve_pr_target, resolve_base_branch
 # from within Sinatra route handlers
 helpers GitHelpers
+
+# Register BeltHelpers for Belt app detection
+helpers BeltHelpers
 
 # Dashboard authentication helpers
 helpers do
