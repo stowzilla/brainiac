@@ -154,7 +154,7 @@ class TestBeltDeployCommand < Minitest::Test
       BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
     end
 
-    assert_equal ["belt", "deploy", "fizzy-1299", "--auto"], captured[:args]
+    assert_equal [{}, "belt", "deploy", "fizzy-1299", "--auto"], captured[:args]
     assert_equal @dir, captured[:kwargs][:chdir]
   end
 
@@ -163,7 +163,7 @@ class TestBeltDeployCommand < Minitest::Test
       BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", frontend_only: true, capture3: fake)
     end
 
-    assert_equal %w[belt deploy frontend fizzy-1299], captured[:args]
+    assert_equal [{}, "belt", "deploy", "frontend", "fizzy-1299"], captured[:args]
   end
 
   def test_cancelled_deploy_is_failure_even_when_exit_zero
@@ -217,5 +217,85 @@ class TestBeltDeployCommand < Minitest::Test
     }
     yield fake
     captured
+  end
+end
+
+class TestBeltAwsProfile < Minitest::Test
+  FakeStatus = Struct.new(:success?)
+
+  def setup
+    @deployments_file = BeltConfig::DEPLOYMENTS_CONFIG_FILE
+    @backup = File.exist?(@deployments_file) ? File.read(@deployments_file) : nil
+    @dir = Dir.mktmpdir("belt-profile-test")
+    FileUtils.mkdir_p(File.join(@dir, "config"))
+    File.write(File.join(@dir, "config", "routes.rb"), "app.get '/x'\n")
+  end
+
+  def teardown
+    if @backup
+      File.write(@deployments_file, @backup)
+    else
+      FileUtils.rm_f(@deployments_file)
+    end
+    FileUtils.rm_rf(@dir)
+  end
+
+  def write_deployments(hash)
+    File.write(@deployments_file, JSON.generate(hash))
+  end
+
+  def test_aws_profile_for_returns_configured_profile
+    write_deployments("environments" => { "fizzy-1299" => { "aws_profile" => "staging" } })
+    assert_equal "staging", BeltConfig.aws_profile_for("fizzy-1299")
+  end
+
+  def test_aws_profile_for_returns_nil_when_env_missing
+    write_deployments("environments" => { "other" => { "aws_profile" => "prod" } })
+    assert_nil BeltConfig.aws_profile_for("fizzy-1299")
+  end
+
+  def test_aws_profile_for_returns_nil_when_profile_blank
+    write_deployments("environments" => { "fizzy-1299" => { "aws_profile" => "  " } })
+    assert_nil BeltConfig.aws_profile_for("fizzy-1299")
+  end
+
+  def test_aws_profile_for_returns_nil_when_no_config_file
+    FileUtils.rm_f(@deployments_file)
+    assert_nil BeltConfig.aws_profile_for("fizzy-1299")
+  end
+
+  def test_belt_cli_env_includes_profile_when_configured
+    write_deployments("environments" => { "fizzy-1299" => { "aws_profile" => "staging" } })
+    assert_equal({ "AWS_PROFILE" => "staging" }, BeltConfig.belt_cli_env("fizzy-1299"))
+  end
+
+  def test_belt_cli_env_empty_when_no_profile
+    FileUtils.rm_f(@deployments_file)
+    assert_empty BeltConfig.belt_cli_env("fizzy-1299")
+  end
+
+  def test_deploy_passes_aws_profile_env_to_runner
+    write_deployments("environments" => { "fizzy-1299" => { "aws_profile" => "staging" } })
+    captured = nil
+    fake = lambda { |*args, **_kwargs|
+      captured = args
+      ["✅ Deployed fizzy-1299 successfully!\n", "", FakeStatus.new(true)]
+    }
+    BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+
+    assert_equal({ "AWS_PROFILE" => "staging" }, captured.first)
+    assert_equal ["belt", "deploy", "fizzy-1299", "--auto"], captured[1..]
+  end
+
+  def test_deploy_passes_empty_env_when_no_profile
+    FileUtils.rm_f(@deployments_file)
+    captured = nil
+    fake = lambda { |*args, **_kwargs|
+      captured = args
+      ["✅ Deployed fizzy-1299 successfully!\n", "", FakeStatus.new(true)]
+    }
+    BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", capture3: fake)
+
+    assert_equal({}, captured.first)
   end
 end
