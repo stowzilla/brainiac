@@ -210,7 +210,7 @@ module BeltEnvironment
 
       LOG.info "[Belt] Creating ephemeral environment '#{env_name}' from parent '#{parent_env}'"
 
-      stdout, stderr, status = Open3.capture3("belt", "g", "environment", env_name, parent_env, chdir: worktree)
+      _, stderr, status = Open3.capture3("belt", "g", "environment", env_name, parent_env, chdir: worktree)
 
       if status.success?
         LOG.info "[Belt] Successfully created environment '#{env_name}'"
@@ -240,8 +240,8 @@ module BeltEnvironment
 
       cmd = deploy_command(env_name, frontend_only: frontend_only)
 
-      LOG.info "[Belt] Deploying to '#{env_name}'#{frontend_only ? " (frontend only)" : ""}"
-      LOG.info "[Belt] Running: #{cmd.join(' ')} (in #{worktree})"
+      LOG.info "[Belt] Deploying to '#{env_name}'#{" (frontend only)" if frontend_only}"
+      LOG.info "[Belt] Running: #{cmd.join(" ")} (in #{worktree})"
 
       runner = capture3 || Open3.method(:capture3)
       stdout, stderr, status = runner.call(*cmd, chdir: worktree)
@@ -284,7 +284,7 @@ module BeltEnvironment
 
       LOG.info "[Belt] Destroying ephemeral environment '#{env_name}'"
 
-      stdout, stderr, status = Open3.capture3("belt", "destroy", "environment", env_name, "--full", chdir: worktree)
+      _, stderr, status = Open3.capture3("belt", "destroy", "environment", env_name, "--full", chdir: worktree)
 
       if status.success?
         LOG.info "[Belt] Successfully destroyed environment '#{env_name}'"
@@ -365,7 +365,7 @@ module BeltEnvironment
 
       head = origin_head_branch(worktree)
       candidates << "origin/#{head}" if head
-      candidates.concat(%w[origin/main origin/master])
+      candidates.push("origin/main", "origin/master")
       candidates.uniq.find { |ref| git_commit?(worktree, ref) }
     end
 
@@ -376,7 +376,7 @@ module BeltEnvironment
       )
       return nil unless status.success?
 
-      name = stdout.strip.sub(%r{\Aorigin/}, "")
+      name = stdout.strip.delete_prefix("origin/")
       name.empty? ? nil : name
     rescue StandardError
       nil

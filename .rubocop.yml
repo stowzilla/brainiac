@@ -65,10 +65,18 @@ Style/TopLevelMethodDefinition:
   Enabled: false
 
 # receiver.rb has the SelectiveLogger class alongside Sinatra routes
+# belt.rb has multiple utility modules in one file for belt integration
 Style/OneClassPerFile:
   Exclude:
     - "receiver.rb"
     - "test/**/*"
+    - "lib/brainiac/handlers/shared/belt.rb"
+
+# belt.rb utility module is large but cohesive
+Metrics/ModuleLength:
+  Max: 100
+  Exclude:
+    - "lib/brainiac/handlers/shared/belt.rb"
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes

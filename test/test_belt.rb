@@ -81,7 +81,7 @@ class TestBeltFrontendOnlyChanges < Minitest::Test
       BeltEnvironment.frontend_only_changes?(worktree: @dir)
     end[1]
 
-    refute_match(/ambiguous argument 'origin\/main'/, err)
+    refute_match(%r{ambiguous argument 'origin/main'}, err)
     refute_match(/unknown revision/, err)
   end
 
@@ -108,7 +108,7 @@ class TestBeltFrontendOnlyChanges < Minitest::Test
 
   def git(*args)
     system("git", *args, chdir: @dir, out: File::NULL, err: File::NULL) ||
-      raise("git #{args.join(' ')} failed")
+      raise("git #{args.join(" ")} failed")
   end
 end
 
@@ -131,13 +131,13 @@ class TestBeltDeployCommand < Minitest::Test
   end
 
   def test_frontend_only_command_uses_frontend_subcommand
-    assert_equal ["belt", "deploy", "frontend", "fizzy-1299"],
+    assert_equal %w[belt deploy frontend fizzy-1299],
                  BeltEnvironment.deploy_command("fizzy-1299", frontend_only: true)
   end
 
   def test_frontend_only_command_does_not_append_frontend_as_extra_arg
     cmd = BeltEnvironment.deploy_command("fizzy-1299", frontend_only: true)
-    refute_equal ["belt", "deploy", "fizzy-1299", "frontend"], cmd
+    refute_equal %w[belt deploy fizzy-1299 frontend], cmd
   end
 
   def test_cancelled_output_is_detected
@@ -163,7 +163,7 @@ class TestBeltDeployCommand < Minitest::Test
       BeltEnvironment.deploy(worktree: @dir, env_name: "fizzy-1299", frontend_only: true, capture3: fake)
     end
 
-    assert_equal ["belt", "deploy", "frontend", "fizzy-1299"], captured[:args]
+    assert_equal %w[belt deploy frontend fizzy-1299], captured[:args]
   end
 
   def test_cancelled_deploy_is_failure_even_when_exit_zero
