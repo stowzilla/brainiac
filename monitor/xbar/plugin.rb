@@ -46,7 +46,7 @@ end
 def worktree_path(log_file, card_key)
   return nil unless log_file && card_key&.start_with?("card-")
 
-  dir = File.dirname(File.dirname(log_file))
+  dir = File.dirname(log_file, 2)
   dir if File.directory?(dir) && dir != "/"
 end
 
