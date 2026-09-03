@@ -72,6 +72,7 @@ end
 module BeltConfig
   BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
   BASECAMP_CONFIG_FILE = File.join(BRAINIAC_DIR, "basecamp.json")
+  DEPLOYMENTS_CONFIG_FILE = File.join(BRAINIAC_DIR, "deployments.json")
 
   class << self
     # Load the basecamp config, caching for performance.
@@ -83,6 +84,43 @@ module BeltConfig
     rescue JSON::ParserError => e
       LOG.error "[Belt] Failed to parse basecamp.json: #{e.message}" if defined?(LOG)
       {}
+    end
+
+    # Resolve the AWS profile for an environment from deployments.json.
+    #
+    # The monitor/status-bar deploy scripts read the same config
+    # (`~/.brainiac/deployments.json` → `environments.<env>.aws_profile`) and
+    # export AWS_PROFILE before shelling out. Server-side belt commands must do
+    # the same so `belt g environment`, `belt deploy`, and `belt destroy` target
+    # the correct AWS account instead of falling back to default credentials.
+    #
+    # @param env_name [String] Environment name (e.g. "fizzy-1299")
+    # @return [String, nil] AWS profile name or nil when unconfigured
+    def aws_profile_for(env_name)
+      return nil unless env_name && File.exist?(DEPLOYMENTS_CONFIG_FILE)
+
+      config = JSON.parse(File.read(DEPLOYMENTS_CONFIG_FILE))
+      profile = config.dig("environments", env_name.to_s, "aws_profile")
+      profile if profile && !profile.to_s.strip.empty?
+    rescue JSON::ParserError => e
+      LOG.error "[Belt] Failed to parse deployments.json: #{e.message}" if defined?(LOG)
+      nil
+    rescue StandardError
+      nil
+    end
+
+    # Build the environment hash to pass to belt CLI invocations for a given
+    # environment. Returns AWS_PROFILE when one is configured, otherwise an empty
+    # hash (so the child process inherits the parent environment unchanged).
+    #
+    # @param env_name [String] Environment name
+    # @return [Hash{String=>String}] Env overrides for Open3
+    def belt_cli_env(env_name)
+      profile = aws_profile_for(env_name)
+      return {} unless profile
+
+      LOG.info "[Belt] Using AWS_PROFILE=#{profile} for '#{env_name}'" if defined?(LOG)
+      { "AWS_PROFILE" => profile }
     end
 
     # Get the parent environment for a project (used as base for ephemeral envs).
@@ -210,7 +248,8 @@ module BeltEnvironment
 
       LOG.info "[Belt] Creating ephemeral environment '#{env_name}' from parent '#{parent_env}'"
 
-      _, stderr, status = Open3.capture3("belt", "g", "environment", env_name, parent_env, chdir: worktree)
+      env = BeltConfig.belt_cli_env(env_name)
+      _, stderr, status = Open3.capture3(env, "belt", "g", "environment", env_name, parent_env, chdir: worktree)
 
       if status.success?
         LOG.info "[Belt] Successfully created environment '#{env_name}'"
@@ -239,12 +278,13 @@ module BeltEnvironment
       return false unless belt_app?(worktree)
 
       cmd = deploy_command(env_name, frontend_only: frontend_only)
+      env = BeltConfig.belt_cli_env(env_name)
 
       LOG.info "[Belt] Deploying to '#{env_name}'#{" (frontend only)" if frontend_only}"
       LOG.info "[Belt] Running: #{cmd.join(" ")} (in #{worktree})"
 
       runner = capture3 || Open3.method(:capture3)
-      stdout, stderr, status = runner.call(*cmd, chdir: worktree)
+      stdout, stderr, status = runner.call(env, *cmd, chdir: worktree)
       log_cli_tail(stdout, stderr)
 
       if deploy_cancelled?(stdout, stderr)
@@ -284,7 +324,8 @@ module BeltEnvironment
 
       LOG.info "[Belt] Destroying ephemeral environment '#{env_name}'"
 
-      _, stderr, status = Open3.capture3("belt", "destroy", "environment", env_name, "--full", chdir: worktree)
+      env = BeltConfig.belt_cli_env(env_name)
+      _, stderr, status = Open3.capture3(env, "belt", "destroy", "environment", env_name, "--full", chdir: worktree)
 
       if status.success?
         LOG.info "[Belt] Successfully destroyed environment '#{env_name}'"
