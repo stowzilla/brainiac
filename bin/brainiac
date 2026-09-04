@@ -50,6 +50,64 @@ def save_config(config)
   File.write(CONFIG_FILE, JSON.pretty_generate(config))
 end
 
+# Describe the git branch state of a local plugin checkout for the `plugins` list.
+# Returns a short human-readable string like "main", "my-branch ↑2 ↓1 *"
+# where ↑ = ahead of upstream, ↓ = behind upstream, * = uncommitted changes.
+# Returns nil if the path isn't a git repo (so callers can skip the annotation).
+def plugin_branch_status(path)
+  return nil unless Dir.exist?(path)
+
+  branch, _, br_status = Open3.capture3("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: path)
+  return nil unless br_status.success?
+
+  branch = branch.strip
+  branch = "(detached)" if branch.empty? || branch == "HEAD"
+
+  parts = [branch]
+
+  # Ahead/behind counts vs the upstream tracking branch (if one is set).
+  counts, _, ab_status = Open3.capture3(
+    "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD", chdir: path
+  )
+  if ab_status.success?
+    behind, ahead = counts.strip.split(/\s+/).map(&:to_i)
+    parts << "↑#{ahead}" if ahead&.positive?
+    parts << "↓#{behind}" if behind&.positive?
+  end
+
+  # Uncommitted changes (staged, unstaged, or untracked).
+  dirty, _, st_status = Open3.capture3("git", "status", "--porcelain", chdir: path)
+  parts << "*" if st_status.success? && !dirty.strip.empty?
+
+  parts.join(" ")
+end
+
+# Format a single line for the `brainiac plugins` list. Handles both local
+# (path-based) plugins and gem-based plugins, including branch/sync status
+# for local checkouts.
+def plugin_list_line(entry)
+  name = entry["name"]
+  gem_name = entry["gem"] || "brainiac-#{name}"
+  local_path = entry["path"]
+  installed_at = entry["installed_at"] ? " (#{entry["installed_at"][0..9]})" : ""
+
+  return "  #{gem_plugin_status(name, gem_name)}#{installed_at}" unless local_path
+
+  return "  ✗ #{name} → #{local_path} (path missing)#{installed_at}" unless Dir.exist?(local_path)
+
+  branch = plugin_branch_status(local_path)
+  branch_note = branch ? " [#{branch}]" : ""
+  "  ✓ #{name} → #{local_path}#{branch_note}#{installed_at}"
+end
+
+# Check whether a gem-based plugin is installed/loadable and return a status string.
+def gem_plugin_status(name, gem_name)
+  spec = Gem::Specification.find_by_name(gem_name)
+  "✓ #{name} (#{gem_name} #{spec.version})"
+rescue Gem::MissingSpecError
+  "✗ #{name} (#{gem_name} — gem not found)"
+end
+
 # Resolve the default agent name: env var → brainiac.json → nil.
 def default_agent_name
   return ENV["AI_AGENT_NAME"] if ENV["AI_AGENT_NAME"] && !ENV["AI_AGENT_NAME"].empty?
@@ -3035,29 +3093,7 @@ when "plugins"
       puts "Installed plugins:"
       plugins.each do |p|
         entry = p.is_a?(Hash) ? p : { "name" => p.to_s }
-        name = entry["name"]
-        gem_name = entry["gem"] || "brainiac-#{name}"
-        local_path = entry["path"]
-        installed_at = entry["installed_at"] ? " (#{entry["installed_at"][0..9]})" : ""
-
-        if local_path
-          # Local plugin — check path exists
-          if Dir.exist?(local_path)
-            puts "  ✓ #{name} → #{local_path}#{installed_at}"
-          else
-            puts "  ✗ #{name} → #{local_path} (path missing)#{installed_at}"
-          end
-        else
-          # Gem plugin — check gem is loadable
-          version = entry["version"] || "latest"
-          loadable = begin
-            spec = Gem::Specification.find_by_name(gem_name)
-            "✓ #{name} (#{gem_name} #{spec.version})"
-          rescue Gem::MissingSpecError
-            "✗ #{name} (#{gem_name} — gem not found)"
-          end
-          puts "  #{loadable}#{installed_at}"
-        end
+        puts plugin_list_line(entry)
       end
     end
   else
