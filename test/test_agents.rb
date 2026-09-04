@@ -9,17 +9,30 @@ class TestAgents < Minitest::Test
     assert_equal "Bot_sherlock", env["DISCORD_BOT_TOKEN"]
   end
 
+  def test_agent_env_for_includes_default_env
+    env = agent_env_for("Sherlock")
+    # Agent-specific env merges with default env
+    assert_equal "true", env["GIT_EDITOR"]
+    assert_equal "token_sherlock", env["SERVICE_TOKEN"]
+  end
+
   def test_agent_env_for_case_insensitive
     env = agent_env_for("SHERLOCK")
     assert_equal "token_sherlock", env["SERVICE_TOKEN"]
   end
 
   def test_agent_env_for_unknown_agent
-    assert_equal({}, agent_env_for("UnknownBot"))
+    env = agent_env_for("UnknownBot")
+    # Unknown agents still get default env (GIT_EDITOR=true to prevent rebase hangs)
+    assert_equal DEFAULT_AGENT_ENV, env
+    assert_equal "true", env["GIT_EDITOR"]
   end
 
   def test_agent_env_for_nil
-    assert_equal({}, agent_env_for(nil))
+    env = agent_env_for(nil)
+    # nil agent still gets default env (GIT_EDITOR=true to prevent rebase hangs)
+    assert_equal DEFAULT_AGENT_ENV, env
+    assert_equal "true", env["GIT_EDITOR"]
   end
 
   def test_agent_display_name_from_registry

@@ -72,15 +72,22 @@ def reload_agent_registry!(force: false)
   end
 end
 
-# Get the env hash for an agent. Returns {} if none configured.
+# Default environment for all agent processes. Prevents git from hanging
+# on COMMIT_EDITMSG when rebasing in non-interactive sessions.
+DEFAULT_AGENT_ENV = {
+  "GIT_EDITOR" => "true"
+}.freeze
+
+# Get the env hash for an agent. Merges default agent env with agent-specific env.
+# Returns at minimum the DEFAULT_AGENT_ENV even if no agent-specific env is configured.
 def agent_env_for(agent_name)
-  return {} unless agent_name
+  return DEFAULT_AGENT_ENV.dup unless agent_name
 
   key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
   entry = AGENT_REGISTRY[key]
-  return {} unless entry.is_a?(Hash)
+  return DEFAULT_AGENT_ENV.dup unless entry.is_a?(Hash)
 
-  entry["env"] || {}
+  DEFAULT_AGENT_ENV.merge(entry["env"] || {})
 end
 
 # Get a specific env var for an agent. Returns nil if not set.

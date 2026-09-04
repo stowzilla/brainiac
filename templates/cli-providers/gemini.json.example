@@ -1,0 +1,17 @@
+{
+  "binary": "stdbuf",
+  "default_args": "-oL agy --mode=accept-edits --dangerously-skip-permissions",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "prompt_mode": "stdin",
+  "resume_flag": null,
+  "list_models_command": null,
+  "models": {
+    "gemini": "gemini-3.1-pro",
+    "pro": "gemini-3.1-pro",
+    "flash": "gemini-3.5-flash",
+    "flash-lite": "gemini-3.5-flash",
+    "sonnet": "claude-sonnet-4.6",
+    "opus": "claude-opus-4.6"
+  }
+}
