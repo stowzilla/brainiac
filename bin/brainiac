@@ -50,6 +50,38 @@ def save_config(config)
   File.write(CONFIG_FILE, JSON.pretty_generate(config))
 end
 
+# Describe the git branch state of a local plugin checkout for the `plugins` list.
+# Returns a short human-readable string like "main", "my-branch ↑2 ↓1 *"
+# where ↑ = ahead of upstream, ↓ = behind upstream, * = uncommitted changes.
+# Returns nil if the path isn't a git repo (so callers can skip the annotation).
+def plugin_branch_status(path)
+  return nil unless Dir.exist?(path)
+
+  branch, _, br_status = Open3.capture3("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: path)
+  return nil unless br_status.success?
+
+  branch = branch.strip
+  branch = "(detached)" if branch.empty? || branch == "HEAD"
+
+  parts = [branch]
+
+  # Ahead/behind counts vs the upstream tracking branch (if one is set).
+  counts, _, ab_status = Open3.capture3(
+    "git", "rev-list", "--left-right", "--count", "@{upstream}...HEAD", chdir: path
+  )
+  if ab_status.success?
+    behind, ahead = counts.strip.split(/\s+/).map(&:to_i)
+    parts << "↑#{ahead}" if ahead && ahead.positive?
+    parts << "↓#{behind}" if behind && behind.positive?
+  end
+
+  # Uncommitted changes (staged, unstaged, or untracked).
+  dirty, _, st_status = Open3.capture3("git", "status", "--porcelain", chdir: path)
+  parts << "*" if st_status.success? && !dirty.strip.empty?
+
+  parts.join(" ")
+end
+
 # Resolve the default agent name: env var → brainiac.json → nil.
 def default_agent_name
   return ENV["AI_AGENT_NAME"] if ENV["AI_AGENT_NAME"] && !ENV["AI_AGENT_NAME"].empty?
@@ -3043,7 +3075,9 @@ when "plugins"
         if local_path
           # Local plugin — check path exists
           if Dir.exist?(local_path)
-            puts "  ✓ #{name} → #{local_path}#{installed_at}"
+            branch = plugin_branch_status(local_path)
+            branch_note = branch ? " [#{branch}]" : ""
+            puts "  ✓ #{name} → #{local_path}#{branch_note}#{installed_at}"
           else
             puts "  ✗ #{name} → #{local_path} (path missing)#{installed_at}"
           end
