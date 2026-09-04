@@ -1660,7 +1660,7 @@ when "cron"
 
     prompt = ARGV.join(" ") unless script
 
-    unless schedule && project && (prompt&.length&.> 0 || script)
+    unless schedule && project && ((prompt && !prompt.empty?) || script)
       puts "Error: Missing required arguments"
       puts ""
       puts "Usage examples:"
