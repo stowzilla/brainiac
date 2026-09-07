@@ -212,10 +212,10 @@ module BeltConfig
       return nil unless File.exist?(state_file)
 
       state = JSON.parse(File.read(state_file))
-      match = state.find do |_name, entry|
+      # Returns [name, entry] for the first match, or nil.
+      state.find do |_name, entry|
         entry.is_a?(Hash) && entry["status"] == "active" && entry["epic_branch"] && yield(entry)
       end
-      match # [name, entry] or nil
     rescue StandardError
       nil
     end
