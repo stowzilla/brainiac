@@ -177,6 +177,48 @@ module BeltConfig
     def ephemeral_env_for_epic(epic_number)
       "epic-#{epic_number}"
     end
+
+    # Find an active epic ephemeral env by its tracked epic branch.
+    #
+    # Epic envs are keyed by name (e.g. "epic-fp-ux") rather than a card number,
+    # and carry `epic_branch` / `epic_pr` fields. This scans the tracking file
+    # for an active entry whose `epic_branch` matches.
+    #
+    # @param branch [String] Head branch name (e.g. "epic/feature-parity-...")
+    # @return [Array(String, Hash), nil] [env_name, entry] or nil
+    def epic_env_for_branch(branch)
+      return nil if branch.nil? || branch.empty?
+
+      find_active_epic_env { |entry| entry["epic_branch"] == branch }
+    end
+
+    # Find an active epic ephemeral env by its tracked epic PR URL.
+    #
+    # @param pr_url [String] Pull request html_url
+    # @return [Array(String, Hash), nil] [env_name, entry] or nil
+    def epic_env_for_pr(pr_url)
+      return nil if pr_url.nil? || pr_url.empty?
+
+      find_active_epic_env { |entry| entry["epic_pr"] == pr_url }
+    end
+
+    private
+
+    # Scan ephemeral_envs.json for the first active epic entry matching the block.
+    # @yield [entry] each active entry hash
+    # @return [Array(String, Hash), nil] [env_name, entry] or nil
+    def find_active_epic_env
+      state_file = File.join(BRAINIAC_DIR, "ephemeral_envs.json")
+      return nil unless File.exist?(state_file)
+
+      state = JSON.parse(File.read(state_file))
+      # Returns [name, entry] for the first match, or nil.
+      state.find do |_name, entry|
+        entry.is_a?(Hash) && entry["status"] == "active" && entry["epic_branch"] && yield(entry)
+      end
+    rescue StandardError
+      nil
+    end
   end
 end
 
