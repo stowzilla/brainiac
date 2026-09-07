@@ -219,3 +219,184 @@ class TestBeltDeployCommand < Minitest::Test
     captured
   end
 end
+
+# Epic ephemeral env lookups (epic_env_for_branch / epic_env_for_pr).
+#
+# Epic envs are keyed by name (e.g. "epic-fp-ux") rather than a card number and
+# carry `epic_branch` / `epic_pr` fields. Nothing used to read those fields, so
+# epic PRs never auto-deployed. These lookups map an epic branch/PR back to its
+# tracked env so the github plugin can redeploy it.
+#
+# The lookups read the real ephemeral_envs.json under BRAINIAC_DIR (set to a
+# tmpdir by test_helper), so we write/restore that file per test.
+class TestBeltEpicEnvLookup < Minitest::Test
+  STATE_FILE = File.join(BeltConfig::BRAINIAC_DIR, "ephemeral_envs.json")
+
+  EPIC_BRANCH = "epic/feature-parity-ux-platform-improvements"
+  EPIC_PR = "https://github.com/stowzilla/feature_parity/pull/86"
+
+  def setup
+    @original = File.exist?(STATE_FILE) ? File.read(STATE_FILE) : nil
+  end
+
+  def teardown
+    if @original
+      File.write(STATE_FILE, @original)
+    else
+      FileUtils.rm_f(STATE_FILE)
+    end
+  end
+
+  def write_state(state)
+    File.write(STATE_FILE, JSON.pretty_generate(state))
+  end
+
+  def epic_entry(overrides = {})
+    {
+      "status" => "active",
+      "project" => "feature-parity",
+      "epic_branch" => EPIC_BRANCH,
+      "epic_pr" => EPIC_PR,
+      "worktree" => "/home/andy/Code/feature_parity--discord-epic-fp-ux-1546154442"
+    }.merge(overrides)
+  end
+
+  # --- epic_env_for_branch ---
+
+  def test_branch_lookup_returns_name_and_entry_on_match
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    name, entry = BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+
+    assert_equal "epic-fp-ux", name
+    assert_equal EPIC_BRANCH, entry["epic_branch"]
+    assert_equal EPIC_PR, entry["epic_pr"]
+  end
+
+  def test_branch_lookup_returns_nil_when_no_match
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_branch("epic/some-other-branch")
+  end
+
+  def test_branch_lookup_ignores_destroyed_envs
+    write_state({ "epic-fp-ux" => epic_entry("status" => "destroyed") })
+
+    assert_nil BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+  end
+
+  def test_branch_lookup_ignores_non_epic_entries
+    # A regular card env matching the branch name but with no epic_branch field
+    # must not be returned — only epic-tracked entries qualify.
+    write_state({
+                  "fizzy-1299" => {
+                    "status" => "active",
+                    "worktree" => "/tmp/wt"
+                  }
+                })
+
+    assert_nil BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+  end
+
+  def test_branch_lookup_returns_first_active_match
+    write_state({
+                  "epic-old" => epic_entry("status" => "destroyed"),
+                  "epic-fp-ux" => epic_entry
+                })
+
+    name, = BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+
+    assert_equal "epic-fp-ux", name
+  end
+
+  def test_branch_lookup_nil_for_nil_branch
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_branch(nil)
+  end
+
+  def test_branch_lookup_nil_for_empty_branch
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_branch("")
+  end
+
+  def test_branch_lookup_nil_when_state_file_missing
+    FileUtils.rm_f(STATE_FILE)
+
+    assert_nil BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+  end
+
+  def test_branch_lookup_nil_on_malformed_json
+    File.write(STATE_FILE, "{ this is not valid json ]")
+
+    assert_nil BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+  end
+
+  def test_branch_lookup_tolerates_non_hash_entries
+    # Guards against `entry.is_a?(Hash)` regressions — a stray scalar value in
+    # the state file must not blow up the scan.
+    write_state({
+                  "schema_version" => "1.0",
+                  "epic-fp-ux" => epic_entry
+                })
+
+    name, = BeltConfig.epic_env_for_branch(EPIC_BRANCH)
+
+    assert_equal "epic-fp-ux", name
+  end
+
+  # --- epic_env_for_pr ---
+
+  def test_pr_lookup_returns_name_and_entry_on_match
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    name, entry = BeltConfig.epic_env_for_pr(EPIC_PR)
+
+    assert_equal "epic-fp-ux", name
+    assert_equal EPIC_PR, entry["epic_pr"]
+  end
+
+  def test_pr_lookup_returns_nil_when_no_match
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_pr("https://github.com/stowzilla/feature_parity/pull/999")
+  end
+
+  def test_pr_lookup_ignores_destroyed_envs
+    write_state({ "epic-fp-ux" => epic_entry("status" => "destroyed") })
+
+    assert_nil BeltConfig.epic_env_for_pr(EPIC_PR)
+  end
+
+  def test_pr_lookup_requires_epic_branch_field
+    # An entry can only match by PR if it is a real epic entry (has epic_branch).
+    write_state({
+                  "epic-fp-ux" => {
+                    "status" => "active",
+                    "epic_pr" => EPIC_PR,
+                    "worktree" => "/tmp/wt"
+                  }
+                })
+
+    assert_nil BeltConfig.epic_env_for_pr(EPIC_PR)
+  end
+
+  def test_pr_lookup_nil_for_nil_pr
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_pr(nil)
+  end
+
+  def test_pr_lookup_nil_for_empty_pr
+    write_state({ "epic-fp-ux" => epic_entry })
+
+    assert_nil BeltConfig.epic_env_for_pr("")
+  end
+
+  def test_pr_lookup_nil_when_state_file_missing
+    FileUtils.rm_f(STATE_FILE)
+
+    assert_nil BeltConfig.epic_env_for_pr(EPIC_PR)
+  end
+end
