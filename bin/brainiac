@@ -731,6 +731,14 @@ def start_server(daemon: false)
     File.write(PID_FILE, Process.pid.to_s)
     File.write(File.join(BRAINIAC_DIR, "server.root"), receiver_dir)
 
+    # Tee output to the same log file daemon mode uses, so agents (and
+    # `brainiac logs` / GET /api/logs) can read the server log even though
+    # we're also streaming it live to this terminal. The receiver reads
+    # BRAINIAC_FOREGROUND_LOG and reopens $stdout/$stderr through a MultiIO.
+    log_dir = File.join(receiver_dir, "tmp")
+    FileUtils.mkdir_p(log_dir)
+    ENV["BRAINIAC_FOREGROUND_LOG"] = File.join(log_dir, "brainiac-server.log")
+
     begin
       Dir.chdir(receiver_dir) do
         exec("ruby", receiver_path)

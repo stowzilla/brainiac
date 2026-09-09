@@ -80,6 +80,97 @@ end
 
 AI_AGENT_NAME = resolve_default_agent
 
+# --- Output teeing (foreground server logs) ---
+#
+# In foreground mode (`brainiac server` / `brainiac s`), output streams to the
+# terminal but is not persisted anywhere. That means agents asked to "check the
+# server log" have nothing to read. To fix that, the CLI sets
+# BRAINIAC_FOREGROUND_LOG to the log file path before exec'ing the receiver;
+# we then reopen $stdout/$stderr to write to BOTH the terminal and that file.
+#
+# Daemon mode already redirects stdout to the log file at the process level, so
+# it does not set this env var (teeing there would double-write).
+
+# Writes to multiple IO targets at once (e.g. terminal + log file).
+class MultiIO
+  def initialize(*targets)
+    @targets = targets
+  end
+
+  def write(*args)
+    @targets.map { |t| t.write(*args) }.last
+  end
+
+  def print(*args)
+    @targets.each { |t| t.print(*args) }
+    nil
+  end
+
+  def puts(*args)
+    @targets.each { |t| t.puts(*args) }
+    nil
+  end
+
+  def printf(*args)
+    @targets.each { |t| t.printf(*args) }
+    nil
+  end
+
+  def <<(arg)
+    @targets.each { |t| t << arg }
+    self
+  end
+
+  def flush
+    @targets.each { |t| t.flush if t.respond_to?(:flush) }
+    self
+  end
+
+  def sync
+    true
+  end
+
+  def sync=(value)
+    @targets.each { |t| t.sync = value if t.respond_to?(:sync=) }
+    value
+  end
+
+  # Delegate anything else (fileno, tty?, etc.) to the first target so callers
+  # that probe the IO for capabilities still work.
+  def respond_to_missing?(name, include_private = false)
+    @targets.first.respond_to?(name, include_private) || super
+  end
+
+  def method_missing(name, *args, &block)
+    first = @targets.first
+    return first.public_send(name, *args, &block) if first.respond_to?(name)
+
+    super
+  end
+end
+
+# If running the foreground server, tee stdout/stderr to the log file so agents
+# (and `brainiac logs` / GET /api/logs) can read what's happening.
+def tee_foreground_output!
+  log_path = ENV.fetch("BRAINIAC_FOREGROUND_LOG", nil)
+  return if log_path.nil? || log_path.empty?
+
+  FileUtils.mkdir_p(File.dirname(log_path))
+  log_io = File.open(log_path, "a")
+  log_io.sync = true
+
+  real_stdout = $stdout
+  real_stderr = $stderr
+
+  $stdout = MultiIO.new(real_stdout, log_io)
+  $stderr = MultiIO.new(real_stderr, log_io)
+rescue StandardError => e
+  # Never let logging setup take down the server — fall back to plain stdout.
+  warn "[Brainiac] Could not tee foreground output to #{log_path}: #{e.message}"
+end
+
+tee_foreground_output!
+
 LOG_LEVEL = ENV.fetch("LOG_LEVEL", "info").downcase
 LOG = Logger.new($stdout)
 LOG.level = case LOG_LEVEL
