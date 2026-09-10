@@ -32,8 +32,9 @@ def load_cli_provider(provider_name)
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
   # Copy optional fields from raw config when present.
   # Each field controls a specific CLI behavior — see comments in the template.
-  %w[prompt_flag list_models_command resume_flag resume_args session_dir output_last_message_flag
-     cwd_flag config_override_flag effort_config_key effort_map].each do |key|
+  %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag session_list_command
+     session_dir output_last_message_flag cwd_flag config_override_flag effort_config_key effort_map
+     title_flag].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
@@ -245,6 +246,67 @@ def find_work_item_by_card(card_internal_id)
     return [work_item_id, info]
   end
   nil
+end
+
+# Find a work item by worktree path. Returns [work_item_id, info] or nil.
+# Compares realpaths so symlink worktrees still match.
+def find_work_item_by_worktree(worktree)
+  return nil unless worktree
+
+  target = path_for_compare(worktree)
+  return nil unless target
+
+  map = load_work_item_map
+  map.each do |work_item_id, info|
+    next unless info.is_a?(Hash) && info["worktree"]
+    next unless path_for_compare(info["worktree"]) == target
+
+    return [work_item_id, info]
+  end
+  nil
+end
+
+def path_for_compare(path)
+  return nil unless path
+
+  File.realpath(path)
+rescue StandardError
+  File.expand_path(path.to_s)
+end
+
+# Key used in work_item["cli_sessions"] — the CLI binary basename (e.g. "opencode").
+def cli_session_key(agent_cli)
+  return nil if agent_cli.nil? || agent_cli.to_s.empty?
+
+  File.basename(agent_cli.to_s)
+end
+
+# Stored OpenCode/CLI session id for this work item + CLI, or nil.
+def cli_session_id_for(agent_cli:, worktree: nil, work_item_id: nil)
+  key = cli_session_key(agent_cli)
+  return nil unless key
+
+  info = find_work_item_by_id(work_item_id) if work_item_id
+  info ||= find_work_item_by_worktree(worktree)&.last
+  info&.dig("cli_sessions", key)
+end
+
+# Persist a CLI session id on the work item, keyed by CLI binary name.
+# Returns true if stored, false if no matching work item.
+def update_work_item_cli_session(agent_cli:, session_id:, worktree: nil, work_item_id: nil) # rubocop:disable Naming/PredicateMethod
+  key = cli_session_key(agent_cli)
+  return false unless key && session_id && !session_id.to_s.empty?
+
+  map = load_work_item_map
+  target_id = work_item_id
+  target_id ||= find_work_item_by_worktree(worktree)&.first
+  return false unless target_id && map[target_id]
+
+  map[target_id]["cli_sessions"] ||= {}
+  map[target_id]["cli_sessions"][key] = session_id.to_s
+  save_work_item_map(map)
+  LOG.info "[WorkItem] Stored #{key} session #{session_id} on #{target_id}"
+  true
 end
 
 # Register a new work item or update an existing one.
@@ -561,9 +623,22 @@ end
 def resume_viable?(project_config:, cli_provider: nil, agent_name: nil, chdir: nil)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
+  return stored_cli_session_viable?(resolved, chdir) if resolved["resume_id_flag"]
   return false unless resolved["resume_flag"] || resolved["resume_args"]
 
   prior_session_exists?(chdir, resolved["agent_cli"], session_dir: resolved["session_dir"])
+end
+
+# True when this CLI resumes by session id AND the work item has a still-existing id.
+def stored_cli_session_viable?(resolved, chdir)
+  session_id = cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir)
+  return false if session_id.to_s.empty?
+  return true unless resolved["session_list_command"]
+
+  sessions = list_cli_sessions(resolved["session_list_command"])
+  return false unless sessions
+
+  sessions.any? { |s| s["id"] == session_id }
 end
 
 # Determine whether a session resume should actually happen.
@@ -573,8 +648,19 @@ end
 #   - :resume_args — when the provider uses subcommand-based resume (build_agent_cmd replaces default_args)
 #   - String (the resume flag) — when the provider uses flag-based resume (appended to cmd)
 #   - false — when resume was not requested or not viable
-def resolve_resume(resume, resolved, chdir)
-  return false unless resume && (resolved["resume_flag"] || resolved["resume_args"])
+def resolve_resume(resume, resolved, chdir, session_id: nil)
+  return false unless resume
+
+  if resolved["resume_id_flag"]
+    id = session_id.to_s.empty? ? cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir) : session_id
+    if id.to_s.empty?
+      LOG.info "[Dispatch] Resume requested but no stored #{resolved["agent_cli"]} session for #{chdir} — starting fresh"
+      return false
+    end
+    return { "flag" => resolved["resume_id_flag"], "id" => id }
+  end
+
+  return false unless resolved["resume_flag"] || resolved["resume_args"]
   if prior_session_exists?(chdir, resolved["agent_cli"], session_dir: resolved["session_dir"])
     # Return :resume_args when the provider uses subcommand-based resume (e.g. Codex exec resume)
     return resolved["resume_args"] ? :resume_args : resolved["resume_flag"]
@@ -619,8 +705,11 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   effort ||= resolved["agent_effort"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
 
+  stored_session = cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir)
+  work_item_id = find_work_item_by_worktree(chdir)&.first
+
   # Auto-resume: only if the provider supports it AND a prior session exists for this CLI here.
-  should_resume = resolve_resume(resume, resolved, chdir)
+  should_resume = resolve_resume(resume, resolved, chdir, session_id: stored_session)
 
   # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
   Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)
@@ -634,7 +723,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,
                                   prompt_file: prompt_file, resume: should_resume,
-                                  output_file: output_file, chdir: chdir)
+                                  output_file: output_file, chdir: chdir, title: work_item_id)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
@@ -660,7 +749,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
       prompt_file: prompt_file, chdir: chdir, source: source,
       source_context: source_context, project_config: project_config,
       card_number: card_number, skip_column_move: skip_column_move,
-      output_file: output_file,
+      output_file: output_file, resolved: resolved,
       head_before: head_before, status_before: status_before,
       project_key_for_restart: project_key_for_restart
     )
@@ -717,7 +806,7 @@ end
 # When chdir is provided and the provider has a cwd_flag, appends it so the CLI
 # itself switches to the working directory (e.g. `codex -C /path/to/project`).
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil)
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil, title: nil)
   cmd = [resolved["agent_cli"]]
   # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
   # This is added early so it appears before subcommands/args (global option).
@@ -741,13 +830,25 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
     cmd.push(resolved["agent_model_flag"], effective_model) if is_known
   end
   append_effort_to_cmd(cmd, effort, resolved) if effort
-  # Resume via flag (simple append, e.g. grok -c or kiro --resume) — only when not using resume_args
-  cmd.push(resume) if resume && resume != :resume_args && resume.is_a?(String)
+  cmd.push(resolved["title_flag"], title) if title && resolved["title_flag"]
+  append_resume_to_cmd(cmd, resume)
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
   # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
   cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
+end
+
+# Resume via --session <id> (OpenCode), a bare flag (grok -c), or resume_args (already applied).
+def append_resume_to_cmd(cmd, resume)
+  case resume
+  when Hash
+    flag = resume["flag"] || resume[:flag]
+    id = resume["id"] || resume[:id]
+    cmd.push(flag, id) if flag && id
+  when String
+    cmd.push(resume)
+  end
 end
 # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
@@ -778,7 +879,60 @@ def append_effort_to_cmd(cmd, effort, resolved)
   end
 end
 
-# Append --model flag if the model is valid for this provider.
+# Parse `opencode session list --format json`, ignoring non-JSON prefixes (e.g. mise).
+def parse_session_list_output(output)
+  return nil if output.nil? || output.strip.empty?
+
+  json_start = output.index("[") || output.index("{")
+  return nil unless json_start
+
+  data = JSON.parse(output[json_start..])
+  sessions = data.is_a?(Array) ? data : data["sessions"]
+  sessions.is_a?(Array) ? sessions : nil
+rescue JSON::ParserError
+  nil
+end
+
+def list_cli_sessions(command)
+  stdout, stderr, status = Open3.capture3(command)
+  unless status.success?
+    LOG.warn "[Session] session_list_command failed (exit #{status.exitstatus}): #{stderr.strip}"
+    return nil
+  end
+
+  parse_session_list_output(stdout)
+end
+
+# Most recently updated session whose directory matches chdir.
+def select_session_id_for_directory(sessions, chdir)
+  return nil if sessions.nil? || chdir.nil?
+
+  target = path_for_compare(chdir)
+  matching = sessions.select do |session|
+    next false unless session.is_a?(Hash)
+
+    dir = session["directory"] || session["dir"]
+    dir && path_for_compare(dir) == target
+  end
+  newest = matching.max_by { |session| session["updated"] || session["time_updated"] || 0 }
+  newest && newest["id"]
+end
+
+# After a run, remember the CLI session id on the work item so later dispatches
+# can pass --session <id> instead of continuing whichever session was last globally.
+def capture_cli_session_id(resolved:, chdir:)
+  return unless resolved["session_list_command"] && resolved["resume_id_flag"]
+
+  sessions = list_cli_sessions(resolved["session_list_command"])
+  session_id = select_session_id_for_directory(sessions, chdir)
+  unless session_id
+    LOG.info "[Session] No CLI session found for #{chdir}"
+    return
+  end
+
+  update_work_item_cli_session(agent_cli: resolved["agent_cli"], session_id: session_id, worktree: chdir)
+end
+
 def handle_agent_completion(**ctx)
   agent_exit_status = $CHILD_STATUS.exitstatus
   agent_signaled = $CHILD_STATUS.signaled?
@@ -794,6 +948,8 @@ def handle_agent_completion(**ctx)
 
   # Read structured output if the provider wrote to an output file (--output-last-message).
   output_content = read_output_file(ctx[:output_file])
+
+  capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir]) if ctx[:resolved] && ctx[:chdir]
 
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
