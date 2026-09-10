@@ -1099,6 +1099,22 @@ class TestHelpers < Minitest::Test
     sessions = parse_session_list_output(raw)
     assert_equal 2, sessions.size
     assert_equal "ses_new", sessions[0]["id"]
+    assert_equal "/tmp/a", sessions[0]["directory"]
+  end
+
+  def test_parse_session_list_output_kiro_envelopes
+    raw = <<~JSON
+      [{"cwd":"/tmp/card-wt","sessions":[
+        {"sessionId":"old-id","updatedAt":"2026-09-01T00:00:00.000Z"},
+        {"sessionId":"new-id","updatedAt":"2026-09-10T00:00:00.000Z"}
+      ],"complete":true}]
+    JSON
+    sessions = parse_session_list_output(raw)
+    assert_equal 2, sessions.size
+    assert_equal "old-id", sessions[0]["id"]
+    assert_equal "/tmp/card-wt", sessions[0]["directory"]
+    assert_equal "new-id", sessions[1]["id"]
+    assert_equal "new-id", select_session_id_for_directory(sessions, "/tmp/card-wt")
   end
 
   def test_select_session_id_for_directory_picks_newest
@@ -1112,6 +1128,40 @@ class TestHelpers < Minitest::Test
       ]
       assert_equal "ses_new", select_session_id_for_directory(sessions, File.join(dir, "a"))
     end
+  end
+
+  def test_build_agent_cmd_mints_new_session_id
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "new_session_id_flag" => "--session-id",
+      "resume_id_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, new_session_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    assert_equal %w[grok --always-approve --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee], cmd
+  end
+
+  def test_build_agent_cmd_resume_skips_minted_id
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "new_session_id_flag" => "--session-id",
+      "resume_id_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, resume: { "flag" => "--resume", "id" => "existing-id" },
+                                    new_session_id: "should-not-appear")
+    assert_equal %w[grok --always-approve --resume existing-id], cmd
+  end
+
+  def test_mint_cli_session_id_only_on_first_run
+    resolved = { "new_session_id_flag" => "--session-id" }
+    id = mint_cli_session_id(resolved, stored_session: nil, resuming: false)
+    assert_match(/\A[0-9a-f-]{36}\z/, id)
+    assert_nil mint_cli_session_id(resolved, stored_session: id, resuming: false)
+    assert_nil mint_cli_session_id(resolved, stored_session: nil, resuming: { "flag" => "--resume", "id" => id })
+    assert_nil mint_cli_session_id({}, stored_session: nil, resuming: false)
   end
 
   def test_build_agent_cmd_with_session_id_resume

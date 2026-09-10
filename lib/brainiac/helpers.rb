@@ -32,9 +32,10 @@ def load_cli_provider(provider_name)
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
   # Copy optional fields from raw config when present.
   # Each field controls a specific CLI behavior — see comments in the template.
-  %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag session_list_command
-     session_dir output_last_message_flag cwd_flag config_override_flag effort_config_key effort_map
-     title_flag].each do |key|
+  %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
+     session_list_command session_id_field session_directory_field session_updated_field
+     session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
+     effort_config_key effort_map title_flag].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
@@ -635,7 +636,7 @@ def stored_cli_session_viable?(resolved, chdir)
   return false if session_id.to_s.empty?
   return true unless resolved["session_list_command"]
 
-  sessions = list_cli_sessions(resolved["session_list_command"])
+  sessions = list_cli_sessions(resolved["session_list_command"], **session_list_fields(resolved))
   return false unless sessions
 
   sessions.any? { |s| s["id"] == session_id }
@@ -668,6 +669,16 @@ def resolve_resume(resume, resolved, chdir, session_id: nil)
 
   LOG.info "[Dispatch] Resume requested but not viable for #{resolved["agent_cli"]} in #{chdir} — starting fresh session"
   false
+end
+
+# Some CLIs (e.g. grok --session-id) let the caller name a new session up front.
+# Mint a UUID only on the first run, when we are not resuming an existing id.
+def mint_cli_session_id(resolved, stored_session:, resuming:)
+  return nil if resuming
+  return nil unless resolved["new_session_id_flag"]
+  return nil unless stored_session.to_s.empty?
+
+  SecureRandom.uuid
 end
 
 # Check if intent detection says to skip dispatching the agent.
@@ -710,6 +721,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   # Auto-resume: only if the provider supports it AND a prior session exists for this CLI here.
   should_resume = resolve_resume(resume, resolved, chdir, session_id: stored_session)
+  minted_session_id = mint_cli_session_id(resolved, stored_session: stored_session, resuming: should_resume)
 
   # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
   Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)
@@ -723,7 +735,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,
                                   prompt_file: prompt_file, resume: should_resume,
-                                  output_file: output_file, chdir: chdir, title: work_item_id)
+                                  output_file: output_file, chdir: chdir, title: work_item_id,
+                                  new_session_id: minted_session_id)
   prompt_mode = resolved["prompt_mode"] || "stdin"
 
   spawn_env = agent_env_for(agent_name).merge(env)
@@ -749,7 +762,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
       prompt_file: prompt_file, chdir: chdir, source: source,
       source_context: source_context, project_config: project_config,
       card_number: card_number, skip_column_move: skip_column_move,
-      output_file: output_file, resolved: resolved,
+      output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
       head_before: head_before, status_before: status_before,
       project_key_for_restart: project_key_for_restart
     )
@@ -806,7 +819,7 @@ end
 # When chdir is provided and the provider has a cwd_flag, appends it so the CLI
 # itself switches to the working directory (e.g. `codex -C /path/to/project`).
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil, title: nil)
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil, title: nil, new_session_id: nil)
   cmd = [resolved["agent_cli"]]
   # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
   # This is added early so it appears before subcommands/args (global option).
@@ -831,6 +844,9 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   end
   append_effort_to_cmd(cmd, effort, resolved) if effort
   cmd.push(resolved["title_flag"], title) if title && resolved["title_flag"]
+  if new_session_id && resolved["new_session_id_flag"] && !(resume.is_a?(Hash) || resume.is_a?(String) || resume == :resume_args)
+    cmd.push(resolved["new_session_id_flag"], new_session_id)
+  end
   append_resume_to_cmd(cmd, resume)
   # prompt_mode: "flag" passes the prompt file path via the configured prompt_flag (e.g. --prompt-file).
   cmd.push(resolved["prompt_flag"], prompt_file) if prompt_file && resolved["prompt_mode"] == "flag" && resolved["prompt_flag"]
@@ -879,51 +895,110 @@ def append_effort_to_cmd(cmd, effort, resolved)
   end
 end
 
-# Parse `opencode session list --format json`, ignoring non-JSON prefixes (e.g. mise).
-def parse_session_list_output(output)
+# Parse a CLI session list as JSON, ignoring non-JSON prefixes (e.g. mise).
+# Normalizes OpenCode `{id, directory, updated}` and kiro `{sessionId, cwd, updatedAt}`
+# (including kiro's `[{cwd, sessions: [...]}]` envelopes) into a flat array of
+# `{ "id", "directory", "updated" }` hashes. Provider JSON can override field names.
+def parse_session_list_output(output, id_field: nil, directory_field: nil, updated_field: nil, list_path: nil)
   return nil if output.nil? || output.strip.empty?
 
   json_start = output.index("[") || output.index("{")
   return nil unless json_start
 
   data = JSON.parse(output[json_start..])
-  sessions = data.is_a?(Array) ? data : data["sessions"]
-  sessions.is_a?(Array) ? sessions : nil
+  rows = data.is_a?(Array) ? data : Array(data["sessions"] || data["data"])
+  return nil unless rows.is_a?(Array)
+
+  flatten_session_rows(rows, id_field: id_field, directory_field: directory_field,
+                             updated_field: updated_field, list_path: list_path)
 rescue JSON::ParserError
   nil
 end
 
-def list_cli_sessions(command)
+def flatten_session_rows(rows, id_field: nil, directory_field: nil, updated_field: nil, list_path: nil)
+  nested_key = list_path.to_s.empty? ? "sessions" : list_path
+  rows.flat_map do |row|
+    next [] unless row.is_a?(Hash)
+
+    nested = row[nested_key]
+    if nested.is_a?(Array)
+      parent_dir = session_value(row, directory_field, %w[directory dir cwd])
+      nested.filter_map { |item| normalize_session_row(item, id_field: id_field, directory_field: directory_field, updated_field: updated_field, parent_dir: parent_dir) }
+    else
+      [normalize_session_row(row, id_field: id_field, directory_field: directory_field, updated_field: updated_field)].compact
+    end
+  end
+end
+
+def normalize_session_row(row, id_field: nil, directory_field: nil, updated_field: nil, parent_dir: nil)
+  return nil unless row.is_a?(Hash)
+
+  id = session_value(row, id_field, %w[id sessionId session_id])
+  return nil if id.to_s.empty?
+
+  {
+    "id" => id.to_s,
+    "directory" => session_value(row, directory_field, %w[directory dir cwd]) || parent_dir,
+    "updated" => session_value(row, updated_field, %w[updated time_updated updatedAt updated_at]) || 0
+  }
+end
+
+def session_value(row, explicit_field, fallbacks)
+  if explicit_field && !explicit_field.to_s.empty? && row.key?(explicit_field)
+    return row[explicit_field]
+  end
+
+  fallbacks.each { |key| return row[key] if row.key?(key) }
+  nil
+end
+
+def session_list_fields(resolved)
+  {
+    id_field: resolved["session_id_field"],
+    directory_field: resolved["session_directory_field"],
+    updated_field: resolved["session_updated_field"],
+    list_path: resolved["session_list_path"]
+  }
+end
+
+def list_cli_sessions(command, **fields)
   stdout, stderr, status = Open3.capture3(command)
   unless status.success?
     LOG.warn "[Session] session_list_command failed (exit #{status.exitstatus}): #{stderr.strip}"
     return nil
   end
 
-  parse_session_list_output(stdout)
+  parse_session_list_output(stdout, **fields)
 end
 
 # Most recently updated session whose directory matches chdir.
+# If no session has a directory (CLI already scoped the list to cwd), pick the newest overall.
 def select_session_id_for_directory(sessions, chdir)
-  return nil if sessions.nil? || chdir.nil?
+  return nil if sessions.nil? || sessions.empty?
 
-  target = path_for_compare(chdir)
-  matching = sessions.select do |session|
-    next false unless session.is_a?(Hash)
+  with_ids = sessions.select { |session| session.is_a?(Hash) && !session["id"].to_s.empty? }
+  return nil if with_ids.empty?
 
-    dir = session["directory"] || session["dir"]
-    dir && path_for_compare(dir) == target
+  if chdir
+    target = path_for_compare(chdir)
+    matching = with_ids.select { |session| session["directory"] && path_for_compare(session["directory"]) == target }
+    with_ids = matching unless matching.empty?
   end
-  newest = matching.max_by { |session| session["updated"] || session["time_updated"] || 0 }
+
+  newest = with_ids.max_by { |session| session["updated"] || 0 }
   newest && newest["id"]
 end
 
 # After a run, remember the CLI session id on the work item so later dispatches
-# can pass --session <id> instead of continuing whichever session was last globally.
-def capture_cli_session_id(resolved:, chdir:)
+# can pass --session/--resume-id <id> instead of continuing whichever session was last globally.
+def capture_cli_session_id(resolved:, chdir:, minted_session_id: nil)
+  if minted_session_id
+    update_work_item_cli_session(agent_cli: resolved["agent_cli"], session_id: minted_session_id, worktree: chdir)
+    return
+  end
   return unless resolved["session_list_command"] && resolved["resume_id_flag"]
 
-  sessions = list_cli_sessions(resolved["session_list_command"])
+  sessions = list_cli_sessions(resolved["session_list_command"], **session_list_fields(resolved))
   session_id = select_session_id_for_directory(sessions, chdir)
   unless session_id
     LOG.info "[Session] No CLI session found for #{chdir}"
@@ -949,7 +1024,9 @@ def handle_agent_completion(**ctx)
   # Read structured output if the provider wrote to an output file (--output-last-message).
   output_content = read_output_file(ctx[:output_file])
 
-  capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir]) if ctx[:resolved] && ctx[:chdir]
+  if ctx[:resolved] && ctx[:chdir]
+    capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir], minted_session_id: ctx[:minted_session_id])
+  end
 
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
