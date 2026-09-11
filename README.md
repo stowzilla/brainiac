@@ -1270,6 +1270,32 @@ curl "http://localhost:4567/api/gif?q=excited"              # Search for GIFs (r
 curl http://localhost:4567/api/cron                         # Cron jobs and thread status
 curl http://localhost:4567/api/logs                         # Read log files
 curl http://localhost:4567/api/status                       # Active agent sessions (used by monitor)
+curl "http://localhost:4567/api/sessions/history?limit=25"  # Durable session history (survives restarts)
+```
+
+### Session History
+
+`/api/status` returns only *live* sessions plus the last 10 finished ones held in memory
+(wiped on every restart). For durable, restart-surviving history use
+`GET /api/sessions/history?limit=N`, backed by an append-only JSONL log at
+`~/.brainiac/session-history.jsonl`.
+
+Every finished agent session is recorded with timing, identity (agent, CLI, model, source),
+exit status, and — where the provider exposes it — **session heaviness**: context window
+usage and credits spent. Heaviness is captured at completion time via a provider-specific
+probe that is **declared in the provider config**, not hardcoded in brainiac. Add a
+`heaviness_probe` block to `~/.brainiac/cli-providers/<name>.json`:
+
+```json
+"heaviness_probe": { "type": "kiro_sqlite", "db_path": "~/.local/share/kiro-cli/data.sqlite3" }
+```
+
+`type` selects the probe strategy and `db_path` points at the provider's local usage store,
+so enabling/disabling a provider or moving its data store is pure JSON. kiro-cli ships with a
+`kiro_sqlite` probe (reads its local conversation sqlite, read-only). A genuinely new storage
+mechanism needs a small probe implementation in `lib/brainiac/session_history.rb`; providers
+with no `heaviness_probe` simply record timing + identity. The file is trimmed to the most
+recent 500 records.
 ```
 
 ## Development
