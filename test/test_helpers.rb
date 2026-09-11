@@ -1042,4 +1042,174 @@ class TestHelpers < Minitest::Test
   ensure
     FileUtils.rm_f(provider_file)
   end
+
+  # --- OpenCode-style session id resume ---
+
+  def test_load_cli_provider_resume_id_fields
+    provider_file = File.join(TEST_BRAINIAC_DIR, "cli-providers", "opencode-sess.json")
+    File.write(provider_file, JSON.generate({
+                                              "binary" => "opencode",
+                                              "default_args" => "run --auto",
+                                              "agent_flag" => nil,
+                                              "resume_id_flag" => "--session",
+                                              "session_list_command" => "opencode session list --format json",
+                                              "title_flag" => "--title",
+                                              "models" => { "auto" => "ollama/qwen3.6:latest" }
+                                            }))
+    config = load_cli_provider("opencode-sess")
+    assert_equal "--session", config["resume_id_flag"]
+    assert_equal "opencode session list --format json", config["session_list_command"]
+    assert_equal "--title", config["title_flag"]
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
+
+  def test_find_work_item_by_worktree
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    Dir.mktmpdir do |dir|
+      worktree = File.join(dir, "wt")
+      FileUtils.mkdir_p(worktree)
+      wid = register_work_item(branch: "sess-branch", worktree: worktree, project: "brainiac", agent: "Galen")
+      found_id, info = find_work_item_by_worktree(worktree)
+      assert_equal wid, found_id
+      assert_equal worktree, info["worktree"]
+    end
+  end
+
+  def test_update_and_read_cli_session
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    Dir.mktmpdir do |dir|
+      worktree = File.join(dir, "wt")
+      FileUtils.mkdir_p(worktree)
+      wid = register_work_item(branch: "sess-store", worktree: worktree, project: "brainiac", agent: "Galen")
+      assert update_work_item_cli_session(agent_cli: "opencode", session_id: "ses_abc", worktree: worktree)
+      assert_equal "ses_abc", cli_session_id_for(agent_cli: "/usr/bin/opencode", work_item_id: wid)
+      assert_equal "ses_abc", find_work_item_by_id(wid).dig("cli_sessions", "opencode")
+    end
+  end
+
+  def test_parse_session_list_output_strips_mise_prefix
+    raw = <<~OUTPUT
+      mise ~/.config/mise/config.toml tools: opencode@1.18.30
+      [
+        {"id": "ses_new", "directory": "/tmp/a", "updated": 20},
+        {"id": "ses_old", "directory": "/tmp/a", "updated": 10}
+      ]
+    OUTPUT
+    sessions = parse_session_list_output(raw)
+    assert_equal 2, sessions.size
+    assert_equal "ses_new", sessions[0]["id"]
+    assert_equal "/tmp/a", sessions[0]["directory"]
+  end
+
+  def test_parse_session_list_output_kiro_envelopes
+    raw = <<~JSON
+      [{"cwd":"/tmp/card-wt","sessions":[
+        {"sessionId":"old-id","updatedAt":"2026-09-01T00:00:00.000Z"},
+        {"sessionId":"new-id","updatedAt":"2026-09-10T00:00:00.000Z"}
+      ],"complete":true}]
+    JSON
+    sessions = parse_session_list_output(raw)
+    assert_equal 2, sessions.size
+    assert_equal "old-id", sessions[0]["id"]
+    assert_equal "/tmp/card-wt", sessions[0]["directory"]
+    assert_equal "new-id", sessions[1]["id"]
+    assert_equal "new-id", select_session_id_for_directory(sessions, "/tmp/card-wt")
+  end
+
+  def test_select_session_id_for_directory_picks_newest
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, "a"))
+      FileUtils.mkdir_p(File.join(dir, "b"))
+      sessions = [
+        { "id" => "ses_old", "directory" => File.join(dir, "a"), "updated" => 10 },
+        { "id" => "ses_new", "directory" => File.join(dir, "a"), "updated" => 20 },
+        { "id" => "ses_other", "directory" => File.join(dir, "b"), "updated" => 99 }
+      ]
+      assert_equal "ses_new", select_session_id_for_directory(sessions, File.join(dir, "a"))
+    end
+  end
+
+  def test_build_agent_cmd_mints_new_session_id
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "new_session_id_flag" => "--session-id",
+      "resume_id_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, new_session_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    assert_equal %w[grok --always-approve --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee], cmd
+  end
+
+  def test_build_agent_cmd_resume_skips_minted_id
+    resolved = {
+      "agent_cli" => "grok",
+      "agent_flag" => nil,
+      "agent_cli_args" => "--always-approve",
+      "new_session_id_flag" => "--session-id",
+      "resume_id_flag" => "--resume"
+    }
+    cmd = build_agent_cmd(resolved, resume: { "flag" => "--resume", "id" => "existing-id" },
+                                    new_session_id: "should-not-appear")
+    assert_equal %w[grok --always-approve --resume existing-id], cmd
+  end
+
+  def test_mint_cli_session_id_only_on_first_run
+    resolved = { "new_session_id_flag" => "--session-id" }
+    id = mint_cli_session_id(resolved, stored_session: nil, resuming: false)
+    assert_match(/\A[0-9a-f-]{36}\z/, id)
+    assert_nil mint_cli_session_id(resolved, stored_session: id, resuming: false)
+    assert_nil mint_cli_session_id(resolved, stored_session: nil, resuming: { "flag" => "--resume", "id" => id })
+    assert_nil mint_cli_session_id({}, stored_session: nil, resuming: false)
+  end
+
+  def test_build_agent_cmd_with_session_id_resume
+    resolved = {
+      "agent_cli" => "opencode",
+      "agent_flag" => nil,
+      "agent_cli_args" => "run --auto",
+      "agent_model_flag" => "--model",
+      "allowed_models" => { "auto" => "ollama/qwen3.6:latest" },
+      "title_flag" => "--title",
+      "resume_id_flag" => "--session"
+    }
+    cmd = build_agent_cmd(resolved, model: "auto", resume: { "flag" => "--session", "id" => "ses_abc" },
+                                    title: "wi-123")
+    assert_equal %w[opencode run --auto --model ollama/qwen3.6:latest --title wi-123 --session ses_abc], cmd
+  end
+
+  def test_resolve_resume_returns_session_id_hash
+    resolved = { "agent_cli" => "opencode", "resume_id_flag" => "--session" }
+    result = resolve_resume(true, resolved, "/tmp", session_id: "ses_abc")
+    assert_equal({ "flag" => "--session", "id" => "ses_abc" }, result)
+  end
+
+  def test_resolve_resume_id_flag_without_stored_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    resolved = { "agent_cli" => "opencode", "resume_id_flag" => "--session" }
+    refute resolve_resume(true, resolved, "/tmp/no-work-item")
+  end
+
+  def test_resume_viable_with_stored_session_id
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    Dir.mktmpdir do |dir|
+      worktree = File.join(dir, "wt")
+      FileUtils.mkdir_p(worktree)
+      register_work_item(branch: "sess-viable", worktree: worktree, project: "brainiac", agent: "Galen")
+      update_work_item_cli_session(agent_cli: "opencode", session_id: "ses_live", worktree: worktree)
+
+      provider_file = File.join(CLI_PROVIDERS_DIR, "opencode-viable.json")
+      File.write(provider_file, JSON.generate({
+                                                "binary" => "opencode",
+                                                "default_args" => "run --auto",
+                                                "agent_flag" => nil,
+                                                "resume_id_flag" => "--session"
+                                              }))
+      project_config = { "cli_provider" => "opencode-viable", "repo_path" => worktree }
+      assert resume_viable?(project_config: project_config, chdir: worktree)
+    ensure
+      FileUtils.rm_f(provider_file)
+    end
+  end
 end

@@ -1,0 +1,19 @@
+{
+  "binary": "opencode",
+  "default_args": "run --auto",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "prompt_mode": "stdin",
+  "resume_id_flag": "--session",
+  "session_list_command": "opencode session list --format json",
+  "title_flag": "--title",
+  "list_models_command": "opencode models ollama",
+  "models": {
+    "qwen": "ollama/qwen3.6:latest",
+    "qwen36": "ollama/qwen3.6:latest",
+    "local": "ollama/qwen3.6:latest",
+    "gemma": "ollama/gemma3:12b",
+    "fast": "ollama/qwen3:4b",
+    "auto": "ollama/qwen3.6:latest"
+  }
+}
