@@ -507,6 +507,74 @@ rescue StandardError => e
   nil
 end
 
+# Detect when an agent exited cleanly (exit 0) but produced no usable response.
+# This covers cases the crash path misses because the exit code is 0 — most notably a
+# CLI that prints a request/usage-limit notice and exits without doing any work.
+#
+# Returns a short human-readable reason string when the session yielded no response,
+# or nil when the session did produce output (i.e. nothing to surface).
+#
+# @param log_file [String, nil] Path to the agent's log file
+# @param output_content [String, nil] Structured output captured via --output-last-message, if any
+NO_OUTPUT_LIMIT_PATTERNS = [
+  /\bmonthly request limit reached\b/i,
+  /\brequest limit reached\b/i,
+  /\busage limit\b/i,
+  /\brate limit(?:ed|ing)?\b/i,
+  /\bquota (?:exceeded|reached)\b/i,
+  /\btoo many requests\b/i
+].freeze
+
+def detect_no_output_reason(log_file, output_content)
+  # If we captured a structured response, the session clearly produced output.
+  return nil if output_content && !output_content.strip.empty?
+
+  tail = extract_crash_snippet(log_file, max_lines: 40)
+  return nil if tail.nil?
+
+  limit_line = tail.lines.map(&:strip).reverse.find do |line|
+    NO_OUTPUT_LIMIT_PATTERNS.any? { |re| line.match?(re) }
+  end
+  return "hit a request/usage limit: #{limit_line}" if limit_line
+
+  # No structured output and no recognizable limit notice. Treat a log that carries no
+  # assistant text as "produced no response" so the channel isn't left silent. We can't
+  # parse every CLI's transcript here, so this is best-effort: only flag when the log is
+  # effectively empty of content beyond startup/boilerplate lines.
+  meaningful = tail.lines.map(&:strip).reject do |line|
+    line.empty? ||
+      line.start_with?("---", "▸") ||
+      line.match?(/all tools are now trusted/i) ||
+      line.match?(/mcp server did not load/i) ||
+      line.match?(/agents can sometimes do unexpected things/i) ||
+      line.match?(%r{learn more at https?://}i)
+  end
+  return "produced no response (log contained no agent output)" if meaningful.empty?
+
+  nil
+end
+
+# Surface a clean-exit-but-no-response session to the originating channel. Reuses the
+# crash notification delivery path (the :agent_crashed hook) so plugins deliver it the
+# same way they deliver failures, but frames it as "no response" rather than a crash.
+def notify_agent_no_output(reason:, log_file:, agent_name:, source:, source_context:, project_config:)
+  agent_display = agent_name || "Agent"
+  snippet = extract_crash_snippet(log_file)
+
+  handled = Brainiac.emit(:agent_crashed,
+                          exit_status: 0, log_file: log_file, agent_name: agent_display,
+                          source: source, source_context: source_context, project_config: project_config,
+                          snippet: snippet, no_output: true, no_output_reason: reason)
+
+  if handled.any?
+    LOG.info "[NoOutput] #{agent_display} #{reason} — notified via #{source}"
+  else
+    LOG.warn "[NoOutput] #{agent_display} #{reason} but no plugin handled notification (source: #{source})"
+  end
+rescue StandardError => e
+  LOG.error "[NoOutput] Unexpected error: #{e.message}"
+end
+
 # Notify the originating channel that an agent crashed.
 # source: :github, :discord, or plugin-registered sources
 # source_context: hash with channel-specific info needed to post the notification
@@ -1067,16 +1135,16 @@ def handle_agent_completion(**ctx)
   # Clean up the output file after hook emission (content already captured above).
   FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
 
+  # Clean exit (0) but no usable response — e.g. the CLI hit a request/usage limit and
+  # bailed without doing work. The crash path above only fires on non-zero exits, so this
+  # would otherwise be silent. Surface it to the originating channel.
+  notify_no_output_if_needed(ctx, exit_status: agent_exit_status, signaled: agent_signaled, output_content: output_content)
+
   # Durable session history — record every finished session to disk (survives restarts),
   # including provider-specific "heaviness" (context window usage + credits). Best-effort.
   archive_session_history(ctx: ctx, exit_status: agent_exit_status, signaled: agent_signaled)
 
-  qmd_out, qmd_status = Open3.capture2e("qmd", "update")
-  if qmd_status.success?
-    LOG.info "[Brain] qmd update completed after #{ctx[:agent_config_name] || "agent"} session"
-  else
-    LOG.warn "[Brain] qmd update failed: #{qmd_out.strip}"
-  end
+  run_qmd_update(ctx[:agent_config_name])
 
   skill_candidate = detect_skill_candidate(ctx[:log_file])
   if skill_candidate[:extract]
@@ -1087,6 +1155,34 @@ def handle_agent_completion(**ctx)
 
   brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
   # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+end
+
+# Run `qmd update` to refresh the brain index after a session. Best-effort; logs the
+# outcome. Extracted from handle_agent_completion to keep it within complexity limits.
+def run_qmd_update(agent_config_name)
+  qmd_out, qmd_status = Open3.capture2e("qmd", "update")
+  if qmd_status.success?
+    LOG.info "[Brain] qmd update completed after #{agent_config_name || "agent"} session"
+  else
+    LOG.warn "[Brain] qmd update failed: #{qmd_out.strip}"
+  end
+end
+
+# Surface a clean-exit session that produced no response, pulling fields from the
+# completion context. Only fires for exit 0 (non-zero already goes through the crash
+# path) with a source to notify. Extracted from handle_agent_completion.
+def notify_no_output_if_needed(ctx, exit_status:, signaled:, output_content:)
+  return unless ctx[:source]
+  return if signaled
+  return unless exit_status&.zero?
+
+  reason = detect_no_output_reason(ctx[:log_file], output_content)
+  return unless reason
+
+  notify_agent_no_output(
+    reason: reason, log_file: ctx[:log_file], agent_name: ctx[:agent_name],
+    source: ctx[:source], source_context: ctx[:source_context], project_config: ctx[:project_config]
+  )
 end
 
 # Notify that a dispatched agent crashed, pulling the relevant fields out of the
