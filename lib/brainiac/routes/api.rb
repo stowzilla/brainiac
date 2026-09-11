@@ -217,6 +217,13 @@ get "/api/status" do
   end
 end
 
+get "/api/sessions/history" do
+  content_type :json
+  limit = (params["limit"] || 50).to_i.clamp(1, SESSION_HISTORY_MAX)
+  history = read_session_history(limit: limit)
+  { history: history, count: history.size }.to_json
+end
+
 post "/api/sessions/kill/:card_key" do
   content_type :json
   card_key = params[:card_key]
