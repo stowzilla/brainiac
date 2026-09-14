@@ -84,7 +84,7 @@ set :quiet, true
 set :server_settings, { Silent: true }
 
 # Custom logger that filters polling endpoints unless LOG_LEVEL=debug
-SILENT_POLL_PATHS = %w[/api/status /api/deployments].freeze
+SILENT_POLL_PATHS = %w[/api/status /api/deployments /api/sessions/history].freeze
 
 class SelectiveLogger < Rack::CommonLogger
   def call(env)
