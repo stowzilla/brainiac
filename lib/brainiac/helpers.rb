@@ -853,7 +853,7 @@ end
 # routes into handle_agent_completion. Extracted from run_agent to keep that method
 # within complexity limits; `ctx` is the completion context assembled at dispatch time.
 def watch_agent_completion(**ctx)
-  Thread.new do
+  thread = Thread.new do
     Process.wait(ctx[:pid])
     handle_agent_completion(
       agent_cli: ctx[:resolved]["agent_cli"],
@@ -861,6 +861,11 @@ def watch_agent_completion(**ctx)
       **ctx
     )
   end
+  # Without this, an unrescued exception anywhere in handle_agent_completion silently
+  # kills the thread and is never logged — which previously hid completion-path failures
+  # (e.g. a step raising before session history was archived).
+  thread.report_on_exception = true
+  thread
 end
 
 # Write agent prompt to a temp file, return path.
@@ -1115,7 +1120,11 @@ def handle_agent_completion(**ctx)
   # Read structured output if the provider wrote to an output file (--output-last-message).
   output_content = read_output_file(ctx[:output_file])
 
-  capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir], minted_session_id: ctx[:minted_session_id]) if ctx[:resolved] && ctx[:chdir]
+  if ctx[:resolved] && ctx[:chdir]
+    completion_step("capture_cli_session_id") do
+      capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir], minted_session_id: ctx[:minted_session_id])
+    end
+  end
 
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
@@ -1135,26 +1144,52 @@ def handle_agent_completion(**ctx)
   # Clean up the output file after hook emission (content already captured above).
   FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
 
+  run_post_completion_steps(ctx, exit_status: agent_exit_status, signaled: agent_signaled, output_content: output_content)
+end
+
+# Independent, best-effort steps that run after the lifecycle hook. Each is isolated via
+# completion_step so a failure in one (e.g. a raising notify path) can't abort the rest —
+# notably session-history archival, which must always run regardless of earlier steps.
+def run_post_completion_steps(ctx, exit_status:, signaled:, output_content:)
   # Clean exit (0) but no usable response — e.g. the CLI hit a request/usage limit and
-  # bailed without doing work. The crash path above only fires on non-zero exits, so this
-  # would otherwise be silent. Surface it to the originating channel.
-  notify_no_output_if_needed(ctx, exit_status: agent_exit_status, signaled: agent_signaled, output_content: output_content)
+  # bailed without doing work. The crash path only fires on non-zero exits, so this would
+  # otherwise be silent. Surface it to the originating channel.
+  completion_step("notify_no_output") do
+    notify_no_output_if_needed(ctx, exit_status: exit_status, signaled: signaled, output_content: output_content)
+  end
 
   # Durable session history — record every finished session to disk (survives restarts),
   # including provider-specific "heaviness" (context window usage + credits). Best-effort.
-  archive_session_history(ctx: ctx, exit_status: agent_exit_status, signaled: agent_signaled)
-
-  run_qmd_update(ctx[:agent_config_name])
-
-  skill_candidate = detect_skill_candidate(ctx[:log_file])
-  if skill_candidate[:extract]
-    LOG.info "[Skills] Session qualifies for skill extraction " \
-             "(#{skill_candidate[:tool_calls]} tool calls, #{skill_candidate[:error_patterns]} error patterns) " \
-             "— agent was nudged via reflection prompt"
+  completion_step("archive_session_history") do
+    archive_session_history(ctx: ctx, exit_status: exit_status, signaled: signaled)
   end
 
-  brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
+  completion_step("qmd_update") { run_qmd_update(ctx[:agent_config_name]) }
+  completion_step("skill_candidate") { log_skill_candidate(ctx[:log_file]) }
+  completion_step("brain_push") { brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}") }
   # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+end
+
+# Log whether a finished session qualifies for skill extraction. Extracted so the
+# post-completion sequence stays flat.
+def log_skill_candidate(log_file)
+  skill_candidate = detect_skill_candidate(log_file)
+  return unless skill_candidate[:extract]
+
+  LOG.info "[Skills] Session qualifies for skill extraction " \
+           "(#{skill_candidate[:tool_calls]} tool calls, #{skill_candidate[:error_patterns]} error patterns) " \
+           "— agent was nudged via reflection prompt"
+end
+
+# Run an independent post-completion step, logging and swallowing any failure so one
+# broken step (e.g. a plugin-facing call raising) can't abort the remaining steps —
+# notably session-history archival, which must not depend on earlier steps succeeding.
+def completion_step(name)
+  yield
+rescue StandardError => e
+  LOG.error "[Completion] step '#{name}' failed: #{e.class}: #{e.message}"
+  LOG.error "[Completion]   #{e.backtrace.first(3).join("\n  ")}" if e.backtrace
+  nil
 end
 
 # Run `qmd update` to refresh the brain index after a session. Best-effort; logs the

@@ -30,9 +30,10 @@ def record_session_history(record)
     File.open(SESSION_HISTORY_FILE, "a") { |f| f.puts(JSON.generate(record)) }
     trim_session_history!
   end
+  LOG.info "[SessionHistory] Recorded session for #{record["agent"] || "?"} → #{SESSION_HISTORY_FILE}"
   true
 rescue StandardError => e
-  LOG.warn "[SessionHistory] Failed to record session: #{e.message}"
+  LOG.warn "[SessionHistory] Failed to record session: #{e.class}: #{e.message}"
   false
 end
 
