@@ -35,7 +35,7 @@ def load_cli_provider(provider_name)
   %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
      session_list_command session_id_field session_directory_field session_updated_field
      session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
-     effort_config_key effort_map title_flag].each do |key|
+     effort_config_key effort_map title_flag heaviness_probe].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
@@ -507,6 +507,74 @@ rescue StandardError => e
   nil
 end
 
+# Detect when an agent exited cleanly (exit 0) but produced no usable response.
+# This covers cases the crash path misses because the exit code is 0 — most notably a
+# CLI that prints a request/usage-limit notice and exits without doing any work.
+#
+# Returns a short human-readable reason string when the session yielded no response,
+# or nil when the session did produce output (i.e. nothing to surface).
+#
+# @param log_file [String, nil] Path to the agent's log file
+# @param output_content [String, nil] Structured output captured via --output-last-message, if any
+NO_OUTPUT_LIMIT_PATTERNS = [
+  /\bmonthly request limit reached\b/i,
+  /\brequest limit reached\b/i,
+  /\busage limit\b/i,
+  /\brate limit(?:ed|ing)?\b/i,
+  /\bquota (?:exceeded|reached)\b/i,
+  /\btoo many requests\b/i
+].freeze
+
+def detect_no_output_reason(log_file, output_content)
+  # If we captured a structured response, the session clearly produced output.
+  return nil if output_content && !output_content.strip.empty?
+
+  tail = extract_crash_snippet(log_file, max_lines: 40)
+  return nil if tail.nil?
+
+  limit_line = tail.lines.map(&:strip).reverse.find do |line|
+    NO_OUTPUT_LIMIT_PATTERNS.any? { |re| line.match?(re) }
+  end
+  return "hit a request/usage limit: #{limit_line}" if limit_line
+
+  # No structured output and no recognizable limit notice. Treat a log that carries no
+  # assistant text as "produced no response" so the channel isn't left silent. We can't
+  # parse every CLI's transcript here, so this is best-effort: only flag when the log is
+  # effectively empty of content beyond startup/boilerplate lines.
+  meaningful = tail.lines.map(&:strip).reject do |line|
+    line.empty? ||
+      line.start_with?("---", "▸") ||
+      line.match?(/all tools are now trusted/i) ||
+      line.match?(/mcp server did not load/i) ||
+      line.match?(/agents can sometimes do unexpected things/i) ||
+      line.match?(%r{learn more at https?://}i)
+  end
+  return "produced no response (log contained no agent output)" if meaningful.empty?
+
+  nil
+end
+
+# Surface a clean-exit-but-no-response session to the originating channel. Reuses the
+# crash notification delivery path (the :agent_crashed hook) so plugins deliver it the
+# same way they deliver failures, but frames it as "no response" rather than a crash.
+def notify_agent_no_output(reason:, log_file:, agent_name:, source:, source_context:, project_config:)
+  agent_display = agent_name || "Agent"
+  snippet = extract_crash_snippet(log_file)
+
+  handled = Brainiac.emit(:agent_crashed,
+                          exit_status: 0, log_file: log_file, agent_name: agent_display,
+                          source: source, source_context: source_context, project_config: project_config,
+                          snippet: snippet, no_output: true, no_output_reason: reason)
+
+  if handled.any?
+    LOG.info "[NoOutput] #{agent_display} #{reason} — notified via #{source}"
+  else
+    LOG.warn "[NoOutput] #{agent_display} #{reason} but no plugin handled notification (source: #{source})"
+  end
+rescue StandardError => e
+  LOG.error "[NoOutput] Unexpected error: #{e.message}"
+end
+
 # Notify the originating channel that an agent crashed.
 # source: :github, :discord, or plugin-registered sources
 # source_context: hash with channel-specific info needed to post the notification
@@ -737,8 +805,6 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
                                   prompt_file: prompt_file, resume: should_resume,
                                   output_file: output_file, chdir: chdir, title: work_item_id,
                                   new_session_id: minted_session_id)
-  prompt_mode = resolved["prompt_mode"] || "stdin"
-
   spawn_env = agent_env_for(agent_name).merge(env)
 
   log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
@@ -748,11 +814,9 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
   head_before, status_before = capture_git_state(chdir) if project_key_for_restart == "brainiac"
 
-  pid = spawn(spawn_env, *cmd,
-              chdir: chdir,
-              **(prompt_mode == "stdin" ? { in: prompt_file } : {}),
-              out: [log_file, "w"],
-              err: %i[child out])
+  started_at = Time.now
+  stdin_redirect = (resolved["prompt_mode"] || "stdin") == "stdin" ? { in: prompt_file } : {}
+  pid = spawn(spawn_env, *cmd, chdir: chdir, **stdin_redirect, out: [log_file, "w"], err: %i[child out])
 
   spawn_completion_watcher(
     pid: pid, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
@@ -762,7 +826,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
     card_number: card_number, skip_column_move: skip_column_move,
     output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
     head_before: head_before, status_before: status_before,
-    project_key_for_restart: project_key_for_restart
+    project_key_for_restart: project_key_for_restart, model: model, started_at: started_at
   )
 
   LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \
@@ -773,10 +837,15 @@ end
 
 # Spawn a background thread that waits for the agent process to finish and runs completion handling.
 def spawn_completion_watcher(**ctx)
-  Thread.new do
+  thread = Thread.new do
     Process.wait(ctx[:pid])
     handle_agent_completion(**ctx)
   end
+  # Without this, an unrescued exception anywhere in handle_agent_completion silently
+  # kills the thread and is never logged — which previously hid completion-path failures
+  # (e.g. a step raising before session history was archived).
+  thread.report_on_exception = true
+  thread
 end
 
 # Log the details of an agent launch (command, prompt/output files, injected env).
@@ -1056,11 +1125,58 @@ def handle_agent_completion(**ctx)
   # Clean up the output file after hook emission (content already captured above).
   FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
 
-  run_qmd_update(ctx[:agent_config_name])
-  log_skill_candidate(ctx[:log_file])
+  run_post_completion_steps(ctx, exit_status: agent_exit_status, signaled: agent_signaled, output_content: output_content)
+end
 
-  brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
+# Independent, best-effort steps that run after the lifecycle hook. Each is isolated via
+# completion_step so a failure in one (e.g. a raising notify path) can't abort the rest —
+# notably session-history archival, which must always run regardless of earlier steps.
+def run_post_completion_steps(ctx, exit_status:, signaled:, output_content:)
+  # Clean exit (0) but no usable response — e.g. the CLI hit a request/usage limit and
+  # bailed without doing work. The crash path only fires on non-zero exits, so this would
+  # otherwise be silent. Surface it to the originating channel.
+  completion_step("notify_no_output") do
+    notify_no_output_if_needed(ctx, exit_status: exit_status, signaled: signaled, output_content: output_content)
+  end
+
+  # Durable session history — record every finished session to disk (survives restarts),
+  # including provider-specific "heaviness" (context window usage + credits). Best-effort.
+  completion_step("archive_session_history") do
+    archive_session_history(ctx: ctx, exit_status: exit_status, signaled: signaled)
+  end
+
+  completion_step("qmd_update") { run_qmd_update(ctx[:agent_config_name]) }
+  completion_step("skill_candidate") { log_skill_candidate(ctx[:log_file]) }
+  completion_step("brain_push") { brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}") }
   # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+end
+
+# Run an independent post-completion step, logging and swallowing any failure so one
+# broken step (e.g. a plugin-facing call raising) can't abort the remaining steps —
+# notably session-history archival, which must not depend on earlier steps succeeding.
+def completion_step(name)
+  yield
+rescue StandardError => e
+  LOG.error "[Completion] step '#{name}' failed: #{e.class}: #{e.message}"
+  LOG.error "[Completion]   #{e.backtrace.first(3).join("\n  ")}" if e.backtrace
+  nil
+end
+
+# Surface a clean-exit session that produced no response, pulling fields from the
+# completion context. Only fires for exit 0 (non-zero already goes through the crash
+# path) with a source to notify. Extracted from handle_agent_completion.
+def notify_no_output_if_needed(ctx, exit_status:, signaled:, output_content:)
+  return unless ctx[:source]
+  return if signaled
+  return unless exit_status&.zero?
+
+  reason = detect_no_output_reason(ctx[:log_file], output_content)
+  return unless reason
+
+  notify_agent_no_output(
+    reason: reason, log_file: ctx[:log_file], agent_name: ctx[:agent_name],
+    source: ctx[:source], source_context: ctx[:source_context], project_config: ctx[:project_config]
+  )
 end
 
 # Capture the CLI session id after a run, if the provider and working dir are known.

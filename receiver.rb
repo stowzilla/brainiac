@@ -19,6 +19,7 @@ require_relative "lib/brainiac/agents"
 require_relative "lib/brainiac/brain"
 require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
+require_relative "lib/brainiac/session_history"
 require_relative "lib/brainiac/prompts"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/notifications"
@@ -100,6 +101,16 @@ configure do
 end
 
 LOG.info "[Brainiac] Starting v#{BRAINIAC_VERSION} on port #{settings.port} (#{settings.environment})"
+LOG.info "[Brainiac] Server root: #{SERVER_ROOT} (pid #{Process.pid})"
+
+# Warn loudly when the server is running from an installed gem rather than a git
+# checkout. During development this is almost always a mistake: `brainiac` on PATH
+# resolves to the gem's bin, so edits to a working checkout never take effect. Surfacing
+# it here turns a long "why won't my change apply" hunt into a one-line startup notice.
+if SERVER_ROOT.include?("/gems/")
+  LOG.warn "[Brainiac] Running from an installed GEM (#{SERVER_ROOT}) — not a git checkout. " \
+           "Local code changes will NOT be loaded. Run `ruby ./bin/brainiac server` from your checkout to test edits."
+end
 if intent_config["enabled"]
   LOG.info "[Intent] Enabled — model: #{intent_config["model"]}, endpoint: #{intent_config["endpoint"]}"
   begin

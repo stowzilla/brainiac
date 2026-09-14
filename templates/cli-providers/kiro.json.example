@@ -18,5 +18,10 @@
     "qwen": "qwen3-coder-next",
     "auto": "auto"
   },
-  "efforts": ["low", "medium", "high", "xhigh", "max"]
+  "efforts": ["low", "medium", "high", "xhigh", "max"],
+  "heaviness_probe": {
+    "comment": "Optional. Lets brainiac record how 'heavy' a finished session was (context window usage + credits) in the durable session history. type selects the probe strategy; db_path points at the provider's local usage store. Omit this block to record timing/identity only.",
+    "type": "kiro_sqlite",
+    "db_path": "~/.local/share/kiro-cli/data.sqlite3"
+  }
 }
