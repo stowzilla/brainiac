@@ -741,9 +741,9 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   spawn_env = agent_env_for(agent_name).merge(env)
 
-  LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
-  LOG.info "Prompt: #{prompt_file} | Output: #{output_file || "none"} | Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
-  LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}" unless spawn_env.empty?
+  log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
+                   output_file: output_file, cmd: cmd, should_resume: should_resume,
+                   spawn_env: spawn_env, agent_name: agent_name)
 
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
   head_before, status_before = capture_git_state(chdir) if project_key_for_restart == "brainiac"
@@ -754,24 +754,38 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
               out: [log_file, "w"],
               err: %i[child out])
 
-  Thread.new do
-    Process.wait(pid)
-    handle_agent_completion(
-      pid: pid, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
-      agent_name: agent_name, log_file: log_file, log_name: log_name,
-      prompt_file: prompt_file, chdir: chdir, source: source,
-      source_context: source_context, project_config: project_config,
-      card_number: card_number, skip_column_move: skip_column_move,
-      output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
-      head_before: head_before, status_before: status_before,
-      project_key_for_restart: project_key_for_restart
-    )
-  end
+  spawn_completion_watcher(
+    pid: pid, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
+    agent_name: agent_name, log_file: log_file, log_name: log_name,
+    prompt_file: prompt_file, chdir: chdir, source: source,
+    source_context: source_context, project_config: project_config,
+    card_number: card_number, skip_column_move: skip_column_move,
+    output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
+    head_before: head_before, status_before: status_before,
+    project_key_for_restart: project_key_for_restart
+  )
 
   LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \
            "model: #{model || "default"}), tail -f #{log_file}"
 
   [pid, log_file]
+end
+
+# Spawn a background thread that waits for the agent process to finish and runs completion handling.
+def spawn_completion_watcher(**ctx)
+  Thread.new do
+    Process.wait(ctx[:pid])
+    handle_agent_completion(**ctx)
+  end
+end
+
+# Log the details of an agent launch (command, prompt/output files, injected env).
+def log_agent_launch(resolved:, chdir:, log_file:, prompt_file:, output_file:, cmd:, should_resume:, spawn_env:, agent_name:)
+  LOG.info "Running #{resolved["agent_cli"]} in #{chdir}, logging to #{log_file}"
+  LOG.info "Prompt: #{prompt_file} | Output: #{output_file || "none"} | Command: #{cmd.join(" ")}#{" (resuming session)" if should_resume}"
+  return if spawn_env.empty?
+
+  LOG.info "Injecting #{spawn_env.size} env var(s) for agent #{agent_name}: #{spawn_env.keys.join(", ")}"
 end
 
 # Write agent prompt to a temp file, return path.
@@ -819,7 +833,8 @@ end
 # When chdir is provided and the provider has a cwd_flag, appends it so the CLI
 # itself switches to the working directory (e.g. `codex -C /path/to/project`).
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false, output_file: nil, chdir: nil, title: nil, new_session_id: nil)
+def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, prompt_file: nil, resume: false,
+                    output_file: nil, chdir: nil, title: nil, new_session_id: nil)
   cmd = [resolved["agent_cli"]]
   # cwd_flag: pass the working directory as a CLI argument (e.g. -C for Codex CLI).
   # This is added early so it appears before subcommands/args (global option).
@@ -832,16 +847,7 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # e.g. "exec --full-auto" becomes "exec resume --last --full-auto"
   args = resume == :resume_args && resolved["resume_args"] ? resolved["resume_args"] : resolved["agent_cli_args"]
   cmd.concat(args.split)
-  # Only pass --model if the model is a valid ID for this provider.
-  # "auto" means "let the CLI choose" — skip passing it unless the provider explicitly maps it.
-  if model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
-    allowed = resolved["allowed_models"] || {}
-    # If the model is a key in allowed_models, use the mapped value (e.g. "auto" -> "o4-mini")
-    # This handles cases where different projects use "auto" but each CLI provider maps it differently.
-    effective_model = allowed.key?(model) ? allowed[model] : model
-    is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
-    cmd.push(resolved["agent_model_flag"], effective_model) if is_known
-  end
+  append_model_to_cmd(cmd, model, resolved)
   append_effort_to_cmd(cmd, effort, resolved) if effort
   cmd.push(resolved["title_flag"], title) if title && resolved["title_flag"]
   if new_session_id && resolved["new_session_id_flag"] && !(resume.is_a?(Hash) || resume.is_a?(String) || resume == :resume_args)
@@ -853,6 +859,19 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
   cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
+end
+
+# Append the --model flag when a valid model ID is resolved for this provider.
+# "auto" means "let the CLI choose" — skip passing it unless the provider maps it.
+def append_model_to_cmd(cmd, model, resolved)
+  return unless model && resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
+
+  allowed = resolved["allowed_models"] || {}
+  # If the model is a key in allowed_models, use the mapped value (e.g. "auto" -> "o4-mini").
+  # This handles cases where different projects use "auto" but each CLI provider maps it differently.
+  effective_model = allowed.key?(model) ? allowed[model] : model
+  is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
+  cmd.push(resolved["agent_model_flag"], effective_model) if is_known
 end
 
 # Resume via --session <id> (OpenCode), a bare flag (grok -c), or resume_args (already applied).
@@ -917,15 +936,16 @@ end
 
 def flatten_session_rows(rows, id_field: nil, directory_field: nil, updated_field: nil, list_path: nil)
   nested_key = list_path.to_s.empty? ? "sessions" : list_path
+  fields = { id_field: id_field, directory_field: directory_field, updated_field: updated_field }
   rows.flat_map do |row|
     next [] unless row.is_a?(Hash)
 
     nested = row[nested_key]
     if nested.is_a?(Array)
       parent_dir = session_value(row, directory_field, %w[directory dir cwd])
-      nested.filter_map { |item| normalize_session_row(item, id_field: id_field, directory_field: directory_field, updated_field: updated_field, parent_dir: parent_dir) }
+      nested.filter_map { |item| normalize_session_row(item, parent_dir: parent_dir, **fields) }
     else
-      [normalize_session_row(row, id_field: id_field, directory_field: directory_field, updated_field: updated_field)].compact
+      [normalize_session_row(row, **fields)].compact
     end
   end
 end
@@ -944,9 +964,7 @@ def normalize_session_row(row, id_field: nil, directory_field: nil, updated_fiel
 end
 
 def session_value(row, explicit_field, fallbacks)
-  if explicit_field && !explicit_field.to_s.empty? && row.key?(explicit_field)
-    return row[explicit_field]
-  end
+  return row[explicit_field] if explicit_field && !explicit_field.to_s.empty? && row.key?(explicit_field)
 
   fallbacks.each { |key| return row[key] if row.key?(key) }
   nil
@@ -1013,20 +1031,12 @@ def handle_agent_completion(**ctx)
   agent_signaled = $CHILD_STATUS.signaled?
   LOG.info "#{ctx[:agent_cli]} finished (pid: #{ctx[:pid]}, exit: #{agent_exit_status})"
 
-  if ctx[:source] && agent_exit_status && agent_exit_status != 0 && !agent_signaled
-    notify_agent_crash(
-      exit_status: agent_exit_status, log_file: ctx[:log_file],
-      agent_name: ctx[:agent_name], source: ctx[:source], source_context: ctx[:source_context],
-      project_config: ctx[:project_config]
-    )
-  end
+  notify_crash_if_needed(ctx, agent_exit_status, agent_signaled)
 
   # Read structured output if the provider wrote to an output file (--output-last-message).
   output_content = read_output_file(ctx[:output_file])
 
-  if ctx[:resolved] && ctx[:chdir]
-    capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir], minted_session_id: ctx[:minted_session_id])
-  end
+  capture_session_id_if_possible(ctx)
 
   # Emit lifecycle hook — plugins handle post-session actions (e.g., plugin moves card, appends footer)
   Brainiac.emit(:agent_completed,
@@ -1046,22 +1056,49 @@ def handle_agent_completion(**ctx)
   # Clean up the output file after hook emission (content already captured above).
   FileUtils.rm_f(ctx[:output_file]) if ctx[:output_file]
 
-  qmd_out, qmd_status = Open3.capture2e("qmd", "update")
-  if qmd_status.success?
-    LOG.info "[Brain] qmd update completed after #{ctx[:agent_config_name] || "agent"} session"
-  else
-    LOG.warn "[Brain] qmd update failed: #{qmd_out.strip}"
-  end
-
-  skill_candidate = detect_skill_candidate(ctx[:log_file])
-  if skill_candidate[:extract]
-    LOG.info "[Skills] Session qualifies for skill extraction " \
-             "(#{skill_candidate[:tool_calls]} tool calls, #{skill_candidate[:error_patterns]} error patterns) " \
-             "— agent was nudged via reflection prompt"
-  end
+  run_qmd_update(ctx[:agent_config_name])
+  log_skill_candidate(ctx[:log_file])
 
   brain_push(message: "#{ctx[:agent_config_name] || "agent"}: #{ctx[:log_name]}")
   # check_brainiac_restart(ctx[:head_before], ctx[:status_before], ctx[:chdir], ctx[:project_key_for_restart], ctx[:agent_config_name])
+end
+
+# Capture the CLI session id after a run, if the provider and working dir are known.
+def capture_session_id_if_possible(ctx)
+  return unless ctx[:resolved] && ctx[:chdir]
+
+  capture_cli_session_id(resolved: ctx[:resolved], chdir: ctx[:chdir], minted_session_id: ctx[:minted_session_id])
+end
+
+# Notify plugins of a crashed agent session (non-zero exit, not signaled).
+def notify_crash_if_needed(ctx, agent_exit_status, agent_signaled)
+  return unless ctx[:source] && agent_exit_status && agent_exit_status != 0 && !agent_signaled
+
+  notify_agent_crash(
+    exit_status: agent_exit_status, log_file: ctx[:log_file],
+    agent_name: ctx[:agent_name], source: ctx[:source], source_context: ctx[:source_context],
+    project_config: ctx[:project_config]
+  )
+end
+
+# Run `qmd update` to reindex the brain after a session, logging the outcome.
+def run_qmd_update(agent_config_name)
+  qmd_out, qmd_status = Open3.capture2e("qmd", "update")
+  if qmd_status.success?
+    LOG.info "[Brain] qmd update completed after #{agent_config_name || "agent"} session"
+  else
+    LOG.warn "[Brain] qmd update failed: #{qmd_out.strip}"
+  end
+end
+
+# Log whether the session qualifies for skill extraction (agent nudged via reflection prompt).
+def log_skill_candidate(log_file)
+  skill_candidate = detect_skill_candidate(log_file)
+  return unless skill_candidate[:extract]
+
+  LOG.info "[Skills] Session qualifies for skill extraction " \
+           "(#{skill_candidate[:tool_calls]} tool calls, #{skill_candidate[:error_patterns]} error patterns) " \
+           "— agent was nudged via reflection prompt"
 end
 
 def check_brainiac_restart(head_before, status_before, chdir, project_key_for_restart, agent_config_name)
