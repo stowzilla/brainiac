@@ -47,6 +47,54 @@ def format_recent_sessions
   end
 end
 
+# Whether a log file path is safe to serve over /api/logs.
+#
+# Agent sessions log into `<repo>/tmp` for the registered project, but most
+# real work (Fizzy cards, PR reviews, Discord agents) runs in a *worktree*
+# sibling directory named `<repo>--<suffix>` (e.g. `feature_parity--fizzy-1377-…`),
+# which is NOT under the registered repo_path. We therefore allow a log file
+# when it lives under any registered repo's `tmp/`, under any worktree sibling
+# of a registered repo (`<repo>--*/tmp/`), or under Brainiac's own `tmp/`.
+#
+# The worktree check is purely path-based (no filesystem globbing): the tmp
+# dir's grandparent directory must be a registered repo and the worktree name
+# must start with `<repo_basename>--`. This is cheap enough for the 2s log
+# poller and still matches even if the worktree was removed after the log was
+# written.
+def log_file_allowed?(log_file)
+  return true if log_allowed_repo_dirs.any? { |dir| log_file.start_with?(dir) }
+
+  log_file_in_worktree_tmp?(log_file)
+end
+
+def log_allowed_repo_dirs
+  dirs = PROJECTS.values.filter_map do |project|
+    repo_path = project["repo_path"]
+    (File.join(repo_path, "tmp") + File::SEPARATOR) if repo_path && !repo_path.empty?
+  end
+  dirs << (File.join(BRAINIAC_DIR, "tmp") + File::SEPARATOR)
+  dirs
+end
+
+# True when `log_file` sits in a `tmp/` dir of a worktree sibling of a
+# registered repo: `<parent>/<repo_basename>--<suffix>/tmp/...`.
+def log_file_in_worktree_tmp?(log_file)
+  tmp_dir = File.dirname(log_file)
+  return false unless File.basename(tmp_dir) == "tmp"
+
+  worktree = File.dirname(tmp_dir)
+  worktree_name = File.basename(worktree)
+  worktree_parent = File.dirname(worktree)
+
+  PROJECTS.values.any? do |project|
+    repo_path = project["repo_path"]
+    next false unless repo_path && !repo_path.empty?
+
+    File.dirname(repo_path) == worktree_parent &&
+      worktree_name.start_with?("#{File.basename(repo_path)}--")
+  end
+end
+
 def kill_child_process(target_pid)
   Process.kill("TERM", target_pid)
   Thread.new do
@@ -255,9 +303,7 @@ get "/api/logs" do
   halt 400, "Invalid path" if log_file.include?("..") || !log_file.start_with?("/")
   halt 404, "File not found" unless File.exist?(log_file)
 
-  allowed = PROJECTS.values.map { |p| File.join(p["repo_path"], "tmp") }
-  allowed << File.join(BRAINIAC_DIR, "tmp")
-  halt 403, "Forbidden" unless allowed.any? { |dir| log_file.start_with?(dir) }
+  halt 403, "Forbidden" unless log_file_allowed?(log_file)
 
   all_lines = File.readlines(log_file).last(lines)
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
