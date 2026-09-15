@@ -4,7 +4,7 @@
 #
 # Messages from any channel can contain inline tags like:
 #   [project:my-project], [opus], [effort:high], [cli:grok], [chat], [plan],
-#   [fresh], [branch:feature-xyz], [workitem:wi-abc123]
+#   [fresh], [branch:feature-xyz], [workitem:wi-abc123], [profile:k+] ([p:k+])
 #
 # This module provides a single parser that extracts all tags and returns
 # a structured result with the cleaned text.
@@ -16,6 +16,7 @@
 #     model_tag: "opus" or nil (raw tag, not resolved model ID),
 #     effort: "high" or nil,
 #     cli_provider: "grok" or nil,
+#     profile: "k+" or nil,
 #     chat_mode: true/false,
 #     planning: true/false,
 #     fresh: true/false,
@@ -29,6 +30,7 @@ def parse_inline_tags(text)
     model_tag: nil,
     effort: nil,
     cli_provider: nil,
+    profile: nil,
     chat_mode: false,
     planning: false,
     fresh: false,
@@ -64,6 +66,13 @@ def parse_value_tags(result)
   # [cli:grok]
   if (match = result[:clean_text].match(/\[cli:(\w+)\]/i))
     result[:cli_provider] = match[1].downcase
+    result[:clean_text].sub!(match[0], "")
+  end
+
+  # [profile:k+] or short alias [p:k+] — a named env bundle (e.g. an alternate
+  # kiro-cli account via XDG_DATA_HOME). Values allow non-word chars like '+'.
+  if (match = result[:clean_text].match(/\[(?:profile|p):([^\]]+)\]/i))
+    result[:profile] = match[1].strip.downcase
     result[:clean_text].sub!(match[0], "")
   end
 

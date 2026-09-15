@@ -1,5 +1,6 @@
 require_relative "brainiac/hooks"
 require_relative "brainiac/config"
+require_relative "brainiac/profiles"
 require_relative "brainiac/users"
 require_relative "brainiac/agents"
 require_relative "brainiac/brain"
