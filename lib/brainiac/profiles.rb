@@ -79,13 +79,8 @@ end
 #
 # The caller decides precedence relative to agent env — see profile_spawn_env.
 def profile_env(profile_name)
-  if profile_name
-    entry = profile_entry(profile_name)
-    return {} unless entry.is_a?(Hash)
-  else
-    entry = default_profile&.last
-    return {} unless entry.is_a?(Hash)
-  end
+  entry = profile_name ? profile_entry(profile_name) : default_profile&.last
+  return {} unless entry.is_a?(Hash)
 
   (entry["env"] || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v.to_s }
 end
