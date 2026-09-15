@@ -15,9 +15,16 @@
 #     "k+": { "env": { "XDG_DATA_HOME": "/home/andy/.brainiac/kiro-accounts/kiro-pro" }, "default": true }
 #   }
 #
-# A profile may also optionally pin a model and/or cli_provider:
+# A profile may also optionally pin (or suppress) the model:
 #
-#   "k+": { "env": {...}, "model": "opus", "cli_provider": "kiro-pro" }
+#   "k+": { "env": {...}, "model": "auto" }    # pin a model value (fallback-only)
+#   "k+": { "env": {...}, "model": false }     # suppress the --model flag entirely
+#
+# Model suppression exists because some CLI account backends don't implement the
+# runtime "set model" operation the --model flag drives — kiro-cli's Kiro Pro
+# subscription backend returns "Method not found" for ANY --model value and falls
+# back to its own chat.defaultModel. Setting "model": false on that profile stops
+# brainiac from passing a flag the backend can't honor. See profile_model_directive.
 #
 # Exactly one profile may be marked "default": true — it applies when no [profile:X]
 # tag is present. Because it's only a fallback, an agent's own env (from agents.json)
@@ -130,4 +137,52 @@ def profile_spawn_env(agent_env, profile_name)
 
     default_env.merge(agent_env)
   end
+end
+
+# Resolve a profile's model directive for a dispatch.
+#
+# Some CLI account backends don't implement the runtime "set model" operation that
+# the --model flag drives. kiro-cli's Kiro Pro subscription backend is the concrete
+# case: ANY `--model X` (even "auto" or a model that IS in its catalog) returns
+#   [warn] failed to set model 'X': Method not found
+# and silently falls back to the account's chat.defaultModel setting. The Q Developer
+# (CodeWhisperer) backend implements it fine. Same binary, different backend.
+#
+# A profile can therefore control the model flag two ways:
+#
+#   "k+": { "env": {...}, "model": false }        # suppress --model entirely
+#   "k+": { "env": {...}, "model": "auto" }       # pin a specific model value
+#
+#   - model == false (or "false"/"none"/"") → suppress: the dispatch passes NO --model
+#     flag, so the backend uses its own chat.defaultModel. Authoritative — it reflects
+#     a backend that can't honor the flag, so it wins even over an explicit request.
+#   - model == "<name>" → override: use this model unless the caller explicitly asked
+#     for one (an inline [model:X]/[opus] tag beats a profile default).
+#   - no model key → no opinion; the caller/project model is used as-is.
+#
+# Returns one of:
+#   [:suppress, nil]        — drop the --model flag
+#   [:override, "<name>"]   — profile wants this model (fallback-only)
+#   [:none, nil]            — profile has no model opinion
+#
+# Follows the same profile-resolution rules as profile_env: an explicitly-requested
+# profile's directive applies; when no profile is requested the default profile's
+# directive applies; an unknown profile name yields :none.
+def profile_model_directive(profile_name)
+  entry = profile_name ? profile_entry(profile_name) : default_profile&.last
+  return [:none, nil] unless entry.is_a?(Hash) && entry.key?("model")
+
+  raw = entry["model"]
+  if suppress_model_value?(raw)
+    [:suppress, nil]
+  else
+    [:override, raw.to_s]
+  end
+end
+
+# Values that mean "don't pass a --model flag at all".
+def suppress_model_value?(value)
+  return true if value == false || value.nil?
+
+  %w[false none off no ""].include?(value.to_s.strip.downcase) || value.to_s.strip.empty?
 end

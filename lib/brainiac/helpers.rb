@@ -780,8 +780,13 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
+  explicit_model = model # caller/tag-supplied model (e.g. [opus]); nil means "no explicit request"
   model ||= resolved["agent_model"]
   effort ||= resolved["agent_effort"]
+  # A profile may pin or suppress the model. Suppression is authoritative (the account
+  # backend can't honor --model at all — see profile_model_directive); a profile model
+  # override is fallback-only, so an explicit [model:X] tag still wins.
+  model = apply_profile_model(model, explicit_model, profile)
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
 
   stored_session = cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir)
@@ -932,6 +937,28 @@ def build_agent_cmd(resolved, agent_config_name: nil, model: nil, effort: nil, p
   # output_last_message_flag: capture the agent's final message to a file (e.g. codex exec -o <path>).
   cmd.push(resolved["output_last_message_flag"], output_file) if output_file && resolved["output_last_message_flag"]
   cmd
+end
+
+# Resolve a profile's model directive into the effective model value for a dispatch.
+#
+#   - profile suppresses the flag  -> nil (authoritative; wins even over explicit)
+#   - profile pins a model         -> that model, but ONLY when no explicit model was
+#                                     requested (an inline [model:X]/[opus] tag wins)
+#   - profile has no opinion        -> the model unchanged
+#
+# `current_model` is the already-resolved model (explicit || project default).
+# `explicit_model` is what the caller/tag actually asked for (nil if unspecified).
+def apply_profile_model(current_model, explicit_model, profile)
+  directive, value = profile_model_directive(profile)
+  case directive
+  when :suppress
+    LOG.info "[Profile] model flag suppressed for profile '#{profile || default_profile&.first}'" if defined?(LOG)
+    nil
+  when :override
+    explicit_model ? current_model : value
+  else
+    current_model
+  end
 end
 
 # Append the --model flag when a valid model ID is resolved for this provider.
