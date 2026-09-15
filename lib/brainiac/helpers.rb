@@ -829,7 +829,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
     card_number: card_number, skip_column_move: skip_column_move,
     output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
     head_before: head_before, status_before: status_before,
-    project_key_for_restart: project_key_for_restart, model: model, started_at: started_at
+    project_key_for_restart: project_key_for_restart, model: model, started_at: started_at,
+    profile: effective_profile_name(profile)
   )
 
   LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \

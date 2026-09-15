@@ -89,6 +89,7 @@ def archive_session_history(ctx:, exit_status:, signaled:)
     "log_file" => ctx[:log_file],
     "cli" => ctx[:agent_cli],
     "model" => ctx[:model],
+    "profile" => ctx[:profile],
     "started_at" => started_at&.utc&.iso8601,
     "finished_at" => finished_at.utc.iso8601,
     "duration_seconds" => started_at ? (finished_at - started_at).to_i : nil,

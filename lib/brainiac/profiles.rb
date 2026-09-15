@@ -70,6 +70,23 @@ def default_profile
   PROFILES.find { |_name, entry| entry.is_a?(Hash) && entry["default"] }
 end
 
+# Resolve the *effective* profile name that a dispatch actually ran under, mirroring
+# profile_spawn_env's fallback logic. This is what should be recorded in durable
+# session history and shown in the monitor so you can tell whether a session used the
+# default account (e.g. "q") or an explicitly-requested one (e.g. "k+").
+#
+# - An explicitly-requested, known profile → that name (normalized lowercase).
+# - An explicitly-requested but UNKNOWN profile → nil (it was ignored at spawn, so it
+#   didn't actually run under any profile — matches profile_spawn_env dropping it).
+# - No profile requested → the default profile's name, or nil if there's no default.
+def effective_profile_name(profile_name)
+  if profile_name
+    profile_entry(profile_name) ? profile_name.to_s.downcase : nil
+  else
+    default_profile&.first
+  end
+end
+
 # Resolve the env hash contributed by a profile.
 #
 # When profile_name is given and matches a profile, returns that profile's env.
