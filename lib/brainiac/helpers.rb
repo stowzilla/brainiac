@@ -810,6 +810,12 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   # wins over agent env; the default profile is only a fallback. See profiles.rb.
   spawn_env = profile_spawn_env(agent_env_for(agent_name), profile).merge(env)
 
+  # For providers that use settings_model_cmd instead of a --model flag (e.g. kiro-cli,
+  # which requires `kiro-cli settings chat.defaultModel <name>`), apply the model to
+  # the provider's settings store before spawning. The write runs under spawn_env so it
+  # targets the correct account's KIRO_HOME. No-op when model_flag is non-empty.
+  apply_settings_model(model, resolved, spawn_env)
+
   log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
                    output_file: output_file, cmd: cmd, should_resume: should_resume,
                    spawn_env: spawn_env, agent_name: agent_name)
@@ -945,6 +951,38 @@ def append_model_to_cmd(cmd, model, resolved)
   effective_model = allowed.key?(model) ? allowed[model] : model
   is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
   cmd.push(resolved["agent_model_flag"], effective_model) if is_known
+end
+
+# When a provider uses settings_model_cmd instead of a runtime --model flag,
+# run that command synchronously before spawning the agent so the correct model
+# is already persisted in the provider's settings dir (e.g. KIRO_HOME/settings/cli.json).
+#
+# Only fires when:
+#   - model_flag is absent or empty (the provider doesn't support runtime model selection)
+#   - settings_model_cmd is configured on the provider
+#   - a model was explicitly resolved (nil model = let the account default stand)
+#   - the resolved model is not "auto" (no point writing the equivalent of "no preference")
+#
+# spawn_env is passed in so the command runs under the same env as the agent
+# (picks up KIRO_HOME, XDG_DATA_HOME, etc.) — ensuring the write goes to the right
+# account's settings dir. With per-profile KIRO_HOME the write is isolated to that
+# account, so concurrent dispatches on different profiles never race.
+def apply_settings_model(model, resolved, spawn_env)
+  return unless model
+  return if resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
+
+  settings_cmd = resolved["settings_model_cmd"]
+  return unless settings_cmd.is_a?(Array) && settings_cmd.length >= 2
+
+  allowed = resolved["allowed_models"] || {}
+  effective_model = allowed.key?(model) ? allowed[model] : model
+  is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
+  return unless is_known
+  return if effective_model == "auto"
+
+  full_cmd = settings_cmd + [effective_model]
+  LOG.info "Pre-dispatch: setting model via #{full_cmd.join(" ")} (env: #{spawn_env.keys.join(", ")})"
+  system(spawn_env, *full_cmd)
 end
 
 # Resume via --session <id> (OpenCode), a bare flag (grok -c), or resume_args (already applied).

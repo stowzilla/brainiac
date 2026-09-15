@@ -3,6 +3,7 @@
   "default_args": "chat --trust-all-tools --no-interactive",
   "agent_flag": "--agent",
   "model_flag": "",
+  "settings_model_cmd": ["kiro-cli", "settings", "chat.defaultModel"],
   "effort_flag": "--effort",
   "prompt_mode": "stdin",
   "resume_flag": "--resume",

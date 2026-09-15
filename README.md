@@ -704,7 +704,14 @@ Exactly one profile should be marked `"default": true` — it applies when no `[
 
 ### Model selection
 
-Model selection is a **cli-provider concern**, not a profile concern. To stop passing `--model` (e.g. because a CLI backend doesn't support the flag), set `"model_flag": ""` in `~/.brainiac/cli-providers/kiro.json`. Each account's `chat.defaultModel` (in its own `KIRO_HOME`) then drives model selection instead.
+Model selection is a **cli-provider concern**, not a profile concern. kiro-cli's backend doesn't support the `--model` runtime flag — model selection happens via `settings chat.defaultModel`. The kiro-cli provider is configured to use this approach:
+
+- `"model_flag": ""` — no `--model` flag is ever passed
+- `"settings_model_cmd": ["kiro-cli", "settings", "chat.defaultModel"]` — when a model tag (`[opus]`, `[sonnet]`, etc.) or Fizzy card tag resolves to a model, brainiac runs this command (with the profile's env) to set `chat.defaultModel` before spawning the dispatch
+
+With per-profile `KIRO_HOME`, the settings write goes to that profile's own `settings/cli.json` — so `[p:k+] [opus]` updates k+'s model, and `[p:q] [sonnet]` updates q's model, independently.
+
+**Concurrency note:** the settings write is per-`KIRO_HOME`. Concurrent dispatches on *different* profiles never conflict. Two concurrent dispatches on the *same* profile with different model tags have a narrow write-before-spawn race — acceptable for single-user setups, but worth knowing.
 
 ### Seeding a new KIRO_HOME
 
