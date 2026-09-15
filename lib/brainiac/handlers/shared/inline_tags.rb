@@ -8,6 +8,16 @@
 #
 # This module provides a single parser that extracts all tags and returns
 # a structured result with the cleaned text.
+#
+# ## Escaping tags
+#
+# Prefix a tag with a backslash to prevent it from activating:
+#   \[opus\]   → rendered as [opus]  in clean_text (not parsed as a model tag)
+#   \[p:k+\]   → rendered as [p:k+] in clean_text (not parsed as a profile tag)
+#
+# Both `\[tag\]` (escaped open + close) and `\[tag]` (escaped open only) are
+# accepted — only the leading backslash matters. The backslash is always removed
+# from the returned clean_text.
 
 # Parse inline tags from message text.
 # Returns a hash:
@@ -41,10 +51,29 @@ def parse_inline_tags(text)
     clean_text: text.dup
   }
 
+  # Protect escaped tags before parsing.
+  #
+  # Replace \[ with a placeholder so tag regexes below won't see the opening
+  # bracket. The placeholder is a private-use Unicode sequence unlikely to
+  # appear in real messages.
+  #
+  # \[opus\]  → <PH>opus\]  → after restore → [opus]
+  # \[opus]   → <PH>opus]   → after restore → [opus]
+  #
+  # Note: we replace the entire `\[` sequence (backslash + bracket) with just
+  # the placeholder so the `[` is gone and tag regexes cannot match it.
+  placeholder = "\u{E000}"
+  result[:clean_text].gsub!(/\\(\[)/, placeholder.to_s)
+
   parse_value_tags(result)
   parse_flag_tags(result)
   parse_work_item_tags(result)
   parse_model_tag(result)
+
+  # Restore: placeholder → [ (the user-visible escaped bracket)
+  # Also collapse any trailing \] the user typed into a plain ].
+  result[:clean_text].gsub!(Regexp.escape(placeholder), "[")
+  result[:clean_text].gsub!(/\\(\])/, "\\1")
 
   result[:clean_text].strip!
   result
