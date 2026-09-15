@@ -137,9 +137,10 @@ post "/api/reload" do
   reload_projects!(force: true)
   reload_agent_registry!(force: true)
   reload_user_registry!(force: true)
+  reload_profiles!(force: true)
   ReloadHooks.run_all!
   { status: "reloaded", projects: PROJECTS.keys, agents: all_agent_names.to_a, registry: AGENT_REGISTRY.keys,
-    users: USER_REGISTRY["users"].size }.to_json
+    users: USER_REGISTRY["users"].size, profiles: PROFILES.keys }.to_json
 end
 
 # --- Agents & Roles ---

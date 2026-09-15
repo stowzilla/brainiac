@@ -774,7 +774,7 @@ end
 # Plugins should NOT build their own resume logic; pass `resume: true` and let core handle it.
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
-              message: nil, channel: nil, context: nil, env: {})
+              message: nil, channel: nil, context: nil, env: {}, profile: nil)
   # Intent gate: if a raw message is provided, check whether the agent should respond.
   return nil if intent_skip?(message, agent_name: agent_name, source: source, channel: channel, context: context)
 
@@ -805,7 +805,10 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
                                   prompt_file: prompt_file, resume: should_resume,
                                   output_file: output_file, chdir: chdir, title: work_item_id,
                                   new_session_id: minted_session_id)
-  spawn_env = agent_env_for(agent_name).merge(env)
+  # Profile env (named bundle, e.g. an alternate kiro-cli account) layers between
+  # agent env and the explicit `env:` passed in. An explicitly-requested profile
+  # wins over agent env; the default profile is only a fallback. See profiles.rb.
+  spawn_env = profile_spawn_env(agent_env_for(agent_name), profile).merge(env)
 
   log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
                    output_file: output_file, cmd: cmd, should_resume: should_resume,
