@@ -8,16 +8,39 @@
 # dispatch runs against via an inline tag ([profile:X] / [p:X]) — same CLI, same
 # agent, different credentials.
 #
+# kiro-cli splits its state across two independent env vars — a profile should set both:
+#
+#   XDG_DATA_HOME → auth store (kiro-cli/data.sqlite3): tokens + which account you're
+#                   logged into. This selects the account.
+#   KIRO_HOME     → settings dir (~/.kiro, incl. settings/cli.json): chat.defaultModel,
+#                   agents, MCP, permissions, steering. This is where chat.defaultModel
+#                   lives — giving each profile its own KIRO_HOME means each account has
+#                   its own model setting.
+#
+# Model selection is a cli-provider concern, not a profile concern. To stop passing
+# --model (e.g. because the CLI backend doesn't support the flag), set "model_flag": ""
+# in the cli-provider config (~/.brainiac/cli-providers/kiro.json). Each account's
+# chat.defaultModel (in its own KIRO_HOME) then drives model selection instead.
+#
+# NOTE: a fresh KIRO_HOME starts empty. brainiac dispatches with --agent <name>, so each
+# KIRO_HOME needs agent definitions (and any MCP/permissions you rely on) or dispatches
+# break. Seed a new home by symlinking the shared bits from ~/.kiro and keeping only
+# settings/cli.json per-account:
+#
+#   mkdir -p ~/.kiro-accounts/k+/settings
+#   ln -s ~/.kiro/agents                    ~/.kiro-accounts/k+/agents
+#   ln -s ~/.kiro/mcp.json                  ~/.kiro-accounts/k+/mcp.json
+#   ln -s ~/.kiro/settings/permissions.yaml ~/.kiro-accounts/k+/settings/permissions.yaml
+#   KIRO_HOME=~/.kiro-accounts/k+ kiro-cli settings chat.defaultModel claude-opus-5
+#
 # Config lives at ~/.brainiac/profiles.json:
 #
 #   {
-#     "q":  { "env": { "XDG_DATA_HOME": "/home/andy/.local/share" } },
-#     "k+": { "env": { "XDG_DATA_HOME": "/home/andy/.brainiac/kiro-accounts/kiro-pro" }, "default": true }
+#     "q":  { "env": { "XDG_DATA_HOME": "/home/andy/.local/share",
+#                      "KIRO_HOME": "/home/andy/.kiro" }, "default": true },
+#     "k+": { "env": { "XDG_DATA_HOME": "/home/andy/.local/share/brainiac/k+",
+#                      "KIRO_HOME": "/home/andy/.kiro-accounts/k+" } }
 #   }
-#
-# A profile may also optionally pin a model and/or cli_provider:
-#
-#   "k+": { "env": {...}, "model": "opus", "cli_provider": "kiro-pro" }
 #
 # Exactly one profile may be marked "default": true — it applies when no [profile:X]
 # tag is present. Because it's only a fallback, an agent's own env (from agents.json)
