@@ -1,13 +1,16 @@
 {
   "q": {
     "env": {
-      "XDG_DATA_HOME": "/home/you/.local/share"
+      "XDG_DATA_HOME": "/home/you/.local/share",
+      "KIRO_HOME": "/home/you/.kiro"
     },
+    "model": false,
     "default": true
   },
   "k+": {
     "env": {
-      "XDG_DATA_HOME": "/home/you/.brainiac/kiro-accounts/kiro-pro"
+      "XDG_DATA_HOME": "/home/you/.local/share/brainiac/k+",
+      "KIRO_HOME": "/home/you/.kiro-accounts/k+"
     },
     "model": false
   }

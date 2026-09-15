@@ -661,6 +661,76 @@ brainiac discord config                       # Show current Discord config
 brainiac discord status                       # Check bot status via server API
 ```
 
+## Profiles (Multi-Account)
+
+Profiles are named bundles of environment variables you inject into a dispatch with an inline tag — without standing up a separate agent. The canonical use case is running a single agent CLI against **multiple accounts** (e.g. two AWS accounts behind one `kiro-cli` binary — one on Amazon Q Developer, one on a Kiro Pro subscription).
+
+Config lives at `~/.brainiac/profiles.json`:
+
+```json
+{
+  "q":  { "env": { "XDG_DATA_HOME": "/home/you/.local/share",
+                   "KIRO_HOME": "/home/you/.kiro" }, "model": false, "default": true },
+  "k+": { "env": { "XDG_DATA_HOME": "/home/you/.local/share/brainiac/k+",
+                   "KIRO_HOME": "/home/you/.kiro-accounts/k+" }, "model": false }
+}
+```
+
+Target a profile per-dispatch with `[profile:X]` (or the short alias `[p:X]`) in a Discord message or Fizzy card/comment:
+
+```
+[p:k+] Galen do X        # runs against the Kiro Pro account
+[profile:q] Galen ...    # runs against the Q Developer account
+(no tag)                 # uses whichever profile is marked "default": true
+```
+
+### The two knobs: XDG_DATA_HOME and KIRO_HOME
+
+`kiro-cli` splits its state across two independent env vars, and a profile can set both:
+
+| Env var | Controls | What lives here |
+|---------|----------|-----------------|
+| `XDG_DATA_HOME` | **Auth store** (`kiro-cli/data.sqlite3`) | Tokens + which account you're logged into |
+| `KIRO_HOME` | **Settings dir** (`~/.kiro`) | `chat.defaultModel`, agents, MCP, permissions, steering |
+
+`XDG_DATA_HOME` selects the *account*. `KIRO_HOME` selects the *settings* — critically, `chat.defaultModel` lives here, **not** in the auth store. Give each profile its own `KIRO_HOME` and each account gets its own `cli.json` and therefore its own default model. Set the model once per account and let it drive:
+
+```bash
+KIRO_HOME=~/.kiro-accounts/k+ kiro-cli settings chat.defaultModel claude-opus-5
+```
+
+### Model handling (`"model": false`)
+
+Because `chat.defaultModel` now lives per-account under each profile's `KIRO_HOME`, the `--model` flag is redundant — set `"model": false` on the profile and brainiac stops passing `--model` entirely, letting each account's own default model drive. This also sidesteps a concurrency hazard: a shared `defaultModel` written per-dispatch would race at spawn time across concurrent bots. A static per-account model set once has no such race.
+
+`"model": false` is also *required* for the Kiro Pro backend specifically — it returns `[warn] failed to set model 'X': Method not found` for any `--model` value (even `auto`) and silently falls back to its own `defaultModel` regardless.
+
+A profile can also pin a model instead of suppressing: `"model": "auto"` uses that value unless an explicit inline `[model:X]`/`[opus]` tag was given (the tag wins). No `model` key = brainiac passes `--model` as normal.
+
+### Seeding a new KIRO_HOME
+
+A fresh `KIRO_HOME` starts **empty**. Since brainiac dispatches with `--agent <name>`, each `KIRO_HOME` needs the agent definitions (and any MCP/permissions/steering you rely on) or the dispatch breaks. Seed a new home by **symlinking** the shared bits from your real `~/.kiro` and keeping only `cli.json` per-account — that way everything stays in sync and only the default model differs:
+
+```bash
+mkdir -p ~/.kiro-accounts/k+/settings
+ln -s ~/.kiro/agents                     ~/.kiro-accounts/k+/agents
+ln -s ~/.kiro/mcp.json                   ~/.kiro-accounts/k+/mcp.json
+ln -s ~/.kiro/settings/permissions.yaml  ~/.kiro-accounts/k+/settings/permissions.yaml
+# then pick this account's model (writes the per-account cli.json):
+KIRO_HOME=~/.kiro-accounts/k+ kiro-cli settings chat.defaultModel claude-opus-5
+```
+
+Symlink whatever else you want shared (steering, etc.); leave `settings/cli.json` un-symlinked so each account keeps its own model.
+
+### Precedence and safety
+
+- **Default profile** — exactly one profile may be `"default": true`; it applies when no tag is present. It's only a fallback, so an agent's own `env` (from `agents.json`) overrides it.
+- **Explicitly-requested profile** — a `[profile:X]` tag beats the agent's own env, so you can flip accounts for a single dispatch.
+- **Env precedence** (highest wins): explicit env passed to `run_agent` > requested profile env > agent env > default profile env > built-in defaults.
+- **Typo safety** — an unknown profile name (`[p:nope]`) is ignored and logged, *not* silently routed to the default. A fat-fingered tag never quietly bills the wrong account.
+
+Profiles work from both Discord and Fizzy (comments and card titles). The registry reloads on config change and via `POST /api/reload`.
+
 ## Cron (Scheduled Tasks)
 
 Agents can be dispatched on a schedule — daily standups, weekly summaries, periodic code reviews, whatever you want. Jobs are stored in `~/.brainiac/cron.json` and run in a background thread inside `brainiac server`.

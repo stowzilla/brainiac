@@ -8,11 +8,41 @@
 # dispatch runs against via an inline tag ([profile:X] / [p:X]) — same CLI, same
 # agent, different credentials.
 #
+# kiro-cli splits its state across TWO independent env vars, and a profile can set
+# both:
+#
+#   - XDG_DATA_HOME → the AUTH store (kiro-cli/data.sqlite3): tokens + which account
+#     you're logged into. This is what selects the account.
+#   - KIRO_HOME → the SETTINGS dir (~/.kiro, incl. settings/cli.json): chat.defaultModel,
+#     agents, MCP, permissions, steering. chat.defaultModel lives HERE, not in the
+#     auth store.
+#
+# Giving each profile its own KIRO_HOME means each account gets its own cli.json and
+# therefore its own chat.defaultModel. That's the clean way to run different accounts
+# on different models: set each account's model once (kiro-cli settings chat.defaultModel
+# <name>, run under that account's KIRO_HOME) and let it drive — pair it with
+# "model": false so brainiac stops passing a --model flag at all (see below).
+#
+# NOTE: a fresh KIRO_HOME starts EMPTY. brainiac dispatches with --agent <name>, so each
+# KIRO_HOME needs the agent definitions (and any MCP/permissions/steering you rely on) or
+# the dispatch breaks. Seed a new KIRO_HOME by symlinking the shared bits from your real
+# ~/.kiro (agents, mcp.json, permissions.yaml, steering) and keeping only cli.json
+# per-account — that way everything stays in sync and only chat.defaultModel differs:
+#
+#   mkdir -p ~/.kiro-accounts/k+/settings
+#   ln -s ~/.kiro/agents      ~/.kiro-accounts/k+/agents
+#   ln -s ~/.kiro/mcp.json    ~/.kiro-accounts/k+/mcp.json
+#   ln -s ~/.kiro/settings/permissions.yaml ~/.kiro-accounts/k+/settings/permissions.yaml
+#   # then, under that home, pick the account's model:
+#   KIRO_HOME=~/.kiro-accounts/k+ kiro-cli settings chat.defaultModel claude-opus-5
+#
 # Config lives at ~/.brainiac/profiles.json:
 #
 #   {
-#     "q":  { "env": { "XDG_DATA_HOME": "/home/andy/.local/share" } },
-#     "k+": { "env": { "XDG_DATA_HOME": "/home/andy/.brainiac/kiro-accounts/kiro-pro" }, "default": true }
+#     "q":  { "env": { "XDG_DATA_HOME": "/home/andy/.local/share",
+#                      "KIRO_HOME": "/home/andy/.kiro" }, "model": false, "default": true },
+#     "k+": { "env": { "XDG_DATA_HOME": "/home/andy/.local/share/brainiac/k+",
+#                      "KIRO_HOME": "/home/andy/.kiro-accounts/k+" }, "model": false }
 #   }
 #
 # A profile may also optionally pin (or suppress) the model:
@@ -20,11 +50,12 @@
 #   "k+": { "env": {...}, "model": "auto" }    # pin a model value (fallback-only)
 #   "k+": { "env": {...}, "model": false }     # suppress the --model flag entirely
 #
-# Model suppression exists because some CLI account backends don't implement the
-# runtime "set model" operation the --model flag drives — kiro-cli's Kiro Pro
-# subscription backend returns "Method not found" for ANY --model value and falls
-# back to its own chat.defaultModel. Setting "model": false on that profile stops
-# brainiac from passing a flag the backend can't honor. See profile_model_directive.
+# Model suppression exists because chat.defaultModel now lives per-account (under each
+# profile's KIRO_HOME), so the --model flag is redundant — let each account's own
+# defaultModel drive. It's also REQUIRED for some backends: kiro-cli's Kiro Pro
+# subscription backend returns "Method not found" for ANY --model value and falls back
+# to its own chat.defaultModel regardless. Setting "model": false stops brainiac from
+# passing a flag that's either redundant or unhonored. See profile_model_directive.
 #
 # Exactly one profile may be marked "default": true — it applies when no [profile:X]
 # tag is present. Because it's only a fallback, an agent's own env (from agents.json)
