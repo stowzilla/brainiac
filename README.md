@@ -661,6 +661,65 @@ brainiac discord config                       # Show current Discord config
 brainiac discord status                       # Check bot status via server API
 ```
 
+## Profiles (Multi-Account)
+
+Profiles let you inject a named set of environment variables into an agent dispatch without standing up a separate agent. The canonical use-case is running different CLI accounts (e.g. two AWS accounts) from the same brainiac instance.
+
+### How it works
+
+Add a `[profile:name]` or `[p:name]` inline tag to any Discord message, Fizzy comment, or GitHub message. The matching profile's env is merged into the dispatch — same CLI, same agent, different credentials.
+
+### kiro-cli: two env vars, two concerns
+
+kiro-cli splits state across two independent dirs:
+
+| Env var | What it controls | File |
+|---------|-----------------|------|
+| `XDG_DATA_HOME` | Auth store — tokens + which account you're logged into | `kiro-cli/data.sqlite3` |
+| `KIRO_HOME` | Settings — `chat.defaultModel`, agents, MCP, permissions, steering | `settings/cli.json` |
+
+Give each profile its own `KIRO_HOME` and each account gets its own `chat.defaultModel`. That's the clean way to run different accounts on different models — set each account's model once and let it drive.
+
+### Configuration (`~/.brainiac/profiles.json`)
+
+```json
+{
+  "q": {
+    "env": {
+      "XDG_DATA_HOME": "/home/you/.local/share",
+      "KIRO_HOME": "/home/you/.kiro"
+    },
+    "default": true
+  },
+  "k+": {
+    "env": {
+      "XDG_DATA_HOME": "/home/you/.local/share/brainiac/k+",
+      "KIRO_HOME": "/home/you/.kiro-accounts/k+"
+    }
+  }
+}
+```
+
+Exactly one profile should be marked `"default": true` — it applies when no `[profile:X]` tag is present.
+
+### Model selection
+
+Model selection is a **cli-provider concern**, not a profile concern. To stop passing `--model` (e.g. because a CLI backend doesn't support the flag), set `"model_flag": ""` in `~/.brainiac/cli-providers/kiro.json`. Each account's `chat.defaultModel` (in its own `KIRO_HOME`) then drives model selection instead.
+
+### Seeding a new KIRO_HOME
+
+A fresh `KIRO_HOME` starts empty. brainiac dispatches with `--agent <name>`, so each home needs agent definitions or dispatches will fail. Symlink the shared bits from your real `~/.kiro` and keep only `settings/cli.json` per-account:
+
+```bash
+mkdir -p ~/.kiro-accounts/k+/settings
+ln -s ~/.kiro/agents                    ~/.kiro-accounts/k+/agents
+ln -s ~/.kiro/mcp.json                  ~/.kiro-accounts/k+/mcp.json
+ln -s ~/.kiro/settings/permissions.yaml ~/.kiro-accounts/k+/settings/permissions.yaml
+KIRO_HOME=~/.kiro-accounts/k+ kiro-cli settings chat.defaultModel claude-opus-5
+```
+
+Everything stays in sync with `~/.kiro` via the symlinks — only the model differs.
+
 ## Cron (Scheduled Tasks)
 
 Agents can be dispatched on a schedule — daily standups, weekly summaries, periodic code reviews, whatever you want. Jobs are stored in `~/.brainiac/cron.json` and run in a background thread inside `brainiac server`.

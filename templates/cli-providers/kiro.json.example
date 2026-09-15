@@ -2,7 +2,7 @@
   "binary": "kiro-cli",
   "default_args": "chat --trust-all-tools --no-interactive",
   "agent_flag": "--agent",
-  "model_flag": "--model",
+  "model_flag": "",
   "effort_flag": "--effort",
   "prompt_mode": "stdin",
   "resume_flag": "--resume",
