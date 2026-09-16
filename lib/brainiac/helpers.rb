@@ -805,16 +805,15 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
                                   prompt_file: prompt_file, resume: should_resume,
                                   output_file: output_file, chdir: chdir, title: work_item_id,
                                   new_session_id: minted_session_id)
-  # Profile env (named bundle, e.g. an alternate kiro-cli account) layers between
-  # agent env and the explicit `env:` passed in. An explicitly-requested profile
-  # wins over agent env; the default profile is only a fallback. See profiles.rb.
-  spawn_env = profile_spawn_env(agent_env_for(agent_name), profile).merge(env)
-
-  # For providers that use settings_model_cmd instead of a --model flag (e.g. kiro-cli,
-  # which requires `kiro-cli settings chat.defaultModel <name>`), apply the model to
-  # the provider's settings store before spawning. The write runs under spawn_env so it
-  # targets the correct account's KIRO_HOME. No-op when model_flag is non-empty.
-  apply_settings_model(model, resolved, spawn_env)
+  # Assemble the full spawn environment and run any pre-dispatch settings writes
+  # (e.g. kiro-cli's chat.defaultModel). This is the ONE shared dispatch-prep path —
+  # plugins that spawn their own agents (e.g. Discord) call build_dispatch_env too,
+  # so env layering + model persistence live in exactly one place. See build_dispatch_env.
+  # explicit_model is nil here: on this path the model has already been resolved by the
+  # time run_agent is called, and the explicit-vs-default distinction is threaded in
+  # separately (see detect_model_explicit). nil = treat as non-explicit (backcompat-safe).
+  spawn_env = build_dispatch_env(resolved, agent_name: agent_name, profile: profile,
+                                           model: model, extra_env: env)
 
   log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
                    output_file: output_file, cmd: cmd, should_resume: should_resume,
@@ -951,6 +950,39 @@ def append_model_to_cmd(cmd, model, resolved)
   effective_model = allowed.key?(model) ? allowed[model] : model
   is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
   cmd.push(resolved["agent_model_flag"], effective_model) if is_known
+end
+
+# Assemble the full environment an agent process is spawned under, and run any
+# pre-dispatch settings writes the provider needs (e.g. kiro-cli's chat.defaultModel).
+#
+# This is the single shared dispatch-prep path. Core's run_agent uses it, and plugins
+# that spawn their own agent processes (Discord's spawn_agent) call it too instead of
+# re-threading the same env layering + model-persistence logic by hand. Every dispatch
+# feature that touches "what env does the agent run under" belongs here, so all channels
+# inherit it in one place rather than each maintaining a parallel copy.
+#
+# Env layering (lowest to highest precedence):
+#   1. agent_env_for(agent_name) — DEFAULT_AGENT_ENV + the agent's env hash from agents.json
+#   2. profile      — named env bundle ([profile:X]); explicit profile wins over agent env,
+#                     default profile is only a fallback. See profiles.rb.
+#   3. extra_env    — caller-supplied env that layers on top (e.g. a GitHub App token the
+#                     Discord/GitHub plugins inject, or the explicit `env:` passed to run_agent).
+#
+# After the env is assembled, apply_settings_model runs under it so any settings write
+# (e.g. chat.defaultModel) targets the correct account's KIRO_HOME. explicit_model tells
+# that helper whether the model came from an inline tag: an explicit [auto] is a deliberate
+# reset (writes), a defaulted "auto" is not (skips). The explicit: kwarg is arity-guarded so
+# this works whether or not the running core has the explicit-model-aware apply_settings_model.
+def build_dispatch_env(resolved, agent_name:, profile:, model:, extra_env: {}, explicit_model: nil)
+  spawn_env = profile_spawn_env(agent_env_for(agent_name), profile).merge(extra_env || {})
+
+  if method(:apply_settings_model).parameters.any? { |t, n| t == :key && n == :explicit }
+    apply_settings_model(model, resolved, spawn_env, explicit: explicit_model)
+  else
+    apply_settings_model(model, resolved, spawn_env)
+  end
+
+  spawn_env
 end
 
 # When a provider uses settings_model_cmd instead of a runtime --model flag,
