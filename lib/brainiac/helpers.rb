@@ -35,7 +35,7 @@ def load_cli_provider(provider_name)
   %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
      session_list_command session_id_field session_directory_field session_updated_field
      session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
-     effort_config_key effort_map title_flag heaviness_probe].each do |key|
+     effort_config_key effort_map title_flag heaviness_probe settings_model_cmd].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
