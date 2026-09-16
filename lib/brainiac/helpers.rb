@@ -774,12 +774,13 @@ end
 # Plugins should NOT build their own resume logic; pass `resume: true` and let core handle it.
 def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil, effort: nil, agent_name: nil, card_number: nil, comment_id: nil,
               source: nil, source_context: {}, skip_column_move: false, cli_provider: nil, resume: false,
-              message: nil, channel: nil, context: nil, env: {}, profile: nil)
+              message: nil, channel: nil, context: nil, env: {}, profile: nil, explicit_model: nil)
   # Intent gate: if a raw message is provided, check whether the agent should respond.
   return nil if intent_skip?(message, agent_name: agent_name, source: source, channel: channel, context: context)
 
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
+  explicit_model = model_explicit?(model, explicit_model)
   model ||= resolved["agent_model"]
   effort ||= resolved["agent_effort"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
@@ -814,7 +815,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   # which requires `kiro-cli settings chat.defaultModel <name>`), apply the model to
   # the provider's settings store before spawning. The write runs under spawn_env so it
   # targets the correct account's KIRO_HOME. No-op when model_flag is non-empty.
-  apply_settings_model(model, resolved, spawn_env)
+  apply_settings_model(model, resolved, spawn_env, explicit: explicit_model)
 
   log_agent_launch(resolved: resolved, chdir: chdir, log_file: log_file, prompt_file: prompt_file,
                    output_file: output_file, cmd: cmd, should_resume: should_resume,
@@ -953,6 +954,13 @@ def append_model_to_cmd(cmd, model, resolved)
   cmd.push(resolved["agent_model_flag"], effective_model) if is_known
 end
 
+# A model is only "explicit" if the caller actually supplied one (i.e. it came from a
+# tag) AND flagged it explicit. A nil model means we'll fall back to the project default,
+# which must never be treated as explicit — otherwise no-tag dispatches would write it.
+def model_explicit?(model, explicit_flag)
+  explicit_flag && !model.nil?
+end
+
 # When a provider uses settings_model_cmd instead of a runtime --model flag,
 # run that command synchronously before spawning the agent so the correct model
 # is already persisted in the provider's settings dir (e.g. KIRO_HOME/settings/cli.json).
@@ -960,14 +968,23 @@ end
 # Only fires when:
 #   - model_flag is absent or empty (the provider doesn't support runtime model selection)
 #   - settings_model_cmd is configured on the provider
-#   - a model was explicitly resolved (nil model = let the account default stand)
-#   - the resolved model is not "auto" (no point writing the equivalent of "no preference")
+#   - a model was resolved (nil model = let the account default stand)
+#
+# The `explicit` flag decides whether "auto" gets written:
+#   - explicit == true  → the model came from an inline/card tag ([opus], [auto], ...).
+#     ALWAYS write it, including "auto" — an explicit [auto] is a deliberate reset that
+#     clears a polluted default back to the account's no-preference state.
+#   - explicit == false → the model is the project's default fallback (no tag given).
+#     Skip "auto" (writing it would clobber each account's per-account default on every
+#     no-tag dispatch). A non-auto default still writes, preserving prior behavior.
+#   - explicit == nil   → caller didn't specify (older/other call sites). Treat as
+#     not-explicit for safety — same as the pre-existing "skip auto" behavior.
 #
 # spawn_env is passed in so the command runs under the same env as the agent
 # (picks up KIRO_HOME, XDG_DATA_HOME, etc.) — ensuring the write goes to the right
 # account's settings dir. With per-profile KIRO_HOME the write is isolated to that
 # account, so concurrent dispatches on different profiles never race.
-def apply_settings_model(model, resolved, spawn_env)
+def apply_settings_model(model, resolved, spawn_env, explicit: nil)
   return unless model
   return if resolved["agent_model_flag"] && !resolved["agent_model_flag"].empty?
 
@@ -978,7 +995,9 @@ def apply_settings_model(model, resolved, spawn_env)
   effective_model = allowed.key?(model) ? allowed[model] : model
   is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
   return unless is_known
-  return if effective_model == "auto"
+  # "auto" only writes when it was an explicit tag (used as a reset). A defaulted
+  # "auto" is skipped so no-tag dispatches never overwrite an account's default.
+  return if effective_model == "auto" && !explicit
 
   full_cmd = settings_cmd + [effective_model]
   LOG.info "Pre-dispatch: setting model via #{full_cmd.join(" ")} (env: #{spawn_env.keys.join(", ")})"
@@ -1271,23 +1290,39 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
 end
 
 def detect_model(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+  detect_model_explicit(project_config, tags: tags, text: text,
+                                        cli_provider_override: cli_provider_override, agent_name: agent_name).first
+end
+
+# Like detect_model, but also reports whether the model came from an EXPLICIT source
+# (an inline [model] tag or a card tag) versus the project's default fallback.
+#
+# Returns [model_string, explicit_bool].
+#   explicit == true  → the user asked for this model via a tag ([opus], [auto], etc.)
+#   explicit == false → no tag matched; the value is the project's agent_model default
+#
+# This distinction is load-bearing for apply_settings_model: an explicit tag should
+# always write the provider's default-model setting (even "auto", used as a reset),
+# while a fell-back-to-default value must NOT write — otherwise every no-tag dispatch
+# would clobber each account's per-account default back to the project default.
+def detect_model_explicit(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
   # If no explicit CLI provider override, check if the agent has one configured
   effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed_models = resolved["allowed_models"] || {}
-  return resolved["agent_model"] if allowed_models.empty?
+  return [resolved["agent_model"], false] if allowed_models.empty?
 
   if (match = text.match(/\[(\w+)\]/))
     key = match[1].downcase
-    return allowed_models[key] if allowed_models.key?(key)
+    return [allowed_models[key], true] if allowed_models.key?(key)
   end
 
   tags.each do |tag|
     key = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
-    return allowed_models[key] if allowed_models.key?(key)
+    return [allowed_models[key], true] if allowed_models.key?(key)
   end
 
-  resolved["agent_model"]
+  [resolved["agent_model"], false]
 end
 
 # Detect effort level from inline tags [effort:high] or card tags (effort-high).
