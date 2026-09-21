@@ -315,6 +315,11 @@ end
 def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source: nil, source_data: {})
   map = load_work_item_map
 
+  # Normalize source to a string key — callers may pass a symbol (e.g. :fizzy).
+  # The sources hash is JSON-serialized with string keys, so mixing symbol and
+  # string keys produces a "duplicate key" error in JSON.pretty_generate.
+  source = source.to_s if source
+
   # Check if a work item already exists for this branch
   existing_id = nil
   map.each do |wid, info|
@@ -330,7 +335,7 @@ def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source:
     # Update existing entry — merge in new source, update worktree/agent if provided
     map[work_item_id]["worktree"] = worktree if worktree
     map[work_item_id]["agent"] = agent if agent
-    map[work_item_id]["sources"] ||= {}
+    map[work_item_id]["sources"] = normalize_source_keys(map[work_item_id]["sources"])
     map[work_item_id]["sources"][source] = source_data if source
   else
     # Create new entry
@@ -440,6 +445,10 @@ end
 def register_work_item_source(source:, source_data:, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
   map = load_work_item_map
 
+  # Normalize source to a string key — callers may pass a symbol (e.g. :fizzy).
+  # See register_work_item for why mixing symbol/string keys breaks JSON serialization.
+  source = source.to_s if source
+
   # Find by ID or branch
   target_id = work_item_id
   unless target_id
@@ -453,10 +462,22 @@ def register_work_item_source(source:, source_data:, work_item_id: nil, branch: 
 
   return false unless target_id && map[target_id]
 
-  map[target_id]["sources"] ||= {}
+  map[target_id]["sources"] = normalize_source_keys(map[target_id]["sources"])
   map[target_id]["sources"][source] = source_data
   save_work_item_map(map)
   true
+end
+
+# Normalize a work item's sources hash so all keys are strings. Guards against
+# a previously-corrupted in-memory hash that mixed symbol and string keys
+# (e.g. both :fizzy and "fizzy"), which would otherwise crash JSON serialization.
+# A later entry (symbol source just written) wins over an existing string entry.
+def normalize_source_keys(sources)
+  return {} unless sources.is_a?(Hash)
+
+  sources.each_with_object({}) do |(key, value), acc|
+    acc[key.to_s] = value
+  end
 end
 
 def slugify(title, max_length: 40)
