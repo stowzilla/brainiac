@@ -1348,6 +1348,40 @@ def detect_effort(project_config, tags: [], text: "", cli_provider_override: nil
   resolved["agent_effort"]
 end
 
+# Detect a profile ([profile:X]/[p:X]) from inline text OR card tags.
+#
+# A profile is a named env bundle (e.g. an alternate kiro-cli account via
+# XDG_DATA_HOME/KIRO_HOME) — see profiles.rb. This mirrors detect_model/detect_effort:
+# it checks inline text first, then falls back to card tags. Without the tag path,
+# adding a `p:k+` chip to a Fizzy card was silently ignored (only inline title text
+# was honored), so dispatches ran on the default profile.
+#
+# Card tags can be named either "profile:X"/"p:X" (colon form, matches inline syntax)
+# or a bare "X" that happens to be a known profile name.
+# Returns the lowercased profile name or nil.
+def detect_profile(text: "", tags: [])
+  # Inline tag: [profile:k+] / [p:k+] — works in any channel
+  inline = parse_inline_tags(text.to_s)[:profile]
+  return inline if inline
+
+  known = defined?(PROFILES) ? PROFILES : {}
+
+  tags.each do |tag|
+    name = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.strip.downcase
+    next if name.empty?
+
+    # "profile:k+" or "p:k+" colon form
+    if (m = name.match(/\A(?:profile|p):(.+)\z/))
+      return m[1].strip
+    end
+
+    # bare tag that matches a configured profile name (e.g. a "k+" chip)
+    return name if known.key?(name)
+  end
+
+  nil
+end
+
 # If a level isn't in allowed_efforts, return the closest lower level.
 def resolve_effort_level(level, allowed)
   all_levels = %w[low medium high xhigh max]
