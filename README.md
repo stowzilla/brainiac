@@ -704,14 +704,11 @@ Exactly one profile should be marked `"default": true` — it applies when no `[
 
 ### Model selection
 
-Model selection is a **cli-provider concern**, not a profile concern. kiro-cli's backend doesn't support the `--model` runtime flag — model selection happens via `settings chat.defaultModel`. The kiro-cli provider is configured to use this approach:
+Model selection is a **cli-provider concern**, not a profile concern. kiro-cli accepts `--model <id>` per run, so the kiro-cli provider uses `"model_flag": "--model"`. A model tag (`[opus]`, `[sol]`, etc.) only affects that dispatch (and the thread/work item it was sent in). It never changes the account's saved `chat.defaultModel`, so other threads are unaffected.
 
-- `"model_flag": ""` — no `--model` flag is ever passed
-- `"settings_model_cmd": ["kiro-cli", "settings", "chat.defaultModel"]` — when a model tag (`[opus]`, `[sonnet]`, etc.) or Fizzy card tag resolves to a model, brainiac runs this command (with the profile's env) to set `chat.defaultModel` before spawning the dispatch
+Each account's `chat.defaultModel` (in its own `KIRO_HOME`) only applies when no model is resolved at all. Keep it set to a model that account can actually use.
 
-With per-profile `KIRO_HOME`, the settings write goes to that profile's own `settings/cli.json` — so `[p:k+] [opus]` updates k+'s model, and `[p:q] [sonnet]` updates q's model, independently.
-
-**Concurrency note:** the settings write is per-`KIRO_HOME`. Concurrent dispatches on *different* profiles never conflict. Two concurrent dispatches on the *same* profile with different model tags have a narrow write-before-spawn race — acceptable for single-user setups, but worth knowing.
+**`settings_model_cmd` (legacy, avoid for kiro-cli):** for CLIs with no runtime model flag, a provider can set `"model_flag": ""` plus `"settings_model_cmd": [...]`, and brainiac runs that command before each tagged dispatch. That write is *persistent*: it becomes the account's default for every later dispatch, including unrelated threads. If a tag writes a model the default account doesn't have (e.g. `[sol]` landing on `q`), every untagged dispatch on that account fails with `The model '...' is not available`.
 
 ### Seeding a new KIRO_HOME
 

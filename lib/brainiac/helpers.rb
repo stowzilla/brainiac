@@ -986,6 +986,11 @@ end
 # run that command synchronously before spawning the agent so the correct model
 # is already persisted in the provider's settings dir (e.g. KIRO_HOME/settings/cli.json).
 #
+# WARNING: this write is sticky. It changes the account's default for every later
+# dispatch, not just this one, so a tag in one thread leaks into unrelated threads.
+# Only use it for CLIs with no per-run model flag. kiro-cli supports --model and
+# should use "model_flag": "--model" instead.
+#
 # Only fires when:
 #   - model_flag is absent or empty (the provider doesn't support runtime model selection)
 #   - settings_model_cmd is configured on the provider

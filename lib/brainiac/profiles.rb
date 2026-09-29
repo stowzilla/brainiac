@@ -17,10 +17,10 @@
 #                   lives — giving each profile its own KIRO_HOME means each account has
 #                   its own model setting.
 #
-# Model selection is a cli-provider concern, not a profile concern. To stop passing
-# --model (e.g. because the CLI backend doesn't support the flag), set "model_flag": ""
-# in the cli-provider config (~/.brainiac/cli-providers/kiro.json). Each account's
-# chat.defaultModel (in its own KIRO_HOME) then drives model selection instead.
+# Model selection is a cli-provider concern, not a profile concern. kiro-cli takes
+# --model per run ("model_flag": "--model"), so an inline model tag only affects that
+# dispatch. Each account's chat.defaultModel (in its own KIRO_HOME) is just the fallback
+# when no model resolves — keep it set to a model that account actually has.
 #
 # NOTE: a fresh KIRO_HOME starts empty. brainiac dispatches with --agent <name>, so each
 # KIRO_HOME needs agent definitions (and any MCP/permissions you rely on) or dispatches
