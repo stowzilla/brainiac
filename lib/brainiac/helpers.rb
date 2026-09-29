@@ -353,10 +353,10 @@ def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source:
   work_item_id
 end
 
-# Update dispatch overrides on a work item (cli_provider, model, effort).
+# Update dispatch overrides on a work item (cli_provider, model, effort, profile).
 # Only non-nil values are stored; nil values are removed from existing overrides.
 # Returns true if the work item was found and updated, false otherwise.
-def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
+def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, profile: nil, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
   map = load_work_item_map
 
   target_id = work_item_id
@@ -375,6 +375,7 @@ def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, work_
   overrides["cli_provider"] = cli_provider if cli_provider
   overrides["model"] = model if model
   overrides["effort"] = effort if effort
+  overrides["profile"] = profile if profile
   overrides.compact!
 
   if overrides.empty?
@@ -417,16 +418,26 @@ end
 #   inline_cli_provider: — [cli:X] from current message (nil if not specified)
 #   inline_model: — resolved model from current message (nil if not specified)
 #   inline_effort: — [effort:X] from current message (nil if not specified)
+#   inline_profile: — [profile:X]/[p:X] from current message (nil if not specified)
 #
-# Returns: { cli_provider: String|nil, model: String|nil, effort: String|nil }
-def resolve_work_item_overrides(work_item_id: nil, branch: nil, inline_cli_provider: nil, inline_model: nil, inline_effort: nil)
+# A profile sticks to the work item like model/effort do: [p:k+] once and every later
+# untagged reply keeps running on k+ until a different [p:X] (e.g. [p:q]) replaces it.
+# Unknown profile names are never persisted, so a typo can't pin a work item to a
+# profile that doesn't exist (profile_spawn_env ignores it for this dispatch too).
+#
+# Returns: { cli_provider:, model:, effort:, profile: } (each String or nil)
+def resolve_work_item_overrides(work_item_id: nil, branch: nil, inline_cli_provider: nil, inline_model: nil, inline_effort: nil,
+                                inline_profile: nil)
   stored = work_item_overrides_for(work_item_id: work_item_id, branch: branch)
+  inline_profile = inline_profile&.to_s&.downcase
+  persist_profile = inline_profile && profile_entry(inline_profile) ? inline_profile : nil
 
   # Inline tags override stored values
   resolved = {
     cli_provider: inline_cli_provider || stored["cli_provider"],
     model: inline_model || stored["model"],
-    effort: inline_effort || stored["effort"]
+    effort: inline_effort || stored["effort"],
+    profile: inline_profile || stored["profile"]
   }
 
   # Persist any new inline overrides to the work item for future dispatches
@@ -434,6 +445,7 @@ def resolve_work_item_overrides(work_item_id: nil, branch: nil, inline_cli_provi
   new_overrides[:cli_provider] = inline_cli_provider if inline_cli_provider
   new_overrides[:model] = inline_model if inline_model
   new_overrides[:effort] = inline_effort if inline_effort
+  new_overrides[:profile] = persist_profile if persist_profile
 
   update_work_item_overrides(work_item_id: work_item_id, branch: branch, **new_overrides) if new_overrides.any? && (work_item_id || branch)
 
