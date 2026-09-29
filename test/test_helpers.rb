@@ -286,6 +286,39 @@ class TestHelpers < Minitest::Test
     assert_equal "grok", resolved[:cli_provider]
   end
 
+  def with_profiles(profiles)
+    original = PROFILES.dup
+    PROFILES.replace(profiles)
+    yield
+  ensure
+    PROFILES.replace(original)
+  end
+
+  def test_resolve_work_item_overrides_profile_sticks_until_changed
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    with_profiles("q" => { "env" => {}, "default" => true }, "k+" => { "env" => {} }) do
+      wid = register_work_item(branch: "profile-sticky", project: "brainiac", agent: "Galen")
+
+      assert_equal "k+", resolve_work_item_overrides(work_item_id: wid, inline_profile: "K+")[:profile]
+      # Untagged follow-up keeps the stored profile
+      assert_equal "k+", resolve_work_item_overrides(work_item_id: wid)[:profile]
+      # Explicit switch replaces it
+      assert_equal "q", resolve_work_item_overrides(work_item_id: wid, inline_profile: "q")[:profile]
+      assert_equal "q", work_item_overrides_for(work_item_id: wid)["profile"]
+    end
+  end
+
+  def test_resolve_work_item_overrides_does_not_persist_unknown_profile
+    FileUtils.rm_f(WORK_ITEM_MAP_FILE)
+    with_profiles("k+" => { "env" => {} }) do
+      wid = register_work_item(branch: "profile-typo", project: "brainiac", agent: "Galen")
+      resolve_work_item_overrides(work_item_id: wid, inline_profile: "k+")
+
+      assert_equal "kk", resolve_work_item_overrides(work_item_id: wid, inline_profile: "kk")[:profile]
+      assert_equal "k+", work_item_overrides_for(work_item_id: wid)["profile"]
+    end
+  end
+
   def test_generate_work_item_id_deterministic_for_branch
     id1 = generate_work_item_id(branch: "my-feature")
     id2 = generate_work_item_id(branch: "my-feature")
