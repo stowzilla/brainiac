@@ -22,6 +22,7 @@
 #     fresh: true/false,
 #     deploy_intent: "dev01" / :auto / nil,
 #     worktree_override: "branch-name" or nil,
+#     fork_branch: "topic" or true or nil (fork conversation to a new thread),
 #     clean_text: "the message with all tags stripped"
 #   }
 def parse_inline_tags(text)
@@ -38,6 +39,7 @@ def parse_inline_tags(text)
     worktree_override: nil,
     work_item: nil,
     branch_override: nil,
+    fork_branch: nil,
     clean_text: text.dup
   }
 
@@ -110,7 +112,8 @@ def parse_work_item_tags(result)
     result[:clean_text].sub!(match[0], "")
   end
 
-  # [branch:branch-name] — preferred syntax for targeting a branch/worktree
+  # [branch:branch-name] — preferred syntax for targeting a branch/worktree.
+  # Note: bare [branch] (no colon/value) is handled below as a fork request.
   if (match = result[:clean_text].match(/\[branch:([^\]]+)\]/i))
     result[:branch_override] = match[1].strip
     # Also set worktree_override for backward compat with plugins that read it
@@ -122,6 +125,21 @@ def parse_work_item_tags(result)
   if (match = result[:clean_text].match(/\[workitem:([^\]]+)\]/i))
     result[:work_item] = match[1].strip
     result[:clean_text].sub!(match[0], "")
+  end
+
+  # [fork], [fork:topic], or bare [branch] — fork the conversation into a new thread.
+  # The new thread starts unbound (no worktree) until implementation work begins.
+  # Topic becomes the thread title; without a topic, the message content is used.
+  # - [fork:belt-bug] → fork with "belt-bug" as the topic
+  # - [fork] → fork with auto-generated topic from message content
+  # - [branch] → alias for [fork] (bare [branch] with no value)
+  if (match = result[:clean_text].match(/\[fork(?::([^\]]+))?\]/i))
+    result[:fork_branch] = match[1]&.strip || true
+    result[:clean_text].sub!(match[0], "")
+  elsif result[:clean_text].match?(/\[branch\]/i) && !result[:branch_override]
+    # Bare [branch] with no value acts as a fork request
+    result[:fork_branch] = true
+    result[:clean_text].sub!(/\[branch\]/i, "")
   end
 end
 
