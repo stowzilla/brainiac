@@ -47,8 +47,27 @@ All four channels support inline tags in message/comment text. Tags are stripped
 | `[branch:branch-name]`                                                        | ✓     | ✓       | ✓      | Target an existing branch — reuses its worktree if a work item exists                                 |
 | `[workitem:wi-abc123]`                                                        | ✓     | ✓       | ✓      | Target a specific work item by ID — agent works in its worktree                                       |
 | `[plan]`                                                                      | ✓     | ✓       | —      | Activate planning mode — agent gathers requirements before coding                                     |
+| `[fork]` `[fork:topic]`                                                       | —     | ✓       | —      | Fork conversation to a new thread — starts unbound (no worktree until implementation)                 |
 
 Model keys come from the project's `allowed_models` config. Fizzy also supports model selection via card tags (e.g. adding an `opus` tag to the card).
+
+### Conversation Branching (Discord)
+
+Sometimes you want to spin off a tangent without polluting the current conversation's context. Brainiac supports two ways to branch:
+
+**🌿 Reaction** — React with 🌿 on any message to fork from that point. The message becomes the root of a new thread.
+
+**`[fork]` Tag** — Include `[fork]` or `[fork:topic]` in your message to immediately branch:
+
+```
+@Galen [fork:belt-bug] Hey, unrelated to what we're working on, but I think belt deploy has a bug...
+```
+
+Both methods create a new thread that starts **unbound** — no worktree, no project lock-in. The agent can discuss, search brain, and read files across any registered project. When you ask for actual implementation work, the worktree is created at that point, scoped to the right repo.
+
+This solves the "orphaned worktree" problem: if you notice a belt bug while working on brainiac, the branch doesn't create a useless brainiac worktree. The project is resolved when implementation starts.
+
+The original conversation continues undisturbed. The branched thread gets its own memory file and context.
 
 ### Planning Mode
 
