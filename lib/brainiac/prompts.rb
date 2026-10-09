@@ -18,6 +18,13 @@ PROMPT_CORE = <<~PROMPT
   Getting the casing wrong means the mention won't link or notify properly.
   {{AGENT_ROSTER}}
 
+  ## Conversation Focus (CRITICAL)
+  Your PRIMARY task is ALWAYS the most recent message/comment you've received.
+  - Context and history are reference material — they inform your response but don't define your task
+  - If the user asks a question, answer THAT question — don't summarize previous work
+  - If the user requests a change, make THAT change — don't rehash what you've already done
+  - Previous sessions and memory help you understand context, but the current request is what you're here to do
+
   ## Memory (CRITICAL — read this first)
   You have no persistent memory between sessions. Every time you are invoked, you start completely fresh.
   Memory files MAY exist at `{{MEMORY_DIR}}/` — this is inside the brain, so they survive worktree deletion.
@@ -175,7 +182,7 @@ CHANNEL_PROMPTS = {}.freeze
 # ---------------------------------------------------------------------------
 
 # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def render_prompt(template, vars = {}, brain_context: "", card_context: "", agent_name: AI_AGENT_NAME, channel: nil, board_key: nil)
+def render_prompt(template, vars = {}, brain_context: "", card_context: "", comment_history: "", agent_name: AI_AGENT_NAME, channel: nil, board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
   result += card_context unless card_context.empty?
@@ -186,6 +193,10 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", agen
   result += plugin_prompt || CHANNEL_PROMPTS.fetch(channel, "")
 
   result += template
+
+  # Comment history (for follow-up scenarios): placed AFTER the triggering comment
+  # so the agent sees the current request first, then can reference history as needed
+  result += comment_history unless comment_history.empty?
 
   # Pre-post comment check: plugin-registered
   plugin_pre_post = Brainiac.channel_pre_post_checks[channel]
