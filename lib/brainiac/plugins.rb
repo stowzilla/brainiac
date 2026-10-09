@@ -40,45 +40,49 @@ end
 # Load all installed plugin gems and call their register hooks.
 # Called once during server startup, after core handlers are loaded.
 def load_plugins!(app)
-  # rubocop:disable Metrics/BlockLength
-  installed_plugins.each do |name|
-    gem_name = "brainiac-#{name}"
-    entry = plugin_entry(name)
-    begin
-      # If plugin has a local path, add its lib/ to load path before requiring
-      if entry.is_a?(Hash) && entry["path"]
-        lib_path = File.join(entry["path"], "lib")
-        $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
-        LOG.info "[Plugins] Loading #{gem_name} from local path: #{entry["path"]}"
-      end
+  installed_plugins.each { |name| load_plugin!(app, name) }
+end
 
-      # Try both naming conventions: brainiac-fizzy and brainiac_fizzy
-      begin
-        require gem_name
-      rescue LoadError
-        require gem_name.tr("-", "_")
-      end
+# Require a single plugin gem and call its register hook.
+# Isolated per-plugin so one failing plugin doesn't abort the rest.
+def load_plugin!(app, name)
+  gem_name = "brainiac-#{name}"
+  entry = plugin_entry(name)
 
-      plugin_module = resolve_plugin_module(name)
-      if plugin_module.respond_to?(:register)
-        plugin_module.register(app)
-        LOG.info "[Plugins] Loaded #{gem_name}"
-      else
-        LOG.warn "[Plugins] #{gem_name} loaded but no register method found"
-      end
-    rescue LoadError => e
-      LOG.error "[Plugins] Could not load #{gem_name}: #{e.message}"
-      if entry.is_a?(Hash) && entry["path"]
-        LOG.error "[Plugins]   Local path: #{entry["path"]}"
-      else
-        LOG.error "[Plugins]   Is the gem installed? Run: gem install #{gem_name}"
-      end
-    rescue StandardError => e
-      LOG.error "[Plugins] Error registering #{gem_name}: #{e.message}"
-      LOG.error "[Plugins]   #{e.backtrace.first(3).join("\n  ")}"
-    end
+  require_plugin_gem(gem_name, entry)
+
+  plugin_module = resolve_plugin_module(name)
+  if plugin_module.respond_to?(:register)
+    plugin_module.register(app)
+    LOG.info "[Plugins] Loaded #{gem_name}"
+  else
+    LOG.warn "[Plugins] #{gem_name} loaded but no register method found"
   end
-  # rubocop:enable Metrics/BlockLength
+rescue LoadError => e
+  LOG.error "[Plugins] Could not load #{gem_name}: #{e.message}"
+  if entry.is_a?(Hash) && entry["path"]
+    LOG.error "[Plugins]   Local path: #{entry["path"]}"
+  else
+    LOG.error "[Plugins]   Is the gem installed? Run: gem install #{gem_name}"
+  end
+rescue StandardError => e
+  LOG.error "[Plugins] Error registering #{gem_name}: #{e.message}"
+  LOG.error "[Plugins]   #{e.backtrace.first(3).join("\n  ")}"
+end
+
+# Require a plugin gem, honoring a local path override and both the
+# hyphen (brainiac-fizzy) and underscore (brainiac_fizzy) naming conventions.
+def require_plugin_gem(gem_name, entry)
+  # If plugin has a local path, add its lib/ to load path before requiring
+  if entry.is_a?(Hash) && entry["path"]
+    lib_path = File.join(entry["path"], "lib")
+    $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+    LOG.info "[Plugins] Loading #{gem_name} from local path: #{entry["path"]}"
+  end
+
+  require gem_name
+rescue LoadError
+  require gem_name.tr("-", "_")
 end
 
 # Resolve the plugin module for a given name.
