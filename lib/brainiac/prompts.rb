@@ -181,8 +181,8 @@ CHANNEL_PROMPTS = {}.freeze
 #   channel: :discord, :github, or plugin-registered channels (e.g., :fizzy, :linear)
 # ---------------------------------------------------------------------------
 
-# rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-def render_prompt(template, vars = {}, brain_context: "", card_context: "", comment_history: "", agent_name: AI_AGENT_NAME, channel: nil, board_key: nil)
+def render_prompt(template, vars = {}, brain_context: "", card_context: "", comment_history: "", agent_name: AI_AGENT_NAME, channel: nil,
+                  board_key: nil)
   result = ""
   result += "#{brain_context}\n" unless brain_context.empty?
   result += card_context unless card_context.empty?
@@ -205,6 +205,15 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", comm
   # Reflection prompt — skip for now
   # result += PROMPT_REFLECTION
 
+  populate_prompt_vars(vars, agent_name: agent_name, board_key: board_key)
+
+  vars.each { |key, val| result.gsub!("{{#{key}}}", val.to_s) }
+  result
+end
+
+# Populate the default template variables (dirs, column IDs, roster) and touch
+# the agent's memory file. Extracted from render_prompt to keep complexity down.
+def populate_prompt_vars(vars, agent_name:, board_key:)
   vars["KNOWLEDGE_DIR"] ||= KNOWLEDGE_DIR
   vars["MEMORY_DIR"] ||= memory_dir_for(agent_name)
   vars["PERSONA_DIR"] ||= persona_dir_for(agent_name)
@@ -226,14 +235,9 @@ def render_prompt(template, vars = {}, brain_context: "", card_context: "", comm
     FileUtils.touch(memory_file)
   end
 
-  roster = agent_roster
-  roster_lines = roster.map { |_key, display| "  - @#{display}" }.join("\n")
+  roster_lines = agent_roster.map { |_key, display| "  - @#{display}" }.join("\n")
   vars["AGENT_ROSTER"] ||= roster_lines
-
-  vars.each { |key, val| result.gsub!("{{#{key}}}", val.to_s) }
-  result
 end
-# rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
 # Lean prompt for resumed sessions. The previous session already has the full context
 # (role, persona, knowledge, core instructions, channel prompts). We only send the new
