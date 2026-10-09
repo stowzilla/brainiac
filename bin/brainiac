@@ -263,7 +263,10 @@ def wait_for_agents_to_finish
   end
 end
 
-# rubocop:disable Naming/PredicateMethod
+# stop_server is a command (it stops the server) that happens to return a
+# boolean success flag; renaming it to a predicate (stop_server?) would be
+# semantically wrong, so suppress the predicate-naming cop for this definition.
+# rubocop:disable-next Naming/PredicateMethod
 def stop_server
   pid = find_server_pid
 
@@ -304,7 +307,6 @@ def stop_server
     false
   end
 end
-# rubocop:enable Naming/PredicateMethod
 
 # Kill a single process: TERM first, KILL if it doesn't exit within 5s.
 def kill_pid(pid, quiet: false)
