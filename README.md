@@ -1280,9 +1280,56 @@ Override the default model per-dispatch:
 
 - **Fizzy card tags:** Add `opus`, `sonnet`, `haiku`, `deepseek`, `minimax`, `minimax21`, or `qwen` as a tag on the card
 - **Inline syntax (Fizzy, Discord, GitHub):** Include `[opus]`, `[sonnet]`, `[haiku]`, `[deepseek]`, `[minimax]`, `[minimax21]`, or `[qwen]` in your comment/message
-- **Priority:** inline comment/message > card tags > project config > CLI default
+- **Priority:** inline comment/message > card tags > Jev auto-selection > project config > CLI default
 
 Model keys are defined in the project's `allowed_models` config — you can add custom keys beyond the defaults.
+
+### Automatic Model Selection (via Jev)
+
+Brainiac can automatically select the optimal model for each request using [TypeSafe's Jev](https://typesafe.ai) — a System One model that classifies task complexity in ~100ms.
+
+When enabled and no explicit `[model]` tag is present, Jev analyzes the incoming message and routes to:
+- **Simple tasks** (quick answers, clarifications) → cheaper models like haiku
+- **Moderate tasks** (bug fixes, implementations) → mid-tier models like sonnet  
+- **Complex tasks** (architecture, design, multi-file refactors) → powerful models like opus
+
+This saves tokens on simple questions while ensuring complex work gets appropriate firepower.
+
+**Configuration (in `~/.brainiac/brainiac.json`):**
+
+```json
+{
+  "model_router": {
+    "enabled": true,
+    "typesafe_api_key": "ts_...",
+    "min_confidence": 0.4,
+    "cache_ttl": 300,
+    "model_tiers": {
+      "simple": ["haiku", "sonnet"],
+      "moderate": ["sonnet", "opus"],
+      "complex": ["opus"]
+    }
+  }
+}
+```
+
+**API key options:**
+- Direct key: `"typesafe_api_key": "ts_abc123..."`
+- 1Password: `"typesafe_api_key": "op://vault/TypeSafe/api-key"` (resolved via `op read`)
+
+**Configuration options:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Enable automatic model selection |
+| `typesafe_api_key` | — | TypeSafe API key (required when enabled) |
+| `min_confidence` | `0.4` | Minimum confidence threshold — below this, use project default |
+| `cache_ttl` | `300` | Cache routing decisions for N seconds per conversation |
+| `model_tiers` | see above | Fallback chains per complexity level |
+
+The `model_tiers` define which models to try for each complexity level. The first available model in the array (present in the profile's `allowed_models`) is selected. If no tier model is available, the project's default is used.
+
+**Profile-aware:** Jev routing respects profile constraints. If your `k+` profile only has access to sonnet and opus, haiku won't be selected even for simple tasks — it'll fall back to sonnet.
 
 ## Prompt Customization
 

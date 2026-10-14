@@ -3,6 +3,8 @@
 # Shared helpers: project identification, card map, run_cmd, run_agent, signatures, model detection.
 
 require "English"
+require_relative "model_router"
+
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
 # Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
@@ -1327,9 +1329,10 @@ def check_brainiac_restart(head_before, status_before, chdir, project_key_for_re
   end
 end
 
-def detect_model(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+def detect_model(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil, channel: nil, context_id: nil)
   detect_model_explicit(project_config, tags: tags, text: text,
-                                        cli_provider_override: cli_provider_override, agent_name: agent_name).first
+                                        cli_provider_override: cli_provider_override, agent_name: agent_name,
+                                        channel: channel, context_id: context_id).first
 end
 
 # Like detect_model, but also reports whether the model came from an EXPLICIT source
@@ -1337,27 +1340,42 @@ end
 #
 # Returns [model_string, explicit_bool].
 #   explicit == true  → the user asked for this model via a tag ([opus], [auto], etc.)
-#   explicit == false → no tag matched; the value is the project's agent_model default
+#   explicit == false → no tag matched; the value is the project's agent_model default OR Jev-selected
 #
 # This distinction is load-bearing for apply_settings_model: an explicit tag should
 # always write the provider's default-model setting (even "auto", used as a reset),
 # while a fell-back-to-default value must NOT write — otherwise every no-tag dispatch
 # would clobber each account's per-account default back to the project default.
-def detect_model_explicit(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+#
+# When no explicit tag is present and model_router is enabled, Jev classifies the
+# message complexity and selects an appropriate model. This is still considered
+# "not explicit" since the user didn't ask for a specific model.
+def detect_model_explicit(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil, channel: nil, context_id: nil)
   # If no explicit CLI provider override, check if the agent has one configured
   effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed_models = resolved["allowed_models"] || {}
   return [resolved["agent_model"], false] if allowed_models.empty?
 
+  # Check for explicit inline [model] tag
   if (match = text.match(/\[(\w+)\]/))
     key = match[1].downcase
     return [allowed_models[key], true] if allowed_models.key?(key)
   end
 
+  # Check for explicit card/metadata tags
   tags.each do |tag|
     key = (tag.is_a?(Hash) ? tag["name"] : tag).to_s.downcase
     return [allowed_models[key], true] if allowed_models.key?(key)
+  end
+
+  # No explicit tag — try Jev-based routing if enabled
+  if model_router_enabled?
+    jev_model_key = select_model_via_jev(text, allowed_models: allowed_models, channel: channel, context_id: context_id)
+    if jev_model_key && allowed_models.key?(jev_model_key)
+      # Jev selected a model — return the full model name, but explicit=false since user didn't request it
+      return [allowed_models[jev_model_key], false]
+    end
   end
 
   [resolved["agent_model"], false]
