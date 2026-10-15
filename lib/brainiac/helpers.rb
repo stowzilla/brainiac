@@ -107,9 +107,8 @@ end
 # Returns the provider name (e.g. "grok") or nil.
 def detect_cli_provider(text: "", tags: [])
   # Inline tag: [cli:grok] — works in any channel
-  if (match = text.match(/\[cli:(\w+)\]/i))
-    return match[1].downcase
-  end
+  inline = inline_cli_provider_tag(text)
+  return inline if inline
 
   # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
   results = Brainiac.emit(:detect_cli_provider, text: text, tags: tags)
@@ -117,6 +116,11 @@ def detect_cli_provider(text: "", tags: [])
   return plugin_result if plugin_result
 
   nil
+end
+
+# The provider named by an inline [cli:X] tag in text, or nil. Text only — no plugin hooks.
+def inline_cli_provider_tag(text)
+  text.to_s.match(/\[cli:(\w+)\]/i)&.[](1)&.downcase
 end
 
 def default_project_key
@@ -354,9 +358,11 @@ def register_work_item(branch:, worktree: nil, project: nil, agent: nil, source:
 end
 
 # Update dispatch overrides on a work item (cli_provider, model, effort, profile).
-# Only non-nil values are stored; nil values are removed from existing overrides.
+# Non-nil values are stored; nil values leave the existing override untouched.
+# Keys listed in clear: (e.g. [:model]) are removed from the stored overrides.
 # Returns true if the work item was found and updated, false otherwise.
-def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, profile: nil, work_item_id: nil, branch: nil) # rubocop:disable Naming/PredicateMethod
+def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, profile: nil, work_item_id: nil, branch: nil, # rubocop:disable Naming/PredicateMethod
+                               clear: [])
   map = load_work_item_map
 
   target_id = work_item_id
@@ -376,6 +382,7 @@ def update_work_item_overrides(cli_provider: nil, model: nil, effort: nil, profi
   overrides["model"] = model if model
   overrides["effort"] = effort if effort
   overrides["profile"] = profile if profile
+  Array(clear).each { |key| overrides.delete(key.to_s) }
   overrides.compact!
 
   if overrides.empty?
@@ -425,30 +432,75 @@ end
 # Unknown profile names are never persisted, so a typo can't pin a work item to a
 # profile that doesn't exist (profile_spawn_env ignores it for this dispatch too).
 #
+# A stored model is a provider-specific ID (kiro's "opus" is "claude-opus-4.5", claude's is
+# "opus"), so switching providers with [cli:X] drops it and the new provider's default
+# applies, unless the same message also carries a model tag. default_cli_provider: is the
+# provider a work item with no stored cli_provider was running on; without it, any inline
+# [cli:X] on such a work item counts as a switch.
+#
 # Returns: { cli_provider:, model:, effort:, profile: } (each String or nil)
 def resolve_work_item_overrides(work_item_id: nil, branch: nil, inline_cli_provider: nil, inline_model: nil, inline_effort: nil,
-                                inline_profile: nil)
+                                inline_profile: nil, default_cli_provider: nil)
   stored = work_item_overrides_for(work_item_id: work_item_id, branch: branch)
   inline_profile = inline_profile&.to_s&.downcase
   persist_profile = inline_profile && profile_entry(inline_profile) ? inline_profile : nil
+  switched = cli_provider_switched?(inline_cli_provider, stored["cli_provider"] || default_cli_provider)
+  stored_model = switched ? nil : stored["model"]
 
   # Inline tags override stored values
   resolved = {
     cli_provider: inline_cli_provider || stored["cli_provider"],
-    model: inline_model || stored["model"],
+    model: inline_model || stored_model,
     effort: inline_effort || stored["effort"],
     profile: inline_profile || stored["profile"]
   }
 
   # Persist any new inline overrides to the work item for future dispatches
-  new_overrides = {}
-  new_overrides[:cli_provider] = inline_cli_provider if inline_cli_provider
-  new_overrides[:model] = inline_model if inline_model
-  new_overrides[:effort] = inline_effort if inline_effort
-  new_overrides[:profile] = persist_profile if persist_profile
+  new_overrides = { cli_provider: inline_cli_provider, model: inline_model, effort: inline_effort,
+                    profile: persist_profile }.compact
+  new_overrides[:clear] = [:model] if switched && !inline_model && stored["model"]
 
   update_work_item_overrides(work_item_id: work_item_id, branch: branch, **new_overrides) if new_overrides.any? && (work_item_id || branch)
 
+  resolved
+end
+
+# True when an inline [cli:X] names a different provider than the one previously in use.
+def cli_provider_switched?(inline_cli_provider, previous_cli_provider)
+  !inline_cli_provider.nil? && inline_cli_provider != previous_cli_provider
+end
+
+# One-stop override resolution for a dispatch: parses [cli:X]/[model]/[effort:X]/[p:X] from
+# the message text (and plugin card tags), merges them with the work item's stored overrides,
+# and persists any new inline values. The model and effort are resolved against the provider
+# that will actually run (inline > stored > agent/project default), so a [sonnet] tag can't be
+# looked up in the wrong provider's model map. Plugins should prefer this over calling
+# detect_model/detect_effort and resolve_work_item_overrides by hand.
+#
+# Returns: { cli_provider:, model:, explicit_model:, effort:, profile: }
+#   cli_provider is nil when nothing overrides the agent/project default.
+#   explicit_model is true when the model came from a tag (see detect_model_explicit).
+def resolve_dispatch_overrides(project_config, text: "", tags: [], agent_name: nil, work_item_id: nil, branch: nil)
+  stored = work_item_overrides_for(work_item_id: work_item_id, branch: branch)
+  inline_cli = detect_cli_provider(text: text, tags: tags)
+  default_cli = agent_cli_provider_for(agent_name) || project_config["cli_provider"]
+  effective_cli = inline_cli || stored["cli_provider"]
+
+  model, explicit_model = detect_model_explicit(project_config, tags: tags, text: text,
+                                                                cli_provider_override: effective_cli, agent_name: agent_name)
+  effort, explicit_effort = detect_effort_explicit(project_config, tags: tags, text: text,
+                                                                   cli_provider_override: effective_cli, agent_name: agent_name)
+
+  resolved = resolve_work_item_overrides(work_item_id: work_item_id, branch: branch, inline_cli_provider: inline_cli,
+                                         inline_model: explicit_model ? model : nil,
+                                         inline_effort: explicit_effort ? effort : nil,
+                                         inline_profile: detect_profile(text: text, tags: tags),
+                                         default_cli_provider: default_cli)
+  # Nothing tagged or stored (or the stored model was dropped by a switch): use the
+  # effective provider's defaults, already resolved above.
+  resolved[:model] ||= model
+  resolved[:effort] ||= effort
+  resolved[:explicit_model] = explicit_model
   resolved
 end
 
@@ -984,7 +1036,11 @@ def append_model_to_cmd(cmd, model, resolved)
   # This handles cases where different projects use "auto" but each CLI provider maps it differently.
   effective_model = allowed.key?(model) ? allowed[model] : model
   is_known = allowed.value?(effective_model) || allowed.key?(effective_model)
-  cmd.push(resolved["agent_model_flag"], effective_model) if is_known
+  if is_known
+    cmd.push(resolved["agent_model_flag"], effective_model)
+  else
+    LOG.warn "[Model] Dropping model '#{model}': not in #{resolved["agent_cli"]}'s model map; using the CLI's default"
+  end
 end
 
 # A model is only "explicit" if the caller actually supplied one (i.e. it came from a
@@ -1344,8 +1400,9 @@ end
 # while a fell-back-to-default value must NOT write — otherwise every no-tag dispatch
 # would clobber each account's per-account default back to the project default.
 def detect_model_explicit(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
-  # If no explicit CLI provider override, check if the agent has one configured
-  effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
+  # Without an explicit override, a [cli:X] in the same text picks the model map (so
+  # "[cli:claude] [sonnet]" resolves through claude's map), then the agent's provider.
+  effective_cli_provider = cli_provider_override || inline_cli_provider_tag(text) || agent_cli_provider_for(agent_name)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed_models = resolved["allowed_models"] || {}
   return [resolved["agent_model"], false] if allowed_models.empty?
@@ -1368,22 +1425,29 @@ end
 # If the requested level isn't supported by the current model, returns the closest
 # lower level from allowed_efforts.
 def detect_effort(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
-  effective_cli_provider = cli_provider_override || agent_cli_provider_for(agent_name)
+  detect_effort_explicit(project_config, tags: tags, text: text,
+                                         cli_provider_override: cli_provider_override, agent_name: agent_name).first
+end
+
+# Like detect_effort, but returns [level, explicit_bool] where explicit is true only when
+# the level came from an [effort:X] tag or a plugin's card tag (not the provider default).
+def detect_effort_explicit(project_config, tags: [], text: "", cli_provider_override: nil, agent_name: nil)
+  effective_cli_provider = cli_provider_override || inline_cli_provider_tag(text) || agent_cli_provider_for(agent_name)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: effective_cli_provider, agent_name: agent_name)
   allowed = resolved["allowed_efforts"] || %w[low medium high xhigh max]
 
   # Inline tag: [effort:high] — works in any channel
   if (match = text.match(/\[effort:(\w+)\]/i))
     level = match[1].downcase
-    return resolve_effort_level(level, allowed) if allowed.include?(level)
+    return [resolve_effort_level(level, allowed), true] if allowed.include?(level)
   end
 
   # Plugin hook: let plugins detect from their own metadata (e.g., card tags)
   results = Brainiac.emit(:detect_effort, tags: tags, allowed: allowed)
   plugin_result = results.compact.first
-  return resolve_effort_level(plugin_result, allowed) if plugin_result
+  return [resolve_effort_level(plugin_result, allowed), true] if plugin_result
 
-  resolved["agent_effort"]
+  [resolved["agent_effort"], false]
 end
 
 # Detect a profile ([profile:X]/[p:X]) from inline text OR card tags.
