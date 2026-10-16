@@ -520,7 +520,59 @@ class TestHelpers < Minitest::Test
       tmp = File.join(dir, "tmp")
       FileUtils.mkdir_p(tmp)
       FileUtils.touch(File.join(tmp, "agent-test-20260824.log"))
+      record_last_cli(dir, "somecli")
       assert prior_session_exists?(dir, "somecli")
+    end
+  end
+
+  def test_prior_session_exists_ignores_recent_log_from_other_cli
+    Dir.mktmpdir do |dir|
+      tmp = File.join(dir, "tmp")
+      FileUtils.mkdir_p(tmp)
+      FileUtils.touch(File.join(tmp, "agent-test-20260824.log"))
+      record_last_cli(dir, "/usr/bin/kiro-cli")
+      refute prior_session_exists?(dir, "claude")
+    end
+  end
+
+  def test_prior_session_exists_ignores_recent_log_without_marker
+    Dir.mktmpdir do |dir|
+      tmp = File.join(dir, "tmp")
+      FileUtils.mkdir_p(tmp)
+      FileUtils.touch(File.join(tmp, "agent-test-20260824.log"))
+      refute prior_session_exists?(dir, "somecli")
+    end
+  end
+
+  def test_cli_switched_since_last_run
+    Dir.mktmpdir do |dir|
+      refute cli_switched_since_last_run?(dir, "claude")
+      record_last_cli(dir, "/usr/local/bin/kiro-cli")
+      assert_equal "kiro-cli", last_cli_for(dir)
+      assert cli_switched_since_last_run?(dir, "claude")
+      refute cli_switched_since_last_run?(dir, "kiro-cli")
+    end
+  end
+
+  def test_resolve_resume_starts_fresh_after_provider_switch
+    Dir.mktmpdir do |dir|
+      record_last_cli(dir, "kiro-cli")
+      resolved = { "agent_cli" => "claude", "resume_id_flag" => "--resume" }
+      refute resolve_resume(true, resolved, dir, session_id: "old-claude-session")
+      record_last_cli(dir, "claude")
+      assert_equal({ "flag" => "--resume", "id" => "old-claude-session" },
+                   resolve_resume(true, resolved, dir, session_id: "old-claude-session"))
+    end
+  end
+
+  def test_resume_viable_false_after_provider_switch
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, ".grok"))
+      record_last_cli(dir, "kiro-cli")
+      project_config = { "repo_path" => dir, "agent_cli" => "grok", "resume_flag" => "-c" }
+      refute resume_viable?(project_config: project_config, chdir: dir)
+      record_last_cli(dir, "grok")
+      assert resume_viable?(project_config: project_config, chdir: dir)
     end
   end
 
@@ -1188,13 +1240,13 @@ class TestHelpers < Minitest::Test
     assert_equal %w[grok --always-approve --resume existing-id], cmd
   end
 
-  def test_mint_cli_session_id_only_on_first_run
+  def test_mint_cli_session_id_whenever_starting_fresh
     resolved = { "new_session_id_flag" => "--session-id" }
-    id = mint_cli_session_id(resolved, stored_session: nil, resuming: false)
+    id = mint_cli_session_id(resolved, resuming: false)
     assert_match(/\A[0-9a-f-]{36}\z/, id)
-    assert_nil mint_cli_session_id(resolved, stored_session: id, resuming: false)
-    assert_nil mint_cli_session_id(resolved, stored_session: nil, resuming: { "flag" => "--resume", "id" => id })
-    assert_nil mint_cli_session_id({}, stored_session: nil, resuming: false)
+    refute_equal id, mint_cli_session_id(resolved, resuming: false)
+    assert_nil mint_cli_session_id(resolved, resuming: { "flag" => "--resume", "id" => id })
+    assert_nil mint_cli_session_id({}, resuming: false)
   end
 
   def test_build_agent_cmd_with_session_id_resume

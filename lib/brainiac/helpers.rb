@@ -704,9 +704,11 @@ def prior_session_exists?(chdir, agent_cli, session_dir: nil)
   return true if File.directory?(session_dir_local)
 
   # Fallback: look for recent session logs in tmp/ that suggest this CLI ran here before.
-  # This covers CLIs that don't leave a dotdir but do leave logs via brainiac.
+  # This covers CLIs that don't leave a dotdir but do leave logs via brainiac. The logs
+  # don't say which CLI wrote them, so only trust them when the last-CLI marker says it was this one.
   tmp_dir = File.join(chdir, "tmp")
   return false unless File.directory?(tmp_dir)
+  return false unless last_cli_for(chdir) == cli_name
 
   Dir.glob(File.join(tmp_dir, "agent-*.log")).any? do |log|
     # Only count logs from the last 24 hours as valid "resumable" sessions
@@ -714,6 +716,40 @@ def prior_session_exists?(chdir, agent_cli, session_dir: nil)
   end
 rescue StandardError
   false
+end
+
+# Marker recording which CLI binary last ran in a directory (written by run_agent).
+def last_cli_marker_path(chdir)
+  File.join(chdir, "tmp", ".brainiac-last-cli")
+end
+
+def last_cli_for(chdir)
+  return nil unless chdir
+
+  name = File.read(last_cli_marker_path(chdir)).strip
+  name.empty? ? nil : name
+rescue StandardError
+  nil
+end
+
+def record_last_cli(chdir, agent_cli)
+  key = cli_session_key(agent_cli)
+  return unless chdir && key
+
+  FileUtils.mkdir_p(File.join(chdir, "tmp"))
+  File.write(last_cli_marker_path(chdir), key)
+rescue StandardError => e
+  LOG.warn "[Dispatch] Could not record last CLI for #{chdir}: #{e.message}"
+end
+
+# True when a different CLI ran in this directory more recently than agent_cli.
+# A switched-to CLI never saw the other provider's turns, so resuming its own (older)
+# session would hand it a lean prompt with a stale or empty history. Start fresh instead
+# and let the full prompt (memory file + source context) carry the conversation.
+def cli_switched_since_last_run?(chdir, agent_cli)
+  last = last_cli_for(chdir)
+  key = cli_session_key(agent_cli)
+  !last.nil? && !key.nil? && last != key
 end
 
 # Check if a centralized session directory has sessions matching the given cwd.
@@ -777,6 +813,7 @@ end
 def resume_viable?(project_config:, cli_provider: nil, agent_name: nil, chdir: nil)
   resolved = resolve_project_cli_config(project_config, cli_provider_override: cli_provider, agent_name: agent_name)
   chdir ||= resolved["repo_path"]
+  return false if cli_switched_since_last_run?(chdir, resolved["agent_cli"])
   return stored_cli_session_viable?(resolved, chdir) if resolved["resume_id_flag"]
   return false unless resolved["resume_flag"] || resolved["resume_args"]
 
@@ -805,6 +842,11 @@ end
 def resolve_resume(resume, resolved, chdir, session_id: nil)
   return false unless resume
 
+  if cli_switched_since_last_run?(chdir, resolved["agent_cli"])
+    LOG.info "[Dispatch] CLI switched from #{last_cli_for(chdir)} to #{resolved["agent_cli"]} in #{chdir} — starting fresh session"
+    return false
+  end
+
   if resolved["resume_id_flag"]
     id = session_id.to_s.empty? ? cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir) : session_id
     if id.to_s.empty?
@@ -824,14 +866,25 @@ def resolve_resume(resume, resolved, chdir, session_id: nil)
   false
 end
 
-# Some CLIs (e.g. grok --session-id) let the caller name a new session up front.
-# Mint a UUID only on the first run, when we are not resuming an existing id.
-def mint_cli_session_id(resolved, stored_session:, resuming:)
+# Some CLIs (e.g. claude/grok --session-id) let the caller name a new session up front.
+# Mint a UUID whenever we start fresh — including after a provider switch, when an older
+# stored id exists — so the stored id always points at the latest session for this CLI.
+def mint_cli_session_id(resolved, resuming:)
   return nil if resuming
   return nil unless resolved["new_session_id_flag"]
-  return nil unless stored_session.to_s.empty?
 
   SecureRandom.uuid
+end
+
+# Decide resume vs. fresh start for this dispatch, then record this CLI as the last
+# one to run here. Returns [should_resume, minted_session_id].
+def prepare_cli_session(resume, resolved, chdir)
+  stored_session = cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir)
+  # Auto-resume: only if the provider supports it AND a prior session exists for this CLI here.
+  should_resume = resolve_resume(resume, resolved, chdir, session_id: stored_session)
+  minted_session_id = mint_cli_session_id(resolved, resuming: should_resume)
+  record_last_cli(chdir, resolved["agent_cli"])
+  [should_resume, minted_session_id]
 end
 
 # Check if intent detection says to skip dispatching the agent.
@@ -870,12 +923,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   effort ||= resolved["agent_effort"]
   agent_config_name = agent_name&.downcase&.gsub(/[^a-z0-9-]/, "-")
 
-  stored_session = cli_session_id_for(agent_cli: resolved["agent_cli"], worktree: chdir)
   work_item_id = find_work_item_by_worktree(chdir)&.first
-
-  # Auto-resume: only if the provider supports it AND a prior session exists for this CLI here.
-  should_resume = resolve_resume(resume, resolved, chdir, session_id: stored_session)
-  minted_session_id = mint_cli_session_id(resolved, stored_session: stored_session, resuming: should_resume)
+  should_resume, minted_session_id = prepare_cli_session(resume, resolved, chdir)
 
   # Pre-dispatch hook — plugins can prep the working directory (e.g., copy config files, clean up)
   Brainiac.emit(:pre_dispatch, chdir: chdir, project_config: project_config, agent_name: agent_name)
