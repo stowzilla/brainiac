@@ -66,6 +66,19 @@ class TestForensics < Minitest::Test
     assert_empty analyzer.logs
   end
 
+  def test_parses_log_with_invalid_utf8_bytes
+    # Agent logs can contain invalid UTF-8 / binary noise. This must not raise —
+    # it previously 500'd the analytics endpoint (ArgumentError on regex match).
+    path = File.join(@log_dir, "agent-binary-20261017-160000.log")
+    File.binwrite(path, "Running kiro-cli in /w, logging to #{path}\n" \
+                        "RuntimeError: bad \xC3\x28 \xFF\xFE bytes here\n")
+    rec = analyzer.logs.first # must not raise on invalid UTF-8
+    refute_nil rec
+    assert_equal "kiro-cli", rec.agent_cli
+    # the error signature is still detected despite the invalid bytes
+    assert(rec.error_hits.any? { |h| h.include?("RuntimeError") })
+  end
+
   def test_scans_error_signatures_strips_ansi
     write_log(name: "ansi", timestamp: "20261017-101500",
               body: "\e[31mRuntimeError: boom\e[0m\n")

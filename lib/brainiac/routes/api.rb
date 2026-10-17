@@ -324,10 +324,10 @@ end
 # signatures). Read-only; scans the same trusted dirs as /api/logs.
 get "/api/forensics" do
   content_type :json
-  reload_projects!
-  report = Brainiac::Forensics.analyze
-  report = forensics_response(report, params)
-  report.to_json
+  forensics_guard("forensics") do
+    reload_projects!
+    forensics_response(Brainiac::Forensics.analyze, params).to_json
+  end
 end
 
 # Performance over time — trends, per-agent/model/source breakdowns, and
@@ -335,34 +335,52 @@ end
 #   ?period=day|week|month  ?since=ISO8601
 get "/api/forensics/performance" do
   content_type :json
-  reload_projects!
-  period = %w[day week month].include?(params["period"]) ? params["period"].to_sym : :day
-  since = begin
-    params["since"] && Time.parse(params["since"])
-  rescue ArgumentError
-    halt 400, { error: "invalid since date" }.to_json
+  forensics_guard("performance") do
+    reload_projects!
+    period = %w[day week month].include?(params["period"]) ? params["period"].to_sym : :day
+    since = begin
+      params["since"] && Time.parse(params["since"])
+    rescue ArgumentError
+      halt 400, { error: "invalid since date" }.to_json
+    end
+    Brainiac::Forensics.performance(period: period, since: since).to_json
   end
-  Brainiac::Forensics.performance(period: period, since: since).to_json
 end
 
 # Inventory of all brainiac parameters (agents/personas/skills/knowledge/models/
 # sources/profiles/roles) with per-item session usage.
 get "/api/forensics/inventory" do
   content_type :json
-  reload_projects!
-  Brainiac::Forensics.inventory.to_json
+  forensics_guard("inventory") do
+    reload_projects!
+    Brainiac::Forensics.inventory.to_json
+  end
 end
 
 # Sessions tied to a selected parameter value. ?dimension=agent|model|source|persona&value=…
 get "/api/forensics/sessions" do
   content_type :json
-  reload_projects!
-  dimension = params["dimension"].to_s
-  value = params["value"].to_s
-  halt 400, { error: "missing dimension or value" }.to_json if dimension.empty? || value.empty?
+  forensics_guard("sessions") do
+    reload_projects!
+    dimension = params["dimension"].to_s
+    value = params["value"].to_s
+    halt 400, { error: "missing dimension or value" }.to_json if dimension.empty? || value.empty?
 
-  sessions = Brainiac::Forensics.sessions_for(dimension, value)
-  { dimension: dimension, value: value, count: sessions.size, sessions: sessions.first(200) }.to_json
+    sessions = Brainiac::Forensics.sessions_for(dimension, value)
+    { dimension: dimension, value: value, count: sessions.size, sessions: sessions.first(200) }.to_json
+  end
+end
+
+# Run a forensics route body, converting any unexpected error into a JSON 500
+# (never an HTML error page) so the analytics UI can surface it cleanly. Sinatra's
+# `halt` uses throw, not raise, so 4xx halts still propagate untouched.
+def forensics_guard(label)
+  yield
+rescue StandardError => e
+  LOG.warn "[Forensics] /#{label} failed: #{e.class}: #{e.message}"
+  LOG.debug(e.backtrace.first(5).join("\n")) if e.backtrace
+  status 500
+  { error: "#{e.class}: #{e.message}", endpoint: label }.to_json
 end
 
 # Shape the forensics report for the API: optionally trim to anomalies-only and

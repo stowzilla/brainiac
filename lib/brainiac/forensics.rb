@@ -73,7 +73,7 @@ module Brainiac
 
       def parse(path)
         name, ts = parse_filename(File.basename(path))
-        head = File.foreach(path).first(40)
+        head = safe_lines(path, limit: 40)
         LogRecord.new(
           path: path, log_name: name, timestamp: ts,
           mtime: safe_mtime(path), size_bytes: safe_size(path),
@@ -83,13 +83,29 @@ module Brainiac
           env_keys: extract_env_keys(head),
           resumed: head.any? { |l| l.include?("(resuming session)") },
           error_hits: scan_errors(path),
-          line_count: count_lines(path)
+          line_count: head_count(path)
         )
-      rescue SystemCallError
+      rescue SystemCallError, EncodingError, ArgumentError
+        # Agent logs can contain invalid UTF-8 / binary noise; never let one bad
+        # log take down the whole scan (and the analytics endpoint with it).
         nil
       end
 
       private
+
+      # Read up to `limit` lines (or all) with invalid/undefined bytes scrubbed, so
+      # downstream regex matching can't raise on malformed UTF-8. Returns [] on IO error.
+      # Transcoding UTF-8→UTF-8 is a no-op in Ruby, so we scrub each line explicitly.
+      def safe_lines(path, limit: nil)
+        lines = []
+        File.foreach(path) do |line|
+          lines << line.scrub("")
+          break if limit && lines.size >= limit
+        end
+        lines
+      rescue SystemCallError
+        []
+      end
 
       def parse_filename(basename)
         m = LOG_FILENAME.match(basename)
@@ -122,7 +138,7 @@ module Brainiac
 
       def scan_errors(path)
         hits = []
-        File.foreach(path) do |line|
+        safe_lines(path).each do |line|
           clean = strip_ansi(line).strip
           @error_signatures.each do |sig|
             if sig.match?(clean)
@@ -133,8 +149,6 @@ module Brainiac
           break if hits.size >= 5
         end
         hits
-      rescue SystemCallError
-        hits
       end
 
       # Agent CLIs emit ANSI color codes into their logs; strip them so error
@@ -143,10 +157,8 @@ module Brainiac
         line.gsub(/\e\[[\d;?]*[a-zA-Z]/, "")
       end
 
-      def count_lines(path)
-        File.foreach(path).count
-      rescue SystemCallError
-        0
+      def head_count(path)
+        safe_lines(path).size
       end
 
       def safe_mtime(path)
