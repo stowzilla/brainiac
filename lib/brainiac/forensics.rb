@@ -561,10 +561,20 @@ module Brainiac
 
       # One MetricSet per distinct value of the yielded dimension, richest first.
       # Scoped to sessions with history so dimensions reflect real identity.
-      def breakdown
-        grouped = @finished.group_by { |s| yield(s) || "unknown" }
-        grouped.map { |key, group| { key: key, metrics: MetricSet.from(group) } }
-               .sort_by { |b| -b[:metrics][:sessions] }
+      # Grouping is case-insensitive (so "kaylee" and "Kaylee" merge); the display
+      # key is the most common original casing.
+      def breakdown(&)
+        grouped = @finished.group_by { |s| (yield(s) || "unknown").to_s.downcase }
+        items = grouped.map do |_key, group|
+          { key: display_label(group, &), metrics: MetricSet.from(group) }
+        end
+        items.sort_by { |b| -b[:metrics][:sessions] }
+      end
+
+      # Pick the most frequently-seen original casing for a group's dimension value.
+      def display_label(group, &)
+        group.filter_map(&).map(&:to_s).reject(&:empty?)
+             .tally.max_by { |_v, n| n }&.first || "unknown"
       end
 
       # Derive actionable calibration signals. Each recommendation names a target
@@ -703,12 +713,28 @@ module Brainiac
       # agents: registry + anyone who shows up in a *finished* session (those carry
       # authoritative agent identity). Orphan log names are excluded so the list is
       # real agents, not per-card log names like "followup-1047".
+      # agents: the real historical roster, not just whoever shows up in the recent
+      # (trimmed, 500-max) session-history. We union four sources — the registry,
+      # persona dirs, per-agent memory dirs (brain/memory/<agent>/, the long-term
+      # record of work), and agents named in finished sessions — keyed case-
+      # insensitively so "kaylee" and "Kaylee" are one agent. Usage reports both the
+      # recent session count AND the memory-file count (the "have I actually used
+      # this agent over time" signal), so an agent with history on another machine
+      # still shows up as available with its memory footprint.
       def agents
-        names = registry_agent_names | finished_session_values("agent")
-        names.reject(&:empty?).sort.map do |name|
-          { name: name, available: registry_agent_names.include?(name),
-            usage: session_usage("agent", name) }
+        memory = memory_file_counts # downcased-key => count
+        by_key = {}
+        agent_name_sources.each do |name|
+          key = name.to_s.downcase
+          next if key.empty?
+
+          by_key[key] ||= name
         end
+        items = by_key.map do |key, label|
+          usage = session_usage("agent", key).merge(memory_files: memory[key] || 0)
+          { name: label, available: registry_agent_keys.include?(key), usage: usage }
+        end
+        items.sort_by { |a| [-(a[:usage][:sessions] || 0), -(a[:usage][:memory_files] || 0), a[:name].downcase] }
       end
 
       # personas: one dir per agent under PERSONA_BASE_DIR; usage = that agent's sessions.
@@ -725,9 +751,9 @@ module Brainiac
         return [] unless dir && Dir.exist?(dir)
 
         items = Dir.glob(File.join(dir, "**", "SKILL.md")).reject { |p| p.include?("_archived/") }.map do |path|
-          fm = skill_frontmatter(path)
+          fm = Forensics.read_skill_frontmatter(path)
           { name: fm[:name] || File.basename(File.dirname(path)), available: true,
-            description: fm[:description], usage: skill_usage(path).merge(usage_tracked: true) }
+            description: fm[:description], usage: Forensics.read_skill_usage(path).merge(usage_tracked: true) }
         end
         items.sort_by { |s| -(s[:usage][:uses] || 0) }
       end
@@ -755,11 +781,15 @@ module Brainiac
         end
       end
 
-      # Distinct values of a session dimension (model/source), each with usage.
+      # Distinct values of a session dimension (model/source), case-insensitive, each
+      # with usage. Display label is the most common original casing.
       def dimension_items(field)
-        session_values(field).reject(&:empty?).sort.map do |value|
-          { name: value, available: true, usage: session_usage(field, value) }
+        grouped = @finished.group_by { |s| s[field.to_sym].to_s.downcase }.reject { |k, _| k.empty? }
+        items = grouped.map do |key, group|
+          label = group.filter_map { |s| s[field.to_sym] }.map(&:to_s).tally.max_by { |_v, n| n }&.first || key
+          { name: label, available: true, usage: session_usage(field, key) }
         end
+        items.sort_by { |i| -(i[:usage][:sessions] || 0) }
       end
 
       def session_usage(field, value)
@@ -770,10 +800,6 @@ module Brainiac
         { sessions: matched.size, finished: finished.size, usage_tracked: true,
           crash_rate: m[:crash_rate], error_rate: m[:error_rate],
           avg_duration_seconds: m[:avg_duration_seconds], avg_context_pct: m[:avg_context_pct] }
-      end
-
-      def session_values(field)
-        @sessions.filter_map { |s| s[field.to_sym] }.map(&:to_s).uniq
       end
 
       def finished_session_values(field)
@@ -793,6 +819,35 @@ module Brainiac
         end
       end
 
+      # Downcased keys of all known registry agents (for the available? flag).
+      def registry_agent_keys
+        @registry_agent_keys ||= registry_agent_names.to_set(&:downcase)
+      end
+
+      # Every candidate agent name, from all four sources. Later sources only add
+      # names not already seen (case-insensitively), and we prefer a registry/
+      # persona display name over a raw session value for nicer casing.
+      def agent_name_sources
+        registry_agent_names +
+          list_dirs(@paths[:persona] || (defined?(PERSONA_BASE_DIR) ? PERSONA_BASE_DIR : nil)) +
+          memory_file_counts.keys +
+          finished_session_values("agent")
+      end
+
+      # downcased agent key => number of memory files (brain/memory/<agent>/*).
+      # The long-term record of which agents have actually done work over time —
+      # survives session-history trimming and spans other machines via brain git sync.
+      def memory_file_counts
+        @memory_file_counts ||= begin
+          dir = @paths[:memory] || (defined?(MEMORY_BASE_DIR) ? MEMORY_BASE_DIR : nil)
+          counts = {}
+          list_dirs(dir).each do |agent|
+            counts[agent.downcase] = Dir.glob(File.join(dir, agent, "*")).size
+          end
+          counts
+        end
+      end
+
       def list_dirs(dir)
         return [] unless dir && Dir.exist?(dir)
 
@@ -804,26 +859,6 @@ module Brainiac
       def category_of(path, root)
         rel = path.sub("#{root}/", "")
         rel.include?("/") ? rel.split("/").first : "(root)"
-      end
-
-      def skill_frontmatter(path)
-        content = File.read(path)
-        return {} unless content.start_with?("---")
-
-        parts = content.split("---", 3)
-        return {} if parts.size < 3
-
-        yaml = YAML.safe_load(parts[1]) || {}
-        { name: yaml["name"], description: yaml["description"] }
-      rescue StandardError
-        {}
-      end
-
-      def skill_usage(path)
-        usage_file = path.sub(/SKILL\.md$/, "SKILL.usage.json")
-        data = parse_json(usage_file) || {}
-        { views: data["views"] || 0, uses: data["uses"] || 0,
-          last_used: data["last_used"], last_viewed: data["last_viewed"] }
       end
 
       def config_keys(file)
@@ -910,6 +945,30 @@ module Brainiac
       return File.join(BRAINIAC_DIR, "session-history.jsonl") if defined?(BRAINIAC_DIR)
 
       File.join(Dir.home, ".brainiac", "session-history.jsonl")
+    end
+
+    # Parse a SKILL.md's YAML frontmatter → { name:, description: }. Best-effort.
+    def read_skill_frontmatter(path)
+      content = File.read(path)
+      return {} unless content.start_with?("---")
+
+      parts = content.split("---", 3)
+      return {} if parts.size < 3
+
+      yaml = YAML.safe_load(parts[1]) || {}
+      { name: yaml["name"], description: yaml["description"] }
+    rescue StandardError
+      {}
+    end
+
+    # Read a skill's SKILL.usage.json sidecar → view/use counts + timestamps.
+    def read_skill_usage(path)
+      usage_file = path.sub(/SKILL\.md$/, "SKILL.usage.json")
+      data = (JSON.parse(File.read(usage_file)) if File.exist?(usage_file)) || {}
+      { views: data["views"] || 0, uses: data["uses"] || 0,
+        last_used: data["last_used"], last_viewed: data["last_viewed"] }
+    rescue StandardError
+      { views: 0, uses: 0, last_used: nil, last_viewed: nil }
     end
   end
 end

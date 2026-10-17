@@ -301,7 +301,9 @@
     document.getElementById('paramList').innerHTML = items.map((it, i) => {
       const u = it.usage || {};
       let pill = 'inventory';
-      if (u.sessions != null) pill = u.sessions + ' sessions';
+      if (u.sessions != null && u.sessions > 0) pill = u.sessions + ' sessions';
+      else if (u.memory_files != null && u.memory_files > 0) pill = u.memory_files + ' memories';
+      else if (u.sessions != null) pill = '0 sessions';
       else if (u.uses != null) pill = u.uses + ' uses';
       else if (u.files != null) pill = u.files + ' files';
       const cls = dim ? '' : ' unselectable';
@@ -342,10 +344,16 @@
   function renderParamSessions(item, data) {
     const sessions = data.sessions || [];
     const u = item.usage || {};
-    const head = '<h3>' + esc(item.name) + ' <span class="meta">— ' + data.count + ' session(s)</span></h3>' +
+    const mem = u.memory_files ? ' · ' + u.memory_files + ' memory files' : '';
+    const head = '<h3>' + esc(item.name) + ' <span class="meta">— ' + data.count + ' recent session(s)' + mem + '</span></h3>' +
       '<div class="note">crash ' + fmtPct(u.crash_rate) + ' · error ' + fmtPct(u.error_rate) +
       ' · avg dur ' + (u.avg_duration_seconds ?? '–') + 's · avg ctx ' + (u.avg_context_pct != null ? u.avg_context_pct + '%' : '–') + '</div>';
-    if (!sessions.length) { document.getElementById('paramDetail').innerHTML = head + '<div class="empty">No sessions.</div>'; return; }
+    if (!sessions.length) {
+      const why = u.memory_files ? 'No recent sessions in the durable history, but this agent has ' + u.memory_files +
+        ' memory files from past work (possibly on another machine or before session history was kept).' : 'No sessions.';
+      document.getElementById('paramDetail').innerHTML = head + '<div class="empty">' + why + '</div>';
+      return;
+    }
     const rows = sessions.map(s => {
       const status = !s.has_history ? 'no-history' : (s.exit_status === 0 ? 'ok' : 'exit=' + s.exit_status);
       const when = s.finished_at || s.started_at || '';

@@ -380,12 +380,19 @@ class TestForensics < Minitest::Test
     persona_dir = File.join(@dir, "persona")
     knowledge_dir = File.join(@dir, "knowledge")
     roles_dir = File.join(@dir, "roles")
+    memory_dir = File.join(@dir, "memory")
     FileUtils.mkdir_p(File.join(skills_dir, "deploy-thing"))
     FileUtils.mkdir_p(File.join(skills_dir, "_archived", "old-skill"))
     FileUtils.mkdir_p(File.join(persona_dir, "kaylee"))
     FileUtils.mkdir_p(File.join(persona_dir, "galen"))
     FileUtils.mkdir_p(File.join(knowledge_dir, "lessons"))
     FileUtils.mkdir_p(roles_dir)
+    # memory dirs: the long-term record. Avon worked a lot historically but has
+    # no recent session-history record — must still surface as an available agent.
+    FileUtils.mkdir_p(File.join(memory_dir, "kaylee"))
+    FileUtils.mkdir_p(File.join(memory_dir, "avon"))
+    3.times { |i| File.write(File.join(memory_dir, "kaylee", "card-#{i}.md"), "x") }
+    5.times { |i| File.write(File.join(memory_dir, "avon", "card-#{i}.md"), "y") }
 
     File.write(File.join(skills_dir, "deploy-thing", "SKILL.md"),
                "---\nname: deploy-thing\ndescription: Deploy the thing\n---\nSteps\n")
@@ -402,7 +409,7 @@ class TestForensics < Minitest::Test
     File.write(profiles_file, JSON.generate({ "q" => { "default" => true }, "k+" => {} }))
 
     { skills: skills_dir, persona: persona_dir, knowledge: knowledge_dir,
-      roles: roles_dir, agents: agents_file, profiles: profiles_file }
+      roles: roles_dir, agents: agents_file, profiles: profiles_file, memory: memory_dir }
   end
 
   def inventory_sessions
@@ -411,9 +418,49 @@ class TestForensics < Minitest::Test
     write_history([
                     { "agent" => "Kaylee", "model" => "sonnet", "source" => "fizzy", "log_file" => p1,
                       "exit_status" => 0, "duration_seconds" => 100, "finished_at" => "2026-10-15T10:01:00Z" },
-                    { "agent" => "Kaylee", "model" => "opus", "source" => "discord", "log_file" => p2,
+                    # lowercase on purpose: must merge with "Kaylee" case-insensitively
+                    { "agent" => "kaylee", "model" => "Sonnet", "source" => "discord", "log_file" => p2,
                       "exit_status" => 1, "duration_seconds" => 200, "finished_at" => "2026-10-15T11:01:00Z" }
                   ])
+  end
+
+  def test_inventory_agents_case_insensitive_merge
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    kaylees = inv[:agents].select { |a| a[:name].downcase == "kaylee" }
+    assert_equal 1, kaylees.size, "kaylee/Kaylee must merge into one agent"
+    assert_equal 2, kaylees.first[:usage][:sessions]
+  end
+
+  def test_inventory_models_case_insensitive_merge
+    inventory_sessions # sonnet + Sonnet
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    sonnets = inv[:models].select { |m| m[:name].downcase == "sonnet" }
+    assert_equal 1, sonnets.size, "sonnet/Sonnet must merge"
+    assert_equal 2, sonnets.first[:usage][:sessions]
+  end
+
+  def test_inventory_includes_historical_agents_without_recent_sessions
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    # Avon has memory files but no session-history record — must still appear.
+    avon = inv[:agents].find { |a| a[:name].downcase == "avon" }
+    refute_nil avon, "agent with memory history must be listed even without recent sessions"
+    assert_equal 5, avon[:usage][:memory_files]
+    assert_equal 0, avon[:usage][:sessions]
+    # Galen is registry+persona only (no sessions, no memory) — still available.
+    assert(inv[:agents].any? { |a| a[:name].downcase == "galen" })
+  end
+
+  def test_performance_breakdown_case_insensitive
+    sessions = [
+      session(agent: "Kaylee", finished: "2026-10-10T10:00:00Z"),
+      session(agent: "kaylee", finished: "2026-10-10T11:00:00Z")
+    ]
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    kaylees = report[:by_agent].select { |b| b[:key].downcase == "kaylee" }
+    assert_equal 1, kaylees.size
+    assert_equal 2, kaylees.first[:metrics][:sessions]
   end
 
   def test_inventory_enumerates_all_categories
@@ -467,9 +514,10 @@ class TestForensics < Minitest::Test
   def test_inventory_models_and_sources
     inventory_sessions
     inv = analyzer.inventory_report(paths: build_inventory_fixtures)
-    assert_includes inv[:models].map { |m| m[:name] }, "sonnet"
-    assert_includes inv[:models].map { |m| m[:name] }, "opus"
+    # fixture now has sonnet + Sonnet (merged) across fizzy + discord sources
+    assert(inv[:models].any? { |m| m[:name].downcase == "sonnet" })
     assert_includes inv[:sources].map { |s| s[:name] }, "fizzy"
+    assert_includes inv[:sources].map { |s| s[:name] }, "discord"
   end
 
   def test_inventory_knowledge_counts_files_untracked
@@ -495,8 +543,8 @@ class TestForensics < Minitest::Test
   end
 
   def test_sessions_for_model_case_insensitive
-    inventory_sessions
-    assert_equal 1, analyzer.sessions_for("model", "SONNET").size
+    inventory_sessions # both sessions are sonnet/Sonnet, one fizzy + one discord
+    assert_equal 2, analyzer.sessions_for("model", "SONNET").size
     assert_equal 1, analyzer.sessions_for("source", "discord").size
   end
 
