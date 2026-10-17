@@ -1378,6 +1378,28 @@ so enabling/disabling a provider or moving its data store is pure JSON. kiro-cli
 mechanism needs a small probe implementation in `lib/brainiac/session_history.rb`; providers
 with no `heaviness_probe` simply record timing + identity. The file is trimmed to the most
 recent 500 records.
+
+#### Going-forward instrumentation (schema v2)
+
+Each record (`"schema": 2`) is enriched at completion time with everything brainiac
+already knows about the dispatch, plus a few cheap local measurements. **This adds zero
+token usage and no latency to the agent run** — it's computed in the completion watcher
+thread *after* the agent process has already exited, and only writes a slightly larger
+line to the JSONL on disk. Fields:
+
+| Field | Meaning |
+| ----- | ------- |
+| `trigger_type` | Why the agent was dispatched (`assigned`, `followup`, `pr-comment`, `changes-requested`, `cron-run`, `discord`, …), derived from the log name |
+| `effort` | Effort level resolved for the dispatch (`low`…`max`) |
+| `resumed` | Whether this continued a prior CLI session |
+| `branch` | Git branch, inferred from the worktree dir (`<repo>--<branch>`) |
+| `work_item_id` | Work item backing the worktree, if any |
+| `prompt_bytes` | Size of the rendered prompt (input weight proxy) |
+| `output_bytes` / `produced_output` | Size of the structured response, and whether the session produced one |
+| `git_commits` / `git_files_changed` / `git_head_moved` | Git impact since dispatch — two local `git` calls against the pre-dispatch HEAD |
+
+These make the analytics page's per-parameter drill-down (agents, models, triggers,
+effort) increasingly rich as sessions accumulate, without any runtime cost.
 ```
 
 ## Development

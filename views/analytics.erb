@@ -358,8 +358,14 @@
       const status = !s.has_history ? 'no-history' : (s.exit_status === 0 ? 'ok' : 'exit=' + s.exit_status);
       const when = s.finished_at || s.started_at || '';
       const drill = s.log_file ? '<span class="drill" data-log="' + esc(s.log_file) + '">log →</span>' : '';
+      const bits = [esc(when), esc(s.model || '')];
+      if (s.trigger_type) bits.push(esc(s.trigger_type));
+      if (s.effort) bits.push('effort:' + esc(s.effort));
+      bits.push('dur ' + (s.duration_seconds ?? '?') + 's');
+      if (s.git_commits != null && s.git_commits > 0) bits.push('⎇ ' + s.git_commits + 'c/' + (s.git_files_changed ?? 0) + 'f');
+      if (s.produced_output === false) bits.push('no-output');
       return '<div class="anomaly-row"><span class="kind">' + esc(s.card_key || status) + '</span>' +
-        '<span class="msg">' + esc(when) + ' · ' + esc(s.model || '') + ' · dur ' + (s.duration_seconds ?? '?') + 's</span>' + drill + '</div>';
+        '<span class="msg">' + bits.filter(Boolean).join(' · ') + '</span>' + drill + '</div>';
     }).join('');
     document.getElementById('paramDetail').innerHTML = head + rows;
     document.querySelectorAll('#paramDetail .drill').forEach(d =>

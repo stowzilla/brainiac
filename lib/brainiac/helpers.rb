@@ -956,7 +956,10 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
                    spawn_env: spawn_env, agent_name: agent_name)
 
   project_key_for_restart = PROJECTS.find { |_k, v| v == project_config }&.first
-  head_before, status_before = capture_git_state(chdir) if project_key_for_restart == "brainiac"
+  # Capture git state before dispatch for every run (two cheap local git calls, no
+  # tokens): the brainiac project uses it for self-restart detection, and all runs
+  # use it at completion to record git impact (commits made, files changed).
+  head_before, status_before = capture_git_state(chdir)
 
   started_at = Time.now
   stdin_redirect = (resolved["prompt_mode"] || "stdin") == "stdin" ? { in: prompt_file } : {}
@@ -971,7 +974,8 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
     output_file: output_file, resolved: resolved, minted_session_id: minted_session_id,
     head_before: head_before, status_before: status_before,
     project_key_for_restart: project_key_for_restart, model: model, started_at: started_at,
-    profile: effective_profile_name(profile)
+    profile: effective_profile_name(profile), effort: effort, resumed: should_resume,
+    work_item_id: work_item_id
   )
 
   LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \
