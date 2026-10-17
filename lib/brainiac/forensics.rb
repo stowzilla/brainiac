@@ -234,6 +234,14 @@ module Brainiac
         Inventory.new(correlate, paths: paths).sessions_for(dimension, value)
       end
 
+      # ROI / effectiveness: per-card one-shot vs rework outcomes correlated with
+      # memory volume, persona×task performance, and skill usage. Pulls memory counts
+      # and skill inventory from Inventory so the correlations have something to join on.
+      def effectiveness_report(paths: {})
+        inv = Inventory.new(correlate, paths: paths)
+        Effectiveness.new(correlate, memory_counts: inv.memory_counts, skills: inv.report[:skills]).report
+      end
+
       private
 
       def scope_since(sessions, since)
@@ -719,6 +727,11 @@ module Brainiac
         @sessions.select { |s| s[field.to_sym].to_s.downcase == key }
       end
 
+      # Public: downcased agent key => memory-file count (for ROI correlations).
+      def memory_counts
+        memory_file_counts
+      end
+
       private
 
       # agents: registry + anyone who shows up in a *finished* session (those carry
@@ -889,6 +902,269 @@ module Brainiac
       end
     end
 
+    # "Are our choices earning their keep?" — ROI analysis that correlates brainiac's
+    # inputs (memory, skills, personas) with session *outcomes*, not just activity.
+    #
+    # The core outcome unit is the CARD, not the session. Multiple sessions on one card
+    # tell a story: a single `assigned` session that produced output and nobody had to
+    # follow up on is a "one-shot"; a card that needed `followup` or `changes-requested`
+    # sessions is "rework". That's the signal behind "valuable performance".
+    #
+    #   one_shot  — resolved in a single productive pass (1 session, produced output,
+    #               no followup/changes-requested)
+    #   reworked  — needed follow-up or revision sessions
+    #   abandoned — sessions ran but none produced output
+    #
+    # HONESTY: brainiac records which agent/trigger ran each session, so agent×task and
+    # one-shot/rework are real. It does NOT yet log which *specific* skill/knowledge files
+    # were injected per session, so skill→rework and memory→one-shot are reported as
+    # correlations across agents (coarse), explicitly flagged attribution: "correlation".
+    # Needs schema-v2 data (trigger_type) to be meaningful; older cards fall back to
+    # session count.
+    class Effectiveness
+      def initialize(sessions, memory_counts: {}, skills: [])
+        @finished = sessions.select { |s| s[:has_history] }
+        @memory_counts = memory_counts # downcased agent => memory file count
+        @skills = skills               # inventory skills (name/usage)
+      end
+
+      def report
+        cards = card_outcomes
+        {
+          caveat: "Card outcomes are derived from trigger_type + produced_output (schema v2). " \
+                  "agent/task splits are authoritative; memory→one-shot and skill→rework are " \
+                  "correlations across agents, not per-session causal attribution.",
+          overall: outcome_rollup(cards),
+          by_agent: group_outcomes(cards) { |c| c[:agent] },
+          by_task: group_outcomes(cards) { |c| c[:task] },
+          by_persona_task: persona_task_matrix(cards),
+          memory_vs_oneshot: memory_correlation(cards),
+          skill_usage_vs_rework: skill_rework_signal(cards)
+        }
+      end
+
+      private
+
+      # Collapse sessions into one outcome per (card_key, agent). Cards without a
+      # card_key (ad-hoc/discord) are grouped by their log/session id so they still count.
+      def card_outcomes
+        grouped = @finished.group_by { |s| [s[:card_key] || s[:log_file], (s[:agent] || "unknown").to_s.downcase] }
+        grouped.map do |(_card, agent_key), sessions|
+          triggers = sessions.filter_map { |s| s[:trigger_type] }
+          # A card is classifiable only if at least one session carries schema-v2
+          # outcome signal (trigger_type or a non-nil produced_output). Pure v1 records
+          # don't tell us whether work landed in one pass, so they're :unknown — NOT
+          # counted as failures, just "not yet instrumented".
+          instrumented = sessions.any? { |s| s[:trigger_type] || !s[:produced_output].nil? }
+          produced = sessions.any? { |s| s[:produced_output] }
+          {
+            agent: display_agent(sessions),
+            agent_key: agent_key,
+            task: instrumented ? primary_task(triggers) : "unknown",
+            outcome: instrumented ? classify(triggers, produced, sessions.size) : :unknown,
+            sessions: sessions.size,
+            commits: sessions.sum { |s| s[:git_commits].to_i },
+            crashed: sessions.any? { |s| crashed?(s) }
+          }
+        end
+      end
+
+      def classify(triggers, produced, session_count)
+        return :abandoned unless produced
+
+        reworked = triggers.intersect?(%w[followup changes-requested pr-comment])
+        # Has trigger data but only an initiating one + multiple sessions → rework proxy.
+        reworked ||= triggers.empty? && session_count > 1
+        reworked ? :reworked : :one_shot
+      end
+
+      def primary_task(triggers)
+        # The task is what *started* the card — prefer an initiating trigger.
+        starter = triggers.find { |t| %w[assigned cron-run discord].include?(t) }
+        starter || triggers.first || "unknown"
+      end
+
+      def outcome_rollup(cards)
+        n = cards.size
+        return { cards: 0 } if n.zero?
+
+        one = cards.count { |c| c[:outcome] == :one_shot }
+        rew = cards.count { |c| c[:outcome] == :reworked }
+        ab = cards.count { |c| c[:outcome] == :abandoned }
+        unknown = cards.count { |c| c[:outcome] == :unknown }
+        # Rates are over *classified* (schema-v2-instrumented) cards only, so
+        # un-instrumented history doesn't drag one-shot/rework toward zero.
+        classified = n - unknown
+        {
+          cards: n, classified: classified, unknown: unknown,
+          one_shot: one, reworked: rew, abandoned: ab,
+          one_shot_rate: rate(one, classified), rework_rate: rate(rew, classified),
+          avg_sessions_per_card: (cards.sum { |c| c[:sessions] }.to_f / n).round(2),
+          avg_commits_per_card: (cards.sum { |c| c[:commits] }.to_f / n).round(2)
+        }
+      end
+
+      def rate(count, total)
+        return nil if total.to_i.zero?
+
+        (count.to_f / total).round(3)
+      end
+
+      def group_outcomes(cards, &)
+        groups = cards.group_by(&).map do |key, group|
+          { key: key, metrics: outcome_rollup(group) }
+        end
+        groups.sort_by { |g| -g[:metrics][:cards] }
+      end
+
+      # agent × task grid: does a persona do better on some task types than others?
+      def persona_task_matrix(cards)
+        cells = cards.group_by { |c| [c[:agent], c[:task]] }.map do |(agent, task), group|
+          { agent: agent, task: task, metrics: outcome_rollup(group) }
+        end
+        cells.sort_by { |cell| [-cell[:metrics][:cards], cell[:agent].to_s] }
+      end
+
+      # Correlate each agent's memory-file count with its one-shot rate. Correlation
+      # only — more memory *may* help, but we can't prove causation from this alone.
+      def memory_correlation(cards)
+        rows = group_outcomes(cards) { |c| c[:agent] }.filter_map do |g|
+          key = g[:key].to_s.downcase
+          mem = @memory_counts[key]
+          next unless mem && g[:metrics][:cards].to_i.positive?
+
+          { agent: g[:key], memory_files: mem, cards: g[:metrics][:cards],
+            one_shot_rate: g[:metrics][:one_shot_rate] }
+        end
+        { attribution: "correlation", note: "memory volume vs one-shot rate, per agent",
+          points: rows.sort_by { |r| -r[:memory_files] } }
+      end
+
+      # Overall rework rate alongside total skill usage — the honest, coarse version of
+      # "do skills reduce rework". Per-skill causal attribution needs injection logging.
+      def skill_rework_signal(cards)
+        total_uses = @skills.sum { |s| s.dig(:usage, :uses).to_i }
+        roll = outcome_rollup(cards)
+        {
+          attribution: "correlation",
+          note: "per-session skill injection isn't logged yet, so this is fleet-wide, not per-skill",
+          total_skill_uses: total_uses, skills_available: @skills.size,
+          rework_rate: roll[:rework_rate], one_shot_rate: roll[:one_shot_rate]
+        }
+      end
+
+      def display_agent(sessions)
+        sessions.filter_map { |s| s[:agent] }.map(&:to_s).reject(&:empty?)
+                .tally.max_by { |_v, n| n }&.first || "unknown"
+      end
+
+      def crashed?(session)
+        es = session[:exit_status]
+        !es.nil? && !es.zero?
+      end
+    end
+
+    # Reads a skill or persona's content from the brain dirs and annotates it with
+    # metrics-derived pros/cons. Path-guarded: resolved paths must stay under the
+    # configured base dir (no "../" traversal, no absolute-name escape).
+    class ContentReader
+      def initialize(skills_base:, persona_base:, agent_outcomes: [], now: Time.now)
+        @skills_base = skills_base
+        @persona_base = persona_base
+        @agent_outcomes = agent_outcomes
+        @now = now
+      end
+
+      def read(kind, name)
+        case kind
+        when "skill" then read_skill(name)
+        when "persona" then read_persona(name)
+        else { error: "unknown kind: #{kind}" }
+        end
+      end
+
+      private
+
+      def read_skill(name)
+        dir = resolve_dir(@skills_base, name)
+        return { error: "skill not found: #{name}" } unless dir
+
+        file = File.join(dir, "SKILL.md")
+        return { error: "SKILL.md not found for #{name}" } unless File.exist?(file)
+
+        usage = Forensics.read_skill_usage(file)
+        { kind: "skill", name: name, path: file, content: File.read(file),
+          annotations: skill_annotations(usage) }
+      rescue StandardError => e
+        { error: e.message }
+      end
+
+      def read_persona(name)
+        dir = resolve_dir(@persona_base, name)
+        return { error: "persona not found: #{name}" } unless dir
+
+        files = Dir.glob(File.join(dir, "**", "*.md"))
+        return { error: "no persona files for #{name}" } if files.empty?
+
+        content = files.map { |f| "# #{File.basename(f)}\n\n#{File.read(f)}" }.join("\n\n---\n\n")
+        metrics = @agent_outcomes.find { |g| g[:key].to_s.downcase == name.to_s.downcase }
+        { kind: "persona", name: name, path: dir, content: content,
+          annotations: persona_annotations(metrics) }
+      rescue StandardError => e
+        { error: e.message }
+      end
+
+      # Resolve by exact-or-case-insensitive name, guarded to stay inside `base`.
+      def resolve_dir(base, name)
+        return nil unless base && Dir.exist?(base)
+
+        safe = File.basename(name.to_s) # strip any path components
+        candidate = File.join(base, safe)
+        return candidate if File.directory?(candidate) && under?(base, candidate)
+
+        match = Dir.children(base).find { |c| c.downcase == safe.downcase }
+        match && File.directory?(File.join(base, match)) ? File.join(base, match) : nil
+      rescue SystemCallError
+        nil
+      end
+
+      def under?(base, path)
+        File.expand_path(path).start_with?(File.expand_path(base) + File::SEPARATOR)
+      end
+
+      def skill_annotations(usage)
+        pros = []
+        cons = []
+        uses = usage[:uses].to_i
+        (uses >= 3 ? pros : cons) << "#{uses} recorded use(s)"
+        if usage[:last_used]
+          days = ((@now - parse_time(usage[:last_used])) / 86_400).round
+          (days > 60 ? cons : pros) << "Last used #{days} day(s) ago"
+        else
+          cons << "Never recorded as used — may be stale or hard to match"
+        end
+        { pros: pros, cons: cons, attribution: "from SKILL.usage.json sidecar" }
+      end
+
+      def persona_annotations(group)
+        return { pros: [], cons: ["No session outcomes recorded yet."], attribution: "none" } unless group
+
+        m = group[:metrics]
+        pros = []
+        cons = []
+        pros << "One-shot rate #{(m[:one_shot_rate] * 100).round}% over #{m[:cards]} card(s)" if m[:one_shot_rate]
+        rate = m[:rework_rate]
+        (rate && rate >= 0.3 ? cons : pros) << "Rework rate #{((rate || 0) * 100).round}%" if rate
+        { pros: pros, cons: cons, attribution: "from per-card one-shot/rework outcomes" }
+      end
+
+      def parse_time(str)
+        Time.parse(str.to_s)
+      rescue ArgumentError
+        @now
+      end
+    end
+
     module_function
 
     # Convenience entry point: build an analyzer over the standard brainiac locations
@@ -897,32 +1173,46 @@ module Brainiac
     #
     # `extra_dirs` lets callers (CLI --dir, a specific worktree) add ad-hoc log dirs.
     def analyze(extra_dirs: [], history_file: nil, thresholds: {}, now: Time.now)
-      dirs = (default_log_dirs + Array(extra_dirs)).uniq
-      hist = history_file || default_history_file
-      Analyzer.new(log_dirs: dirs, history_file: hist, thresholds: thresholds, now: now).report
+      build_analyzer(extra_dirs, history_file, now, thresholds: thresholds).report
     end
 
     # Performance-tracking entry point: build the standard analyzer, then return its
     # performance report (trends + breakdowns + calibration recommendations).
     def performance(extra_dirs: [], history_file: nil, period: :day, since: nil, now: Time.now)
-      dirs = (default_log_dirs + Array(extra_dirs)).uniq
-      hist = history_file || default_history_file
-      Analyzer.new(log_dirs: dirs, history_file: hist, now: now)
-              .performance_report(period: period, since: since)
+      build_analyzer(extra_dirs, history_file, now).performance_report(period: period, since: since)
     end
 
     # Inventory of all brainiac parameters with per-item session usage.
     def inventory(extra_dirs: [], history_file: nil, now: Time.now)
-      dirs = (default_log_dirs + Array(extra_dirs)).uniq
-      hist = history_file || default_history_file
-      Analyzer.new(log_dirs: dirs, history_file: hist, now: now).inventory_report
+      build_analyzer(extra_dirs, history_file, now).inventory_report
     end
 
     # Sessions tied to a selected parameter value along a dimension.
     def sessions_for(dimension, value, extra_dirs: [], history_file: nil, now: Time.now)
+      build_analyzer(extra_dirs, history_file, now).sessions_for(dimension, value)
+    end
+
+    # ROI / effectiveness report: are our choices earning their keep?
+    def effectiveness(extra_dirs: [], history_file: nil, now: Time.now)
+      build_analyzer(extra_dirs, history_file, now).effectiveness_report
+    end
+
+    # Shared constructor for the standard-locations analyzer used by every entry point.
+    def build_analyzer(extra_dirs, history_file, now, thresholds: {})
       dirs = (default_log_dirs + Array(extra_dirs)).uniq
-      hist = history_file || default_history_file
-      Analyzer.new(log_dirs: dirs, history_file: hist, now: now).sessions_for(dimension, value)
+      Analyzer.new(log_dirs: dirs, history_file: history_file || default_history_file,
+                   thresholds: thresholds, now: now)
+    end
+
+    # Read a skill or persona's content for the web UI, annotated with metrics-derived
+    # pros/cons. kind ∈ "skill" | "persona". Path-guarded to the brain dirs. Delegates
+    # to ContentReader (kept as its own class so this module stays cohesive/small).
+    def read_content(kind, name, now: Time.now)
+      skills_base = defined?(KNOWLEDGE_DIR) ? File.join(KNOWLEDGE_DIR, "skills") : nil
+      persona_base = defined?(PERSONA_BASE_DIR) ? PERSONA_BASE_DIR : nil
+      agent_outcomes = (kind == "persona" ? effectiveness[:by_agent] : [])
+      ContentReader.new(skills_base: skills_base, persona_base: persona_base,
+                        agent_outcomes: agent_outcomes, now: now).read(kind, name)
     end
 
     # tmp/ of every registered repo, every existing worktree sibling of those repos,

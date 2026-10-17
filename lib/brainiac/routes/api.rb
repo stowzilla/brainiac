@@ -371,6 +371,33 @@ get "/api/forensics/sessions" do
   end
 end
 
+# ROI / effectiveness — per-card one-shot vs rework outcomes, persona×task performance,
+# memory→one-shot and skill-usage→rework correlations. "Are our choices earning their keep?"
+get "/api/forensics/effectiveness" do
+  content_type :json
+  forensics_guard("effectiveness") do
+    reload_projects!
+    Brainiac::Forensics.effectiveness.to_json
+  end
+end
+
+# Read a skill/persona's content for the web UI, annotated with metrics-derived
+# pros/cons. ?kind=skill|persona&name=…  Path-guarded to the brain dirs.
+get "/api/forensics/content" do
+  content_type :json
+  forensics_guard("content") do
+    reload_projects!
+    kind = params["kind"].to_s
+    name = params["name"].to_s
+    halt 400, { error: "missing kind or name" }.to_json if kind.empty? || name.empty?
+    halt 400, { error: "kind must be skill or persona" }.to_json unless %w[skill persona].include?(kind)
+
+    result = Brainiac::Forensics.read_content(kind, name)
+    halt 404, result.to_json if result[:error]
+    result.to_json
+  end
+end
+
 # Run a forensics route body, converting any unexpected error into a JSON 500
 # (never an HTML error page) so the analytics UI can surface it cleanly. Sinatra's
 # `halt` uses throw, not raise, so 4xx halts still propagate untouched.

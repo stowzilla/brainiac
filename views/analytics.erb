@@ -64,6 +64,19 @@
   .param-detail { border: 1px solid var(--border); border-radius: 6px; padding: 14px; max-height: 420px; overflow-y: auto; }
   .param-detail h3 { font-size: 14px; margin-bottom: 10px; }
   .param-detail .note { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  /* effectiveness / ROI */
+  .roi-caveat { font-size: 12px; color: var(--yellow); background: rgba(210,153,34,0.08); border: 1px solid rgba(210,153,34,0.25); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
+  .roi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .roi-kpi { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .roi-kpi .label { font-size: 11px; color: var(--dim); text-transform: uppercase; }
+  .roi-kpi .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .read-btn { float: right; background: var(--border); border: none; color: var(--text); font-size: 10px; padding: 1px 7px; border-radius: 8px; cursor: pointer; }
+  .read-btn:hover { background: var(--blue); color: #fff; }
+  .annot { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .annot h4 { font-size: 12px; margin-bottom: 6px; }
+  .annot ul { list-style: none; font-size: 12px; }
+  .annot .pro { color: var(--green); } .annot .con { color: var(--red); }
+  .content-md { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'SF Mono', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow-y: auto; }
   /* log drill-down modal */
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 50; }
   .modal.open { display: flex; }
@@ -119,6 +132,9 @@
       <div id="trendChart" class="loading">Loading trend…</div>
     </div>
 
+    <div class="section-title">Effectiveness / ROI <span class="meta">— are our choices earning their keep?</span></div>
+    <div class="panel" id="effectiveness"><div class="loading">Loading…</div></div>
+
     <div class="section-title">Calibration recommendations</div>
     <div id="recs"><div class="loading">Loading…</div></div>
 
@@ -168,6 +184,7 @@
       renderBreakdown('byModel', perf.by_model || []);
       renderAnomalies(fx.anomalies || []);
       loadInventory();
+      loadEffectiveness();
       document.getElementById('meta').textContent =
         'Generated ' + (perf.generated_at || '') + ' · ' + (perf.overall ? perf.overall.sessions : 0) + ' sessions';
     } catch (e) {
@@ -298,6 +315,8 @@
     const items = INVENTORY[activeCategory] || [];
     const dim = DRILL_DIMENSION[activeCategory];
     if (!items.length) { document.getElementById('paramList').innerHTML = '<div class="empty">None</div>'; return; }
+    const CONTENT_KIND = { skills: 'skill', personas: 'persona' };
+    const readKind = CONTENT_KIND[activeCategory];
     document.getElementById('paramList').innerHTML = items.map((it, i) => {
       const u = it.usage || {};
       let pill = 'inventory';
@@ -308,12 +327,18 @@
       else if (u.files != null) pill = u.files + ' files';
       const cls = dim ? '' : ' unselectable';
       const desc = it.description ? '<div class="desc">' + esc(it.description) + '</div>' : '';
+      const read = readKind ? '<button class="read-btn" data-read="' + esc(it.name) + '">read</button>' : '';
       return '<div class="param-item' + cls + '" data-i="' + i + '">' +
-        '<div class="name"><span>' + esc(it.name) + '</span><span class="pill">' + esc(pill) + '</span></div>' + desc + '</div>';
+        '<div class="name"><span>' + esc(it.name) + '</span>' + read + '<span class="pill">' + esc(pill) + '</span></div>' + desc + '</div>';
     }).join('');
     document.querySelectorAll('#paramList .param-item').forEach(el => {
       el.addEventListener('click', () => selectParam(items[+el.getAttribute('data-i')], el));
     });
+    if (readKind) {
+      document.querySelectorAll('#paramList .read-btn').forEach(btn => {
+        btn.addEventListener('click', (ev) => { ev.stopPropagation(); openContent(readKind, btn.getAttribute('data-read')); });
+      });
+    }
   }
 
   async function selectParam(item, el) {
@@ -370,6 +395,78 @@
     document.getElementById('paramDetail').innerHTML = head + rows;
     document.querySelectorAll('#paramDetail .drill').forEach(d =>
       d.addEventListener('click', () => openLog(d.getAttribute('data-log'))));
+  }
+
+  // Effectiveness / ROI
+  async function loadEffectiveness() {
+    try {
+      const e = await fetch(apiUrl('/api/forensics/effectiveness')).then(r => r.json());
+      renderEffectiveness(e);
+    } catch (err) {
+      document.getElementById('effectiveness').innerHTML = '<div class="empty">Error: ' + esc(err) + '</div>';
+    }
+  }
+
+  function renderEffectiveness(e) {
+    const o = e.overall || {};
+    if (!o.cards) { document.getElementById('effectiveness').innerHTML = '<div class="empty">No card outcomes yet.</div>'; return; }
+    const kpi = (label, val) => '<div class="roi-kpi"><div class="label">' + label + '</div><div class="value">' + val + '</div></div>';
+    const grid = '<div class="roi-grid">' +
+      kpi('Cards', o.cards) +
+      kpi('Classified', (o.classified ?? 0) + '<span class="label" style="font-size:10px"> / ' + o.cards + '</span>') +
+      kpi('One-shot', fmtPct(o.one_shot_rate)) +
+      kpi('Rework', fmtPct(o.rework_rate)) +
+      kpi('Sessions/card', o.avg_sessions_per_card ?? '–') +
+      kpi('Commits/card', o.avg_commits_per_card ?? '–') + '</div>';
+    const notYet = (o.classified ?? 0) === 0
+      ? '<div class="note">None of the ' + o.cards + ' recorded cards carry schema-v2 outcome signal yet, so one-shot/rework can\'t be measured — these rates populate as newly-instrumented sessions accumulate.</div>'
+      : '';
+
+    const personaTask = (e.by_persona_task || []).slice(0, 12).map(c => {
+      const m = c.metrics;
+      return '<tr><td>' + esc(c.agent) + '</td><td>' + esc(c.task) + '</td><td>' + m.cards +
+        '</td><td class="rate ' + rateClass(1 - (m.one_shot_rate||0), 0.5, 0.7) + '">' + fmtPct(m.one_shot_rate) +
+        '</td><td>' + fmtPct(m.rework_rate) + '</td></tr>';
+    }).join('');
+    const ptTable = '<div class="section-title" style="margin-top:4px">Persona × task</div>' +
+      '<table><thead><tr><th>Agent</th><th>Task</th><th>Cards</th><th>One-shot</th><th>Rework</th></tr></thead><tbody>' +
+      (personaTask || '<tr><td class="empty">—</td></tr>') + '</tbody></table>';
+
+    const mem = e.memory_vs_oneshot || {};
+    const memRows = (mem.points || []).map(p =>
+      '<tr><td>' + esc(p.agent) + '</td><td>' + p.memory_files + '</td><td>' + p.cards + '</td><td>' + fmtPct(p.one_shot_rate) + '</td></tr>').join('');
+    const memTable = '<div class="section-title" style="margin-top:12px">Memory vs one-shot <span class="meta">(' + esc(mem.attribution || '') + ')</span></div>' +
+      '<table><thead><tr><th>Agent</th><th>Memory files</th><th>Cards</th><th>One-shot</th></tr></thead><tbody>' +
+      (memRows || '<tr><td class="empty">—</td></tr>') + '</tbody></table>';
+
+    const sk = e.skill_usage_vs_rework || {};
+    const skNote = '<div class="section-title" style="margin-top:12px">Skills vs rework <span class="meta">(' + esc(sk.attribution || '') + ')</span></div>' +
+      '<div class="note">' + esc(sk.note || '') + ' — ' + (sk.total_skill_uses ?? 0) + ' skill uses across ' +
+      (sk.skills_available ?? 0) + ' skills; fleet rework ' + fmtPct(sk.rework_rate) + '</div>';
+
+    const caveat = e.caveat ? '<div class="roi-caveat">⚠ ' + esc(e.caveat) + '</div>' : '';
+    document.getElementById('effectiveness').innerHTML = caveat + grid + notYet + ptTable + memTable + skNote;
+  }
+
+  // Read a skill/persona's content + metric annotations in the modal.
+  async function openContent(kind, name) {
+    const modal = document.getElementById('modal');
+    document.getElementById('modalTitle').textContent = kind + ': ' + name;
+    document.getElementById('modalBody').innerHTML = '<div class="loading">Loading…</div>';
+    modal.classList.add('open');
+    try {
+      const r = await fetch(apiUrl('/api/forensics/content?kind=' + encodeURIComponent(kind) + '&name=' + encodeURIComponent(name)));
+      const d = await r.json();
+      if (d.error) { document.getElementById('modalBody').innerHTML = '<div class="empty">' + esc(d.error) + '</div>'; return; }
+      const a = d.annotations || { pros: [], cons: [] };
+      const list = (items, cls) => '<ul>' + (items.length ? items.map(i => '<li class="' + cls + '">' + (cls === 'pro' ? '✓ ' : '✗ ') + esc(i) + '</li>').join('') : '<li class="meta">—</li>') + '</ul>';
+      const annot = '<div class="annot"><div><h4>Pros</h4>' + list(a.pros || [], 'pro') + '</div>' +
+        '<div><h4>Cons</h4>' + list(a.cons || [], 'con') + '</div></div>' +
+        '<div class="note">Annotations ' + esc(a.attribution || '') + '</div>';
+      document.getElementById('modalBody').innerHTML = annot + '<div class="content-md">' + esc(d.content || '') + '</div>';
+    } catch (e) {
+      document.getElementById('modalBody').innerHTML = '<div class="empty">Error: ' + esc(e) + '</div>';
+    }
   }
 
   async function openLog(file) {

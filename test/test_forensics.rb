@@ -557,4 +557,159 @@ class TestForensics < Minitest::Test
     inventory_sessions
     assert_empty analyzer.sessions_for("bogus", "x")
   end
+
+  # --- effectiveness / ROI -------------------------------------------------
+
+  # A finished session with the fields the Effectiveness analyzer reads.
+  def esession(card:, agent:, trigger:, produced: true, exit_status: 0, commits: 0)
+    {
+      card_key: card, agent: agent, trigger_type: trigger, produced_output: produced,
+      exit_status: exit_status, git_commits: commits, source: "fizzy", has_history: true
+    }
+  end
+
+  def effectiveness(sessions, memory: {}, skills: [])
+    Brainiac::Forensics::Effectiveness.new(sessions, memory_counts: memory, skills: skills).report
+  end
+
+  def test_one_shot_card_classified
+    # one assigned session, produced output, no followup → one_shot
+    r = effectiveness([esession(card: "fizzy-1", agent: "Kaylee", trigger: "assigned", commits: 2)])
+    assert_equal 1, r[:overall][:cards]
+    assert_equal 1, r[:overall][:one_shot]
+    assert_equal 0, r[:overall][:reworked]
+    assert_in_delta 1.0, r[:overall][:one_shot_rate], 0.001
+  end
+
+  def test_reworked_card_classified
+    # assigned + followup on same card → reworked
+    sessions = [
+      esession(card: "fizzy-2", agent: "Kaylee", trigger: "assigned"),
+      esession(card: "fizzy-2", agent: "Kaylee", trigger: "followup")
+    ]
+    r = effectiveness(sessions)
+    assert_equal 1, r[:overall][:cards]
+    assert_equal 1, r[:overall][:reworked]
+    assert_in_delta 1.0, r[:overall][:rework_rate], 0.001
+    assert_in_delta 2.0, r[:overall][:avg_sessions_per_card], 0.001
+  end
+
+  def test_changes_requested_is_rework
+    sessions = [
+      esession(card: "fizzy-3", agent: "Kaylee", trigger: "assigned"),
+      esession(card: "fizzy-3", agent: "Kaylee", trigger: "changes-requested")
+    ]
+    assert_equal 1, effectiveness(sessions)[:overall][:reworked]
+  end
+
+  def test_abandoned_card_when_no_output
+    r = effectiveness([esession(card: "fizzy-4", agent: "Kaylee", trigger: "assigned", produced: false)])
+    assert_equal 1, r[:overall][:abandoned]
+    assert_equal 0, r[:overall][:one_shot]
+  end
+
+  def test_by_agent_and_persona_task_matrix
+    sessions = [
+      esession(card: "c1", agent: "Kaylee", trigger: "assigned"),
+      esession(card: "c2", agent: "Kaylee", trigger: "assigned"),
+      esession(card: "c3", agent: "Galen", trigger: "assigned"),
+      esession(card: "c3", agent: "Galen", trigger: "followup")
+    ]
+    r = effectiveness(sessions)
+    kaylee = r[:by_agent].find { |g| g[:key] == "Kaylee" }
+    galen = r[:by_agent].find { |g| g[:key] == "Galen" }
+    assert_in_delta 1.0, kaylee[:metrics][:one_shot_rate], 0.001
+    assert_in_delta 1.0, galen[:metrics][:rework_rate], 0.001
+    # persona×task grid has a cell per (agent, task)
+    assert(r[:by_persona_task].any? { |cell| cell[:agent] == "Kaylee" && cell[:task] == "assigned" })
+  end
+
+  def test_memory_correlation_joins_memory_counts
+    sessions = [esession(card: "c1", agent: "Kaylee", trigger: "assigned")]
+    r = effectiveness(sessions, memory: { "kaylee" => 1224 })
+    point = r[:memory_vs_oneshot][:points].find { |p| p[:agent] == "Kaylee" }
+    refute_nil point
+    assert_equal 1224, point[:memory_files]
+    assert_equal "correlation", r[:memory_vs_oneshot][:attribution]
+  end
+
+  def test_skill_rework_signal_is_honest_about_attribution
+    sessions = [esession(card: "c1", agent: "Kaylee", trigger: "assigned")]
+    skills = [{ name: "deploy", usage: { uses: 5 } }, { name: "test", usage: { uses: 2 } }]
+    r = effectiveness(sessions, skills: skills)
+    assert_equal "correlation", r[:skill_usage_vs_rework][:attribution]
+    assert_equal 7, r[:skill_usage_vs_rework][:total_skill_uses]
+    assert_equal 2, r[:skill_usage_vs_rework][:skills_available]
+  end
+
+  def test_no_trigger_but_multiple_sessions_is_rework_proxy
+    # produced output (so instrumented) but no trigger data + 2 sessions → rework proxy
+    sessions = [
+      esession(card: "c1", agent: "K", trigger: nil),
+      esession(card: "c1", agent: "K", trigger: nil)
+    ]
+    assert_equal 1, effectiveness(sessions)[:overall][:reworked]
+  end
+
+  def test_pure_v1_records_are_unknown_not_abandoned
+    # no trigger AND no produced_output signal (schema v1) → unknown, excluded from rates
+    v1 = [{ card_key: "c1", agent: "K", trigger_type: nil, produced_output: nil,
+            exit_status: 0, git_commits: 0, source: "fizzy", has_history: true }]
+    r = effectiveness(v1)
+    assert_equal 1, r[:overall][:unknown]
+    assert_equal 0, r[:overall][:abandoned]
+    assert_equal 0, r[:overall][:classified]
+    assert_nil r[:overall][:one_shot_rate] # no classified cards → nil, not a misleading 0%
+  end
+
+  def test_effectiveness_report_end_to_end
+    p1 = write_log(name: "s1", timestamp: "20261015-100000")
+    write_history([{ "agent" => "Kaylee", "source" => "fizzy", "log_file" => p1, "card_key" => "fizzy-9",
+                     "trigger_type" => "assigned", "produced_output" => true, "exit_status" => 0,
+                     "finished_at" => "2026-10-15T10:01:00Z" }])
+    r = analyzer.effectiveness_report(paths: build_inventory_fixtures)
+    assert_operator r[:overall][:cards], :>=, 1
+    assert r.key?(:caveat)
+  end
+
+  # --- content reading (skill/persona with annotations) --------------------
+
+  def test_read_content_skill_with_annotations
+    reader = Brainiac::Forensics::ContentReader.new(
+      skills_base: File.join(@dir, "skills"), persona_base: nil, now: @now
+    )
+    build_inventory_fixtures # creates skills/deploy-thing/SKILL.md + usage (3 uses)
+    r = reader.read("skill", "deploy-thing")
+    assert_equal "skill", r[:kind]
+    assert_includes r[:content], "Deploy the thing"
+    assert(r[:annotations][:pros].any? { |p| p.include?("use") })
+  end
+
+  def test_read_content_path_traversal_guarded
+    reader = Brainiac::Forensics::ContentReader.new(
+      skills_base: File.join(@dir, "skills"), persona_base: nil, now: @now
+    )
+    build_inventory_fixtures
+    r = reader.read("skill", "../../etc/passwd")
+    assert r[:error], "path traversal must be refused"
+  end
+
+  def test_read_content_persona_with_outcome_annotations
+    build_inventory_fixtures
+    FileUtils.mkdir_p(File.join(@dir, "persona", "kaylee"))
+    File.write(File.join(@dir, "persona", "kaylee", "style.md"), "Gruff and practical.")
+    outcomes = [{ key: "Kaylee", metrics: { one_shot_rate: 0.8, rework_rate: 0.1, cards: 10 } }]
+    reader = Brainiac::Forensics::ContentReader.new(
+      skills_base: nil, persona_base: File.join(@dir, "persona"), agent_outcomes: outcomes, now: @now
+    )
+    r = reader.read("persona", "kaylee")
+    assert_equal "persona", r[:kind]
+    assert_includes r[:content], "Gruff"
+    assert(r[:annotations][:pros].any? { |p| p.include?("One-shot") })
+  end
+
+  def test_read_content_unknown_kind
+    reader = Brainiac::Forensics::ContentReader.new(skills_base: nil, persona_base: nil)
+    assert reader.read("bogus", "x")[:error]
+  end
 end
