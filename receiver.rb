@@ -156,6 +156,10 @@ before "/dashboard" do
   authenticate_dashboard!
 end
 
+before "/analytics" do
+  authenticate_dashboard!
+end
+
 before "/api/*" do
   # Skip auth for all localhost requests (CLI, waybar, daemon, etc.)
   pass if localhost_request?
@@ -183,6 +187,13 @@ end
 get "/dashboard" do
   content_type :html
   erb :dashboard, layout: false
+end
+
+# Analytics — forensics/performance visualizations + log drill-down. Backed by
+# /api/forensics and /api/forensics/performance; same dashboard_token auth.
+get "/analytics" do
+  content_type :html
+  erb :analytics, layout: false
 end
 
 start_brainiac_restart_monitor
