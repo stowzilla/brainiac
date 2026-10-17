@@ -1509,6 +1509,84 @@ when "status"
 when "path"
   puts BRAINIAC_DIR
 
+when "forensics", "forensic", "fx"
+  require_relative "../lib/brainiac/forensics"
+
+  fx_opts = { dirs: [], json: false, limit: 20, anomalies_only: false }
+  OptionParser.new do |o|
+    o.banner = "Usage: brainiac forensics [options]"
+    o.on("--dir DIR", "Additional log directory to scan (repeatable)") { |d| fx_opts[:dirs] << d }
+    o.on("--history FILE", "Path to session-history.jsonl") { |f| fx_opts[:history] = f }
+    o.on("--json", "Emit the full report as JSON") { fx_opts[:json] = true }
+    o.on("--anomalies", "Only show anomalies") { fx_opts[:anomalies_only] = true }
+    o.on("--limit N", Integer, "Max sessions to list (default 20)") { |n| fx_opts[:limit] = n }
+  end.parse!(ARGV)
+
+  # The CLI doesn't load the full server stack, so hand Forensics the log dirs and
+  # history file explicitly (computed from this process's own config + projects).
+  projects = load_projects
+  project_dirs = projects.values.filter_map do |p|
+    repo = p["repo_path"]
+    next unless repo && !repo.empty?
+
+    [File.join(repo, "tmp"), *Dir.glob(File.join(File.dirname(repo), "#{File.basename(repo)}--*", "tmp"))]
+  end.flatten
+  project_dirs << File.join(BRAINIAC_DIR, "tmp")
+  # Include the current worktree's tmp/ so `brainiac forensics` works from inside a worktree.
+  project_dirs << File.join(Dir.pwd, "tmp")
+
+  history_file = fx_opts[:history] || File.join(BRAINIAC_DIR, "session-history.jsonl")
+  report = Brainiac::Forensics::Analyzer.new(
+    log_dirs: (project_dirs + fx_opts[:dirs]).uniq.select { |d| Dir.exist?(d) },
+    history_file: history_file
+  ).report
+
+  if fx_opts[:json]
+    puts JSON.pretty_generate(report)
+  else
+    s = report[:summary]
+    puts "🔎 Brainiac Forensics  (#{report[:generated_at]})"
+    puts ""
+    puts "  Logs scanned:          #{s[:total_logs]}"
+    puts "  History records:       #{s[:total_history_records]}"
+    puts "  Correlated sessions:   #{s[:correlated_sessions]}"
+    puts "  Orphan logs:           #{s[:orphan_logs]}"
+    puts "  Crashes:               #{s[:crashes]}"
+    puts "  Anomalies:             #{s[:anomaly_count]} #{s[:anomalies_by_severity].map { |k, v| "#{k}:#{v}" }.join(" ")}"
+    puts ""
+
+    if report[:anomalies].any?
+      puts "Anomalies:"
+      sev_order = { high: 0, medium: 1, low: 2 }
+      sev_icon = { high: "🔴", medium: "🟡", low: "⚪" }
+      report[:anomalies].sort_by { |a| sev_order.fetch(a[:severity], 9) }.each do |a|
+        icon = sev_icon.fetch(a[:severity], "•")
+        where = a[:card_key] ? " [#{a[:card_key]}]" : ""
+        puts "  #{icon} #{a[:kind]}#{where} #{a[:agent]}: #{a[:message]}"
+      end
+    else
+      puts "No anomalies detected. ✨"
+    end
+    puts ""
+
+    unless fx_opts[:anomalies_only]
+      puts "Recent sessions:"
+      report[:sessions].first(fx_opts[:limit]).each do |sess|
+        status = if !sess[:has_history]
+                   "no-history"
+                 elsif sess[:exit_status]&.zero?
+                   "ok"
+                 else
+                   "exit=#{sess[:exit_status]}"
+                 end
+        dur = sess[:duration_seconds] ? "#{sess[:duration_seconds]}s" : "?"
+        ctx = sess[:context_usage_pct] ? " ctx=#{sess[:context_usage_pct]}%" : ""
+        card = sess[:card_key] ? " #{sess[:card_key]}" : ""
+        puts "  #{(sess[:agent] || "?").to_s.ljust(14)} #{status.ljust(11)} #{dur.ljust(7)}#{ctx}#{card}"
+      end
+    end
+  end
+
 when "work-items", "card-map"
   work_items_file = File.join(BRAINIAC_DIR, "work_items.json")
   cm_cmd = ARGV.shift
@@ -3998,6 +4076,7 @@ when "help", "--help", "-h", nil
         brainiac stop                   Stop the running server
         brainiac restart                Restart the server
         brainiac logs                   Tail the server log
+        brainiac forensics [options]    Analyze agent logs + session history for anomalies
         brainiac status                 Check if server is running
         brainiac register [options]     Register current directory as a project
         brainiac unregister <key>       Unregister a project

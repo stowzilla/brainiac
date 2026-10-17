@@ -317,6 +317,29 @@ get "/api/logs" do
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
 end
 
+# --- Forensics ---
+#
+# Correlate raw agent session logs with the durable session-history JSONL and surface
+# anomalies (crashes, orphaned/stale logs, heavy context usage, slow runs, error
+# signatures). Read-only; scans the same trusted dirs as /api/logs.
+get "/api/forensics" do
+  content_type :json
+  reload_projects!
+  report = Brainiac::Forensics.analyze
+  report = forensics_response(report, params)
+  report.to_json
+end
+
+# Shape the forensics report for the API: optionally trim to anomalies-only and
+# clamp the session list to a sane limit.
+def forensics_response(report, params)
+  limit = (params["limit"] || 50).to_i.clamp(1, 500)
+  trimmed = report.dup
+  trimmed[:sessions] = report[:sessions].first(limit)
+  trimmed.delete(:sessions) if params["anomalies_only"] == "true"
+  trimmed
+end
+
 # --- Cron ---
 
 get "/api/cron/script" do
