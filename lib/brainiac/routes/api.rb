@@ -18,12 +18,16 @@ def reap_dead_sessions
 end
 
 def format_active_sessions
+  warn_seconds = Brainiac::Stall.config[:warn_seconds]
   ACTIVE_SESSIONS.map do |card_key, info|
     agent_name = resolve_session_agent_name(card_key, info)
+    idle = Brainiac::Stall.idle_seconds(info[:log_file])
     {
       card_key: card_key, agent: agent_name, pid: info[:pid],
       started_at: info[:started_at].iso8601,
       elapsed_seconds: (Time.now - info[:started_at]).to_i,
+      idle_seconds: idle,
+      stalled: !idle.nil? && idle >= warn_seconds,
       log_file: info[:log_file], alive: true,
       channel_id: info[:channel_id],
       children: child_processes_for(info[:pid])
@@ -315,6 +319,108 @@ get "/api/logs" do
 
   all_lines = File.readlines(log_file).last(lines)
   all_lines.join.gsub(/\e\[[\d;]*[a-zA-Z]/, "").gsub(/\e\[\?[\d;]*[a-zA-Z]/, "")
+end
+
+# --- Forensics ---
+#
+# Correlate raw agent session logs with the durable session-history JSONL and surface
+# anomalies (crashes, orphaned/stale logs, heavy context usage, slow runs, error
+# signatures). Read-only; scans the same trusted dirs as /api/logs.
+get "/api/forensics" do
+  content_type :json
+  forensics_guard("forensics") do
+    reload_projects!
+    forensics_response(Brainiac::Forensics.analyze, params).to_json
+  end
+end
+
+# Performance over time — trends, per-agent/model/source breakdowns, and
+# calibration recommendations (which persona/skill/knowledge to tune). Params:
+#   ?period=day|week|month  ?since=ISO8601
+get "/api/forensics/performance" do
+  content_type :json
+  forensics_guard("performance") do
+    reload_projects!
+    period = %w[day week month].include?(params["period"]) ? params["period"].to_sym : :day
+    since = begin
+      params["since"] && Time.parse(params["since"])
+    rescue ArgumentError
+      halt 400, { error: "invalid since date" }.to_json
+    end
+    Brainiac::Forensics.performance(period: period, since: since).to_json
+  end
+end
+
+# Inventory of all brainiac parameters (agents/personas/skills/knowledge/models/
+# sources/profiles/roles) with per-item session usage.
+get "/api/forensics/inventory" do
+  content_type :json
+  forensics_guard("inventory") do
+    reload_projects!
+    Brainiac::Forensics.inventory.to_json
+  end
+end
+
+# Sessions tied to a selected parameter value. ?dimension=agent|model|source|persona&value=…
+get "/api/forensics/sessions" do
+  content_type :json
+  forensics_guard("sessions") do
+    reload_projects!
+    dimension = params["dimension"].to_s
+    value = params["value"].to_s
+    halt 400, { error: "missing dimension or value" }.to_json if dimension.empty? || value.empty?
+
+    sessions = Brainiac::Forensics.sessions_for(dimension, value)
+    { dimension: dimension, value: value, count: sessions.size, sessions: sessions.first(200) }.to_json
+  end
+end
+
+# ROI / effectiveness — per-card one-shot vs rework outcomes, persona×task performance,
+# memory→one-shot and skill-usage→rework correlations. "Are our choices earning their keep?"
+get "/api/forensics/effectiveness" do
+  content_type :json
+  forensics_guard("effectiveness") do
+    reload_projects!
+    Brainiac::Forensics.effectiveness.to_json
+  end
+end
+
+# Read a skill/persona's content for the web UI, annotated with metrics-derived
+# pros/cons. ?kind=skill|persona&name=…  Path-guarded to the brain dirs.
+get "/api/forensics/content" do
+  content_type :json
+  forensics_guard("content") do
+    reload_projects!
+    kind = params["kind"].to_s
+    name = params["name"].to_s
+    halt 400, { error: "missing kind or name" }.to_json if kind.empty? || name.empty?
+    halt 400, { error: "kind must be skill or persona" }.to_json unless %w[skill persona].include?(kind)
+
+    result = Brainiac::Forensics.read_content(kind, name)
+    halt 404, result.to_json if result[:error]
+    result.to_json
+  end
+end
+
+# Run a forensics route body, converting any unexpected error into a JSON 500
+# (never an HTML error page) so the analytics UI can surface it cleanly. Sinatra's
+# `halt` uses throw, not raise, so 4xx halts still propagate untouched.
+def forensics_guard(label)
+  yield
+rescue StandardError => e
+  Brainiac.logger(:Forensics).exception(e, label: "/#{label}", level: :warn)
+  status 500
+  { error: "#{e.class}: #{e.message}", endpoint: label }.to_json
+end
+
+# Shape the forensics report for the API: optionally trim to anomalies-only and
+# clamp the session list to a sane limit.
+def forensics_response(report, params)
+  limit = (params["limit"] || 50).to_i.clamp(1, 500)
+  trimmed = report.dup
+  trimmed[:sessions] = report[:sessions].first(limit)
+  trimmed.delete(:sessions) if params["anomalies_only"] == "true"
+  trimmed
 end
 
 # --- Cron ---

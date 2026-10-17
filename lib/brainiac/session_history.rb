@@ -71,35 +71,113 @@ end
 # Build the durable history record for a finished session and append it.
 # Called from handle_agent_completion. Gathers timing, identity, and — via the
 # provider-specific heaviness probe — context/credit usage. Never raises.
+# Schema version for the durable session-history record. Bump when the record shape
+# changes so analytics can adapt to older lines. v2 added going-forward instrumentation
+# (trigger_type, effort, resumed, branch, work_item_id, prompt/output bytes, git impact).
+SESSION_HISTORY_SCHEMA = 2
+
 def archive_session_history(ctx:, exit_status:, signaled:)
-  started_at = ctx[:started_at]
-  finished_at = Time.now
   heaviness = session_heaviness(resolved: ctx[:resolved], chdir: ctx[:chdir])
+  git_impact = session_git_impact(chdir: ctx[:chdir], head_before: ctx[:head_before])
+  record = build_session_record(ctx: ctx, exit_status: exit_status, signaled: signaled,
+                                finished_at: Time.now, heaviness: heaviness, git_impact: git_impact)
+  record_session_history(record)
+end
+
+# Build the durable history record from completion context. Pure (no process spawn,
+# no disk writes beyond what callers pass in) so it's unit-testable. Every field here
+# is derived from data brainiac already has in-hand at completion time or from cheap
+# local byte/line counts — no LLM calls, no added latency in the agent's critical path
+# (this runs in the completion watcher thread after the agent process has already exited).
+def build_session_record(ctx:, exit_status:, signaled:, finished_at:, heaviness: nil, git_impact: nil)
+  started_at = ctx[:started_at]
   source_context = ctx[:source_context] || {}
-  card_key = ctx[:card_key] || source_context[:card_key]
-  channel_id = ctx[:channel_id] || source_context[:channel_id]
+  prompt_bytes = safe_file_bytes(ctx[:prompt_file])
+  output_bytes = safe_file_bytes(ctx[:output_file])
 
   record = {
     "recorded_at" => finished_at.utc.iso8601,
+    "schema" => SESSION_HISTORY_SCHEMA,
     "agent" => ctx[:agent_name] || ctx[:agent_config_name] || "Unknown",
-    "card_key" => card_key,
+    "trace_id" => ctx[:trace_id],
+    "card_key" => ctx[:card_key] || source_context[:card_key],
     "card_number" => ctx[:card_number] || source_context[:card_number],
     "source" => ctx[:source]&.to_s,
-    "channel_id" => channel_id,
+    "channel_id" => ctx[:channel_id] || source_context[:channel_id],
+    # trigger_type: the "why dispatched" — derived from the log name brainiac already
+    # assigns (assigned / followup / pr-comment / changes-requested / cron-run / …).
+    "trigger_type" => trigger_type_from_log_name(ctx[:log_name]),
     "log_file" => ctx[:log_file],
     "cli" => ctx[:agent_cli],
     "model" => ctx[:model],
+    "effort" => ctx[:effort],
     "profile" => ctx[:profile],
+    "resumed" => ctx[:resumed] ? true : nil,
+    "branch" => branch_from_chdir(ctx[:chdir]),
+    "work_item_id" => ctx[:work_item_id],
     "started_at" => started_at&.utc&.iso8601,
     "finished_at" => finished_at.utc.iso8601,
     "duration_seconds" => started_at ? (finished_at - started_at).to_i : nil,
     "exit_status" => exit_status,
-    "signaled" => signaled
+    "signaled" => signaled,
+    "prompt_bytes" => prompt_bytes,
+    "output_bytes" => output_bytes,
+    "produced_output" => output_bytes&.positive?
   }
   record.merge!(heaviness) if heaviness
+  record.merge!(git_impact) if git_impact
   record.compact!
+  record
+end
 
-  record_session_history(record)
+# Map brainiac's log_name (e.g. "assigned-1474", "pr-comment-48", "cron-run-foo",
+# "followup-1096") to a coarse trigger type for analytics. Strips the trailing id.
+def trigger_type_from_log_name(log_name)
+  return nil unless log_name && !log_name.to_s.empty?
+
+  base = log_name.to_s.sub(/-\d+\z/, "")       # drop trailing "-<number>"
+  base = base.sub(/-[0-9a-f]{8,}.*\z/i, "")    # drop trailing hashy/discord ids
+  base.empty? ? log_name.to_s : base
+end
+
+# Branch name inferred from the worktree dir: "<repo>--<branch>" → "<branch>".
+def branch_from_chdir(chdir)
+  return nil unless chdir
+
+  base = File.basename(chdir.to_s)
+  base.include?("--") ? base.split("--", 2).last : nil
+end
+
+# Git impact of the session: commits made and files changed since dispatch. Uses the
+# pre-dispatch HEAD captured in ctx[:head_before] (a cheap local `git rev-parse` that
+# already runs before spawn). Two local git calls at completion — no tokens, no network.
+# Returns a Hash of string keys or nil when unavailable.
+def session_git_impact(chdir:, head_before:)
+  return nil unless chdir && head_before && !head_before.empty?
+
+  head_after, = Open3.capture2("git", "rev-parse", "HEAD", chdir: chdir)
+  head_after = head_after.strip
+  return nil if head_after.empty?
+
+  commits, = Open3.capture2("git", "rev-list", "--count", "#{head_before}..#{head_after}", chdir: chdir)
+  files, = Open3.capture2("git", "diff", "--name-only", "#{head_before}..#{head_after}", chdir: chdir)
+  {
+    "git_commits" => commits.strip.to_i,
+    "git_files_changed" => files.strip.empty? ? 0 : files.strip.lines.size,
+    "git_head_moved" => head_before != head_after
+  }
+rescue StandardError => e
+  LOG.warn "[SessionHistory] git impact capture failed for #{chdir}: #{e.message}" if defined?(LOG)
+  nil
+end
+
+# File size in bytes, or nil if missing/unreadable. Used for prompt/output weight.
+def safe_file_bytes(path)
+  return nil unless path && File.exist?(path)
+
+  File.size(path)
+rescue SystemCallError
+  nil
 end
 
 # --- Provider-generic session heaviness probe ---

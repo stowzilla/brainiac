@@ -132,11 +132,13 @@ $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 # --- Load brainiac modules ONCE for all tests ---
 require_relative "../lib/brainiac/hooks"
 require_relative "../lib/brainiac/config"
+require_relative "../lib/brainiac/observability"
 require_relative "../lib/brainiac/users"
 require_relative "../lib/brainiac/agents"
 require_relative "../lib/brainiac/profiles"
 require_relative "../lib/brainiac/brain"
 require_relative "../lib/brainiac/sessions"
+require_relative "../lib/brainiac/stall"
 require_relative "../lib/brainiac/notifications"
 require_relative "../lib/brainiac/helpers"
 require_relative "../lib/brainiac/intent"

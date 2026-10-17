@@ -14,12 +14,15 @@ SERVER_ROOT = File.expand_path(__dir__)
 # Load all modules
 require_relative "lib/brainiac/hooks"
 require_relative "lib/brainiac/config"
+require_relative "lib/brainiac/observability"
 require_relative "lib/brainiac/users"
 require_relative "lib/brainiac/agents"
 require_relative "lib/brainiac/brain"
 require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
+require_relative "lib/brainiac/stall"
 require_relative "lib/brainiac/session_history"
+require_relative "lib/brainiac/forensics"
 require_relative "lib/brainiac/prompts"
 require_relative "lib/brainiac/helpers"
 require_relative "lib/brainiac/notifications"
@@ -155,6 +158,10 @@ before "/dashboard" do
   authenticate_dashboard!
 end
 
+before "/analytics" do
+  authenticate_dashboard!
+end
+
 before "/api/*" do
   # Skip auth for all localhost requests (CLI, waybar, daemon, etc.)
   pass if localhost_request?
@@ -184,10 +191,20 @@ get "/dashboard" do
   erb :dashboard, layout: false
 end
 
+# Analytics — forensics/performance visualizations + log drill-down. Backed by
+# /api/forensics and /api/forensics/performance; same dashboard_token auth.
+get "/analytics" do
+  content_type :html
+  erb :analytics, layout: false
+end
+
 start_brainiac_restart_monitor
 
 LOG.info "[Cron] Starting cron thread..."
 start_cron_thread
+
+# Stall watchdog: warns (and optionally auto-kills) sessions hung on a silent operation.
+start_stall_watchdog
 
 # Skill curator: runs daily, archives stale skills, logs consolidation candidates.
 CURATOR_THREAD = Thread.new do

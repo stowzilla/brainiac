@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brainiac Analytics</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #e6edf3; --dim: #8b949e; --green: #3fb950; --yellow: #d29922; --red: #f85149; --blue: #58a6ff; --purple: #bc8cff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .meta { font-size: 13px; color: var(--dim); }
+  .header .controls { display: flex; gap: 8px; align-items: center; }
+  .header select, .header input { background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 5px 10px; border-radius: 6px; font-size: 13px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .section-title { font-size: 14px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 28px 0 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .kpi .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kpi .value { font-size: 26px; font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  .kpi .value.good { color: var(--green); } .kpi .value.warn { color: var(--yellow); } .kpi .value.bad { color: var(--red); }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; }
+  .chart-legend { display: flex; gap: 16px; font-size: 12px; color: var(--dim); margin-bottom: 8px; flex-wrap: wrap; }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--dim); font-weight: 500; white-space: nowrap; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .bar { display: inline-block; height: 8px; border-radius: 2px; background: var(--blue); vertical-align: middle; }
+  .rate.good { color: var(--green); } .rate.warn { color: var(--yellow); } .rate.bad { color: var(--red); }
+  .rec { border-left: 3px solid var(--purple); background: rgba(188,140,255,0.06); border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 13px; }
+  .rec .target { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 10px; margin-right: 8px; background: rgba(188,140,255,0.15); color: var(--purple); }
+  .anomaly-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+  .anomaly-row:last-child { border-bottom: none; }
+  .anomaly-row:hover { background: rgba(88,166,255,0.06); }
+  .sev { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sev.high { background: var(--red); } .sev.medium { background: var(--yellow); } .sev.low { background: var(--dim); }
+  .anomaly-row .kind { font-weight: 600; min-width: 120px; }
+  .anomaly-row .msg { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .anomaly-row .drill { color: var(--blue); font-size: 12px; flex-shrink: 0; }
+  .empty { text-align: center; padding: 32px; color: var(--dim); }
+  /* parameters section */
+  .param-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .param-tab { background: var(--bg); border: 1px solid var(--border); color: var(--dim); padding: 5px 12px; border-radius: 14px; cursor: pointer; font-size: 12px; text-transform: capitalize; }
+  .param-tab:hover { color: var(--text); border-color: var(--blue); }
+  .param-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .param-tab .count { opacity: 0.7; margin-left: 4px; }
+  .param-layout { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; }
+  @media (max-width: 760px) { .param-layout { grid-template-columns: 1fr; } }
+  .param-list { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .param-item { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+  .param-item:last-child { border-bottom: none; }
+  .param-item:hover { background: rgba(88,166,255,0.06); }
+  .param-item.selected { background: rgba(88,166,255,0.12); border-left: 3px solid var(--blue); }
+  .param-item.unselectable { cursor: default; opacity: 0.85; }
+  .param-item .name { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+  .param-item .name .pill { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--border); color: var(--dim); font-weight: 500; white-space: nowrap; }
+  .param-item .desc { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .param-detail { border: 1px solid var(--border); border-radius: 6px; padding: 14px; max-height: 420px; overflow-y: auto; }
+  .param-detail h3 { font-size: 14px; margin-bottom: 10px; }
+  .param-detail .note { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  /* effectiveness / ROI */
+  .roi-caveat { font-size: 12px; color: var(--yellow); background: rgba(210,153,34,0.08); border: 1px solid rgba(210,153,34,0.25); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
+  .roi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .roi-kpi { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .roi-kpi .label { font-size: 11px; color: var(--dim); text-transform: uppercase; }
+  .roi-kpi .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .read-btn { float: right; background: var(--border); border: none; color: var(--text); font-size: 10px; padding: 1px 7px; border-radius: 8px; cursor: pointer; }
+  .read-btn:hover { background: var(--blue); color: #fff; }
+  .annot { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .annot h4 { font-size: 12px; margin-bottom: 6px; }
+  .annot ul { list-style: none; font-size: 12px; }
+  .annot .pro { color: var(--green); } .annot .con { color: var(--red); }
+  .content-md { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'SF Mono', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow-y: auto; }
+  /* log drill-down modal */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 50; }
+  .modal.open { display: flex; }
+  .modal-box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; width: 100%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column; }
+  .modal-head { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .modal-head .title { font-size: 13px; font-weight: 600; word-break: break-all; }
+  .modal-head button { background: var(--border); border: none; color: var(--text); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .modal-head button:hover { background: var(--dim); }
+  .modal-body { padding: 16px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: var(--dim); }
+  .err-line { color: var(--red); }
+  svg text { fill: var(--dim); font-size: 10px; }
+  .loading { color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>📊 Brainiac Analytics</h1>
+      <div class="meta" id="meta">Loading…</div>
+    </div>
+    <div class="controls">
+      <label class="meta">Period
+        <select id="period">
+          <option value="day">Day</option>
+          <option value="week" selected>Week</option>
+          <option value="month">Month</option>
+        </select>
+      </label>
+      <label class="meta">Since <input type="date" id="since"></label>
+      <a class="meta" id="dashlink" href="/dashboard">← Dashboard</a>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="kpis" id="kpis"><div class="loading">Loading KPIs…</div></div>
+
+    <div class="section-title">Parameters <span class="meta">— what's available to agents &amp; how it's used</span></div>
+    <div class="panel">
+      <div class="param-tabs" id="paramTabs"></div>
+      <div class="param-layout">
+        <div class="param-list" id="paramList"><div class="loading">Loading inventory…</div></div>
+        <div class="param-detail" id="paramDetail"><div class="empty">Select a parameter to see its sessions.</div></div>
+      </div>
+    </div>
+
+    <div class="section-title">Trend over time</div>
+    <div class="panel">
+      <div class="chart-legend">
+        <span><span class="swatch" style="background:var(--red)"></span>Crash rate</span>
+        <span><span class="swatch" style="background:var(--yellow)"></span>Error rate</span>
+        <span><span class="swatch" style="background:var(--blue)"></span>Sessions (volume)</span>
+      </div>
+      <div id="trendChart" class="loading">Loading trend…</div>
+    </div>
+
+    <div class="section-title">Effectiveness / ROI <span class="meta">— are our choices earning their keep?</span></div>
+    <div class="panel" id="effectiveness"><div class="loading">Loading…</div></div>
+
+    <div class="section-title">Calibration recommendations</div>
+    <div id="recs"><div class="loading">Loading…</div></div>
+
+    <div class="section-title">By agent</div>
+    <div class="panel"><table id="byAgent"><tbody><tr><td class="loading">Loading…</td></tr></tbody></table></div>
+
+    <div class="section-title">By model</div>
+    <div class="panel"><table id="byModel"><tbody><tr><td class="loading">Loading…</td></tr></tbody></table></div>
+
+    <div class="section-title">Anomalies <span class="meta" id="anomalyCount"></span></div>
+    <div class="panel" id="anomalies"><div class="loading">Loading…</div></div>
+  </div>
+
+  <div class="modal" id="modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span class="title" id="modalTitle">Log</span>
+        <button onclick="closeModal()">Close ✕</button>
+      </div>
+      <div class="modal-body" id="modalBody">Loading…</div>
+    </div>
+  </div>
+
+<script>
+  const TOKEN = new URLSearchParams(window.location.search).get('token');
+  function apiUrl(path) { return TOKEN ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : path; }
+  if (TOKEN) { document.getElementById('dashlink').href = '/dashboard?token=' + encodeURIComponent(TOKEN); }
+
+  const fmtPct = (r) => (r == null ? '–' : (r * 100).toFixed(1) + '%');
+  const rateClass = (r, warn, bad) => r == null ? '' : (r >= bad ? 'bad' : (r >= warn ? 'warn' : 'good'));
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  async function loadAll() {
+    const period = document.getElementById('period').value;
+    const since = document.getElementById('since').value;
+    let perfPath = '/api/forensics/performance?period=' + period;
+    if (since) perfPath += '&since=' + since;
+    try {
+      const [perf, fx] = await Promise.all([
+        fetch(apiUrl(perfPath)).then(r => r.json()),
+        fetch(apiUrl('/api/forensics?limit=100')).then(r => r.json())
+      ]);
+      renderKpis(perf.overall);
+      renderTrend(perf.trends || []);
+      renderRecs(perf.recommendations || []);
+      renderBreakdown('byAgent', perf.by_agent || []);
+      renderBreakdown('byModel', perf.by_model || []);
+      renderAnomalies(fx.anomalies || []);
+      loadInventory();
+      loadEffectiveness();
+      document.getElementById('meta').textContent =
+        'Generated ' + (perf.generated_at || '') + ' · ' + (perf.overall ? perf.overall.sessions : 0) + ' sessions';
+    } catch (e) {
+      document.getElementById('meta').textContent = 'Error loading analytics: ' + e;
+    }
+  }
+
+  function renderKpis(o) {
+    o = o || {};
+    const card = (label, value, cls, sub) =>
+      `<div class="kpi"><div class="label">${label}</div><div class="value ${cls||''}">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+    document.getElementById('kpis').innerHTML = [
+      card('Sessions', o.sessions ?? 0, '', (o.finished ?? 0) + ' finished'),
+      card('Crash rate', fmtPct(o.crash_rate), rateClass(o.crash_rate, 0.05, 0.15)),
+      card('Error rate', fmtPct(o.error_rate), rateClass(o.error_rate, 0.15, 0.30)),
+      card('Avg duration', (o.avg_duration_seconds ?? '–') + (o.avg_duration_seconds != null ? 's' : ''), '', 'p95 ' + (o.p95_duration_seconds ?? '–') + 's'),
+      card('Avg context', (o.avg_context_pct != null ? o.avg_context_pct + '%' : '–'), rateClass(o.avg_context_pct/100, 0.6, 0.8), 'max ' + (o.max_context_pct ?? '–') + '%'),
+      card('Credits', o.total_credits ?? 0, '', 'avg ' + (o.avg_credits ?? '–'))
+    ].join('');
+  }
+
+  // Inline SVG line+bar chart — no external libraries, matches the no-dep ethos.
+  function renderTrend(trends) {
+    const el = document.getElementById('trendChart');
+    if (!trends.length) { el.className = 'empty'; el.textContent = 'No trend data yet.'; return; }
+    el.className = '';
+    const W = Math.max(640, trends.length * 60), H = 220, pad = 30;
+    const maxN = Math.max(1, ...trends.map(t => t.metrics.sessions));
+    const x = (i) => pad + i * ((W - pad * 2) / Math.max(1, trends.length - 1));
+    const yRate = (r) => (H - pad) - (r || 0) * (H - pad * 2);
+    const yVol = (n) => (H - pad) - (n / maxN) * (H - pad * 2);
+    const bw = Math.max(4, (W - pad * 2) / trends.length * 0.5);
+
+    const bars = trends.map((t, i) => {
+      const h = (H - pad) - yVol(t.metrics.sessions);
+      return `<rect x="${x(i) - bw / 2}" y="${yVol(t.metrics.sessions)}" width="${bw}" height="${Math.max(0, h)}" fill="rgba(88,166,255,0.25)" rx="2"/>`;
+    }).join('');
+    const line = (key, color) => {
+      const pts = trends.map((t, i) => `${x(i)},${yRate(t.metrics[key])}`).join(' ');
+      const dots = trends.map((t, i) => `<circle cx="${x(i)}" cy="${yRate(t.metrics[key])}" r="2.5" fill="${color}"/>`).join('');
+      return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>${dots}`;
+    };
+    const labels = trends.map((t, i) =>
+      `<text x="${x(i)}" y="${H - 10}" text-anchor="middle">${esc(t.bucket).slice(-6)}</text>`).join('');
+    const grid = [0, 0.25, 0.5, 0.75, 1].map(r =>
+      `<line x1="${pad}" y1="${yRate(r)}" x2="${W - pad}" y2="${yRate(r)}" stroke="#30363d" stroke-width="0.5"/>` +
+      `<text x="2" y="${yRate(r) + 3}">${(r * 100).toFixed(0)}%</text>`).join('');
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet">
+      ${grid}${bars}${line('error_rate', '#d29922')}${line('crash_rate', '#f85149')}${labels}</svg>`;
+  }
+
+  function renderRecs(recs) {
+    const el = document.getElementById('recs');
+    if (!recs.length) { el.innerHTML = '<div class="empty">No calibration recommendations — things look healthy. ✨</div>'; return; }
+    el.innerHTML = recs.map(r =>
+      `<div class="rec"><span class="target">${esc(r.target)}</span>${esc(r.message)}</div>`).join('');
+  }
+
+  function renderBreakdown(id, rows) {
+    const body = rows.length ? rows.map(b => {
+      const m = b.metrics, maxBar = 120, n = m.sessions;
+      return `<tr>
+        <td>${esc(b.key)}</td>
+        <td>${n} <span class="bar" style="width:${Math.min(maxBar, n)}px"></span></td>
+        <td class="rate ${rateClass(m.crash_rate, 0.05, 0.15)}">${fmtPct(m.crash_rate)}</td>
+        <td class="rate ${rateClass(m.error_rate, 0.15, 0.30)}">${fmtPct(m.error_rate)}</td>
+        <td>${m.avg_duration_seconds ?? '–'}s</td>
+        <td>${m.avg_context_pct != null ? m.avg_context_pct + '%' : '–'}</td>
+        <td>${m.total_credits ?? '–'}</td>
+      </tr>`;
+    }).join('') : '<tr><td class="empty">No data</td></tr>';
+    document.getElementById(id).innerHTML =
+      `<thead><tr><th>Name</th><th>Sessions</th><th>Crash</th><th>Error</th><th>Avg dur</th><th>Avg ctx</th><th>Credits</th></tr></thead><tbody>${body}</tbody>`;
+  }
+
+  function renderAnomalies(anomalies) {
+    document.getElementById('anomalyCount').textContent = anomalies.length ? '(' + anomalies.length + ')' : '';
+    const el = document.getElementById('anomalies');
+    if (!anomalies.length) { el.innerHTML = '<div class="empty">No anomalies detected. ✨</div>'; return; }
+    const order = { high: 0, medium: 1, low: 2 };
+    const sorted = anomalies.slice().sort((a, b) => (order[a.severity] ?? 9) - (order[b.severity] ?? 9));
+    el.innerHTML = sorted.map(a => {
+      const card = a.card_key ? ' [' + esc(a.card_key) + ']' : '';
+      const drill = a.log_file ? `<span class="drill">view log →</span>` : '';
+      return `<div class="anomaly-row" data-log="${esc(a.log_file || '')}">
+        <span class="sev ${esc(a.severity)}"></span>
+        <span class="kind">${esc(a.kind)}${card}</span>
+        <span class="msg">${esc(a.agent || '')}: ${esc(a.message)}</span>${drill}</div>`;
+    }).join('');
+    el.querySelectorAll('.anomaly-row').forEach(row => {
+      const f = row.getAttribute('data-log');
+      if (f) row.addEventListener('click', () => openLog(f));
+    });
+  }
+
+  // Parameters / inventory
+  let INVENTORY = null;
+  const CATEGORIES = ['agents', 'personas', 'skills', 'knowledge', 'models', 'sources', 'profiles', 'roles'];
+  // Which categories map to a session dimension you can drill into.
+  const DRILL_DIMENSION = { agents: 'agent', personas: 'persona', models: 'model', sources: 'source' };
+  let activeCategory = 'agents';
+
+  async function loadInventory() {
+    try {
+      INVENTORY = await fetch(apiUrl('/api/forensics/inventory')).then(r => r.json());
+      renderParamTabs();
+      renderParamList();
+    } catch (e) {
+      document.getElementById('paramList').innerHTML = '<div class="empty">Error loading inventory: ' + esc(e) + '</div>';
+    }
+  }
+
+  function renderParamTabs() {
+    document.getElementById('paramTabs').innerHTML = CATEGORIES.map(cat => {
+      const n = (INVENTORY[cat] || []).length;
+      const active = cat === activeCategory ? ' active' : '';
+      return '<span class="param-tab' + active + '" data-cat="' + cat + '">' + cat + '<span class="count">' + n + '</span></span>';
+    }).join('');
+    document.querySelectorAll('.param-tab').forEach(t => t.addEventListener('click', () => {
+      activeCategory = t.getAttribute('data-cat');
+      renderParamTabs();
+      renderParamList();
+      document.getElementById('paramDetail').innerHTML = '<div class="empty">Select a parameter to see its sessions.</div>';
+    }));
+  }
+
+  function renderParamList() {
+    const items = INVENTORY[activeCategory] || [];
+    const dim = DRILL_DIMENSION[activeCategory];
+    if (!items.length) { document.getElementById('paramList').innerHTML = '<div class="empty">None</div>'; return; }
+    const CONTENT_KIND = { skills: 'skill', personas: 'persona' };
+    const readKind = CONTENT_KIND[activeCategory];
+    document.getElementById('paramList').innerHTML = items.map((it, i) => {
+      const u = it.usage || {};
+      let pill = 'inventory';
+      if (u.sessions != null && u.sessions > 0) pill = u.sessions + ' sessions';
+      else if (u.memory_files != null && u.memory_files > 0) pill = u.memory_files + ' memories';
+      else if (u.sessions != null) pill = '0 sessions';
+      else if (u.uses != null) pill = u.uses + ' uses';
+      else if (u.files != null) pill = u.files + ' files';
+      const cls = dim ? '' : ' unselectable';
+      const desc = it.description ? '<div class="desc">' + esc(it.description) + '</div>' : '';
+      const read = readKind ? '<button class="read-btn" data-read="' + esc(it.name) + '">read</button>' : '';
+      return '<div class="param-item' + cls + '" data-i="' + i + '">' +
+        '<div class="name"><span>' + esc(it.name) + '</span>' + read + '<span class="pill">' + esc(pill) + '</span></div>' + desc + '</div>';
+    }).join('');
+    document.querySelectorAll('#paramList .param-item').forEach(el => {
+      el.addEventListener('click', () => selectParam(items[+el.getAttribute('data-i')], el));
+    });
+    if (readKind) {
+      document.querySelectorAll('#paramList .read-btn').forEach(btn => {
+        btn.addEventListener('click', (ev) => { ev.stopPropagation(); openContent(readKind, btn.getAttribute('data-read')); });
+      });
+    }
+  }
+
+  async function selectParam(item, el) {
+    const dim = DRILL_DIMENSION[activeCategory];
+    document.querySelectorAll('#paramList .param-item').forEach(x => x.classList.remove('selected'));
+    const detail = document.getElementById('paramDetail');
+    const u = item.usage || {};
+    if (!dim) {
+      let rows = '';
+      if (u.uses != null) rows += '<div>Uses: <strong>' + u.uses + '</strong> · Views: <strong>' + (u.views || 0) + '</strong>' +
+        (u.last_used ? ' · Last used ' + esc(u.last_used) : '') + '</div>';
+      if (u.files != null) rows += '<div>Files: <strong>' + u.files + '</strong></div>';
+      const note = u.usage_tracked === false
+        ? '<div class="note">Per-session injection isn\'t logged for this parameter yet — showing inventory only.</div>' : '';
+      detail.innerHTML = '<h3>' + esc(item.name) + '</h3>' + note + (rows || '<div class="empty">Inventory only.</div>');
+      return;
+    }
+    el.classList.add('selected');
+    detail.innerHTML = '<div class="loading">Loading sessions…</div>';
+    try {
+      const r = await fetch(apiUrl('/api/forensics/sessions?dimension=' + dim + '&value=' + encodeURIComponent(item.name)));
+      renderParamSessions(item, await r.json());
+    } catch (e) {
+      detail.innerHTML = '<div class="empty">Error: ' + esc(e) + '</div>';
+    }
+  }
+
+  function renderParamSessions(item, data) {
+    const sessions = data.sessions || [];
+    const u = item.usage || {};
+    const mem = u.memory_files ? ' · ' + u.memory_files + ' memory files' : '';
+    const head = '<h3>' + esc(item.name) + ' <span class="meta">— ' + data.count + ' recent session(s)' + mem + '</span></h3>' +
+      '<div class="note">crash ' + fmtPct(u.crash_rate) + ' · error ' + fmtPct(u.error_rate) +
+      ' · avg dur ' + (u.avg_duration_seconds ?? '–') + 's · avg ctx ' + (u.avg_context_pct != null ? u.avg_context_pct + '%' : '–') + '</div>';
+    if (!sessions.length) {
+      const why = u.memory_files ? 'No recent sessions in the durable history, but this agent has ' + u.memory_files +
+        ' memory files from past work (possibly on another machine or before session history was kept).' : 'No sessions.';
+      document.getElementById('paramDetail').innerHTML = head + '<div class="empty">' + why + '</div>';
+      return;
+    }
+    const rows = sessions.map(s => {
+      const status = !s.has_history ? 'no-history' : (s.exit_status === 0 ? 'ok' : 'exit=' + s.exit_status);
+      const when = s.finished_at || s.started_at || '';
+      const drill = s.log_file ? '<span class="drill" data-log="' + esc(s.log_file) + '">log →</span>' : '';
+      const bits = [esc(when), esc(s.model || '')];
+      if (s.trigger_type) bits.push(esc(s.trigger_type));
+      if (s.effort) bits.push('effort:' + esc(s.effort));
+      bits.push('dur ' + (s.duration_seconds ?? '?') + 's');
+      if (s.git_commits != null && s.git_commits > 0) bits.push('⎇ ' + s.git_commits + 'c/' + (s.git_files_changed ?? 0) + 'f');
+      if (s.produced_output === false) bits.push('no-output');
+      return '<div class="anomaly-row"><span class="kind">' + esc(s.card_key || status) + '</span>' +
+        '<span class="msg">' + bits.filter(Boolean).join(' · ') + '</span>' + drill + '</div>';
+    }).join('');
+    document.getElementById('paramDetail').innerHTML = head + rows;
+    document.querySelectorAll('#paramDetail .drill').forEach(d =>
+      d.addEventListener('click', () => openLog(d.getAttribute('data-log'))));
+  }
+
+  // Effectiveness / ROI
+  async function loadEffectiveness() {
+    try {
+      const e = await fetch(apiUrl('/api/forensics/effectiveness')).then(r => r.json());
+      renderEffectiveness(e);
+    } catch (err) {
+      document.getElementById('effectiveness').innerHTML = '<div class="empty">Error: ' + esc(err) + '</div>';
+    }
+  }
+
+  function renderEffectiveness(e) {
+    const o = e.overall || {};
+    if (!o.cards) { document.getElementById('effectiveness').innerHTML = '<div class="empty">No card outcomes yet.</div>'; return; }
+    const kpi = (label, val) => '<div class="roi-kpi"><div class="label">' + label + '</div><div class="value">' + val + '</div></div>';
+    const grid = '<div class="roi-grid">' +
+      kpi('Cards', o.cards) +
+      kpi('Classified', (o.classified ?? 0) + '<span class="label" style="font-size:10px"> / ' + o.cards + '</span>') +
+      kpi('One-shot', fmtPct(o.one_shot_rate)) +
+      kpi('Rework', fmtPct(o.rework_rate)) +
+      kpi('Sessions/card', o.avg_sessions_per_card ?? '–') +
+      kpi('Commits/card', o.avg_commits_per_card ?? '–') + '</div>';
+    const notYet = (o.classified ?? 0) === 0
+      ? '<div class="note">None of the ' + o.cards + ' recorded cards carry schema-v2 outcome signal yet, so one-shot/rework can\'t be measured — these rates populate as newly-instrumented sessions accumulate.</div>'
+      : '';
+
+    const personaTask = (e.by_persona_task || []).slice(0, 12).map(c => {
+      const m = c.metrics;
+      return '<tr><td>' + esc(c.agent) + '</td><td>' + esc(c.task) + '</td><td>' + m.cards +
+        '</td><td class="rate ' + rateClass(1 - (m.one_shot_rate||0), 0.5, 0.7) + '">' + fmtPct(m.one_shot_rate) +
+        '</td><td>' + fmtPct(m.rework_rate) + '</td></tr>';
+    }).join('');
+    const ptTable = '<div class="section-title" style="margin-top:4px">Persona × task</div>' +
+      '<table><thead><tr><th>Agent</th><th>Task</th><th>Cards</th><th>One-shot</th><th>Rework</th></tr></thead><tbody>' +
+      (personaTask || '<tr><td class="empty">—</td></tr>') + '</tbody></table>';
+
+    const mem = e.memory_vs_oneshot || {};
+    const memRows = (mem.points || []).map(p =>
+      '<tr><td>' + esc(p.agent) + '</td><td>' + p.memory_files + '</td><td>' + p.cards + '</td><td>' + fmtPct(p.one_shot_rate) + '</td></tr>').join('');
+    const memTable = '<div class="section-title" style="margin-top:12px">Memory vs one-shot <span class="meta">(' + esc(mem.attribution || '') + ')</span></div>' +
+      '<table><thead><tr><th>Agent</th><th>Memory files</th><th>Cards</th><th>One-shot</th></tr></thead><tbody>' +
+      (memRows || '<tr><td class="empty">—</td></tr>') + '</tbody></table>';
+
+    const sk = e.skill_usage_vs_rework || {};
+    const skNote = '<div class="section-title" style="margin-top:12px">Skills vs rework <span class="meta">(' + esc(sk.attribution || '') + ')</span></div>' +
+      '<div class="note">' + esc(sk.note || '') + ' — ' + (sk.total_skill_uses ?? 0) + ' skill uses across ' +
+      (sk.skills_available ?? 0) + ' skills; fleet rework ' + fmtPct(sk.rework_rate) + '</div>';
+
+    const caveat = e.caveat ? '<div class="roi-caveat">⚠ ' + esc(e.caveat) + '</div>' : '';
+    document.getElementById('effectiveness').innerHTML = caveat + grid + notYet + ptTable + memTable + skNote;
+  }
+
+  // Read a skill/persona's content + metric annotations in the modal.
+  async function openContent(kind, name) {
+    const modal = document.getElementById('modal');
+    document.getElementById('modalTitle').textContent = kind + ': ' + name;
+    document.getElementById('modalBody').innerHTML = '<div class="loading">Loading…</div>';
+    modal.classList.add('open');
+    try {
+      const r = await fetch(apiUrl('/api/forensics/content?kind=' + encodeURIComponent(kind) + '&name=' + encodeURIComponent(name)));
+      const d = await r.json();
+      if (d.error) { document.getElementById('modalBody').innerHTML = '<div class="empty">' + esc(d.error) + '</div>'; return; }
+      const a = d.annotations || { pros: [], cons: [] };
+      const list = (items, cls) => '<ul>' + (items.length ? items.map(i => '<li class="' + cls + '">' + (cls === 'pro' ? '✓ ' : '✗ ') + esc(i) + '</li>').join('') : '<li class="meta">—</li>') + '</ul>';
+      const annot = '<div class="annot"><div><h4>Pros</h4>' + list(a.pros || [], 'pro') + '</div>' +
+        '<div><h4>Cons</h4>' + list(a.cons || [], 'con') + '</div></div>' +
+        '<div class="note">Annotations ' + esc(a.attribution || '') + '</div>';
+      document.getElementById('modalBody').innerHTML = annot + '<div class="content-md">' + esc(d.content || '') + '</div>';
+    } catch (e) {
+      document.getElementById('modalBody').innerHTML = '<div class="empty">Error: ' + esc(e) + '</div>';
+    }
+  }
+
+  async function openLog(file) {
+    const modal = document.getElementById('modal');
+    document.getElementById('modalTitle').textContent = file;
+    document.getElementById('modalBody').textContent = 'Loading…';
+    modal.classList.add('open');
+    try {
+      const r = await fetch(apiUrl('/api/logs?file=' + encodeURIComponent(file) + '&lines=400'));
+      if (!r.ok) { document.getElementById('modalBody').textContent = 'Error ' + r.status + ': ' + (await r.text()); return; }
+      const text = await r.text();
+      const errRe = /(error|exception|panic|fatal|traceback|not found)/i;
+      document.getElementById('modalBody').innerHTML = text.split('\n')
+        .map(l => errRe.test(l) ? `<span class="err-line">${esc(l)}</span>` : esc(l)).join('\n');
+    } catch (e) {
+      document.getElementById('modalBody').textContent = 'Error: ' + e;
+    }
+  }
+  function closeModal() { document.getElementById('modal').classList.remove('open'); }
+  document.getElementById('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  document.getElementById('period').addEventListener('change', loadAll);
+  document.getElementById('since').addEventListener('change', loadAll);
+
+  loadAll();
+</script>
+</body>
+</html>

@@ -9,6 +9,9 @@
 #
 # Events:
 #   :agent_completed    — After an agent session finishes (success or failure)
+#   :session_stalled    — When a session's log goes silent (hung operation); plugins
+#                         can surface it to the user. ctx: card_key, agent_name,
+#                         channel_id, idle_seconds, killed
 #   :agent_added        — When a new agent appears in the registry (after reload)
 #   :agent_removed      — When an agent is removed from the registry (after reload)
 #   :pr_merged          — After a GitHub PR is merged
@@ -50,11 +53,18 @@ module Brainiac
     # @return [Array] Results from handlers
     def emit(event, **context)
       results = @hooks[event].map do |handler|
-        handler.call(context)
-      rescue StandardError => e
-        LOG.error "[Hooks] Error in #{event} handler: #{e.message}" if defined?(LOG)
-        LOG.error "[Hooks]   #{e.backtrace.first(3).join("\n  ")}" if defined?(LOG)
-        nil
+        # Each handler is isolated: a raising plugin can't break the emit loop or the
+        # other handlers. Uses the shared observability guard when available.
+        if respond_to?(:guard)
+          guard(:Hooks, label: "#{event} handler", fallback: nil) { handler.call(context) }
+        else
+          begin
+            handler.call(context)
+          rescue StandardError => e
+            LOG.error "[Hooks] Error in #{event} handler: #{e.message}" if defined?(LOG)
+            nil
+          end
+        end
       end
       results.compact
     end

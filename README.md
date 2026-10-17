@@ -521,6 +521,37 @@ React with ❌ to any message that triggered an agent to immediately terminate t
 4. Session removed from active sessions
 5. Reactions update: 👀 → 🛑
 
+### Hung-Operation Detection (Stall Watchdog)
+
+An agent can get wedged on a long-running subprocess that never returns — a hung
+`xcodebuild`, a prompt waiting on stdin, a network call with no timeout. The process
+stays alive, so the normal safety nets don't fire: the session just goes quiet.
+
+A background watchdog detects this by watching each active session's **log mtime**:
+agents write to their log continuously while working, so when a session's log stops
+advancing while the process is still alive, it's stalled. On the first stall the
+watchdog warns the originating channel once ("⚠️ Avon's session … appears stuck — no
+output for N min … React ❌ to cancel it, or wait.") so a human can intervene using the
+existing ❌ cancel. It emits a `:session_stalled` hook, and `/api/status` reports
+per-session `idle_seconds` and `stalled` for the dashboard.
+
+Thresholds are configurable in `~/.brainiac/brainiac.json` (or `BRAINIAC_STALL_*` env):
+
+```json
+{
+  "stall": {
+    "warn_seconds": 600,
+    "kill_seconds": 0,
+    "poll_seconds": 30
+  }
+}
+```
+
+`warn_seconds` is how long a log may be silent before warning (default 10 min).
+`kill_seconds` enables an optional hard cap that auto-kills a session stuck that long
+(default `0` = warn-only, the least-surprising behavior). `poll_seconds` is the scan
+interval.
+
 ### Setup
 
 #### Step 1: Create Discord Applications
@@ -1378,6 +1409,28 @@ so enabling/disabling a provider or moving its data store is pure JSON. kiro-cli
 mechanism needs a small probe implementation in `lib/brainiac/session_history.rb`; providers
 with no `heaviness_probe` simply record timing + identity. The file is trimmed to the most
 recent 500 records.
+
+#### Going-forward instrumentation (schema v2)
+
+Each record (`"schema": 2`) is enriched at completion time with everything brainiac
+already knows about the dispatch, plus a few cheap local measurements. **This adds zero
+token usage and no latency to the agent run** — it's computed in the completion watcher
+thread *after* the agent process has already exited, and only writes a slightly larger
+line to the JSONL on disk. Fields:
+
+| Field | Meaning |
+| ----- | ------- |
+| `trigger_type` | Why the agent was dispatched (`assigned`, `followup`, `pr-comment`, `changes-requested`, `cron-run`, `discord`, …), derived from the log name |
+| `effort` | Effort level resolved for the dispatch (`low`…`max`) |
+| `resumed` | Whether this continued a prior CLI session |
+| `branch` | Git branch, inferred from the worktree dir (`<repo>--<branch>`) |
+| `work_item_id` | Work item backing the worktree, if any |
+| `prompt_bytes` | Size of the rendered prompt (input weight proxy) |
+| `output_bytes` / `produced_output` | Size of the structured response, and whether the session produced one |
+| `git_commits` / `git_files_changed` / `git_head_moved` | Git impact since dispatch — two local `git` calls against the pre-dispatch HEAD |
+
+These make the analytics page's per-parameter drill-down (agents, models, triggers,
+effort) increasingly rich as sessions accumulate, without any runtime cost.
 ```
 
 ## Development

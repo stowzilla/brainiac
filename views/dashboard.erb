@@ -93,6 +93,7 @@
   <div class="meta">
     <span class="status-dot idle" id="conn-dot"></span>
     <span id="version"></span> · updated <span id="last-update">—</span>
+    · <a id="analytics-link" href="/analytics" style="color: var(--blue); text-decoration: none;">📊 Analytics</a>
   </div>
 </div>
 <div class="container">
@@ -129,6 +130,7 @@
 const AGENTS = <%= load_dashboard_agents.to_json %>;
 const DASH_TOKEN = new URLSearchParams(window.location.search).get('token');
 function apiUrl(path) { return DASH_TOKEN ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(DASH_TOKEN) : path; }
+if (DASH_TOKEN) { const al = document.getElementById('analytics-link'); if (al) al.href = '/analytics?token=' + encodeURIComponent(DASH_TOKEN); }
 let selectedFile = null;
 let autoFollow = true;
 let logPollTimer = null;
