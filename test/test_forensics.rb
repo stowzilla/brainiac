@@ -217,4 +217,145 @@ class TestForensics < Minitest::Test
   def test_report_has_generated_at
     assert_equal @now.utc.iso8601, analyzer.report[:generated_at]
   end
+
+  # --- performance tracking (trends / breakdowns / calibration) ------------
+
+  # Build a correlated-session hash the way Analyzer#correlate would.
+  def session(finished:, agent:, model: "sonnet", source: "fizzy", exit_status: 0,
+              duration: 100, context: 20.0, credits: 1.0, errors: [])
+    {
+      agent: agent, model: model, source: source, card_key: nil,
+      duration_seconds: duration, exit_status: exit_status,
+      context_usage_pct: context, credits_used: credits,
+      started_at: finished, finished_at: finished,
+      log_error_hits: errors, resumed: false, has_history: true
+    }
+  end
+
+  def test_metricset_basic_rates
+    sessions = [
+      session(agent: "Kaylee", finished: "2026-10-10T10:00:00Z", exit_status: 0),
+      session(agent: "Kaylee", finished: "2026-10-10T11:00:00Z", exit_status: 1),
+      session(agent: "Kaylee", finished: "2026-10-10T12:00:00Z", exit_status: 0, errors: ["boom"])
+    ]
+    m = Brainiac::Forensics::MetricSet.from(sessions)
+    assert_equal 3, m[:sessions]
+    assert_equal 3, m[:finished]
+    assert_in_delta 0.333, m[:crash_rate], 0.001
+    assert_in_delta 0.333, m[:error_rate], 0.001
+  end
+
+  def test_metricset_averages_and_credits
+    sessions = [
+      session(agent: "K", finished: "2026-10-10T10:00:00Z", duration: 100, context: 40.0, credits: 2.0),
+      session(agent: "K", finished: "2026-10-10T11:00:00Z", duration: 200, context: 60.0, credits: 3.0)
+    ]
+    m = Brainiac::Forensics::MetricSet.from(sessions)
+    assert_in_delta 150.0, m[:avg_duration_seconds], 0.01
+    assert_in_delta 50.0, m[:avg_context_pct], 0.01
+    assert_in_delta 60.0, m[:max_context_pct], 0.01
+    assert_in_delta 5.0, m[:total_credits], 0.01
+  end
+
+  def test_trends_bucketed_by_day
+    sessions = [
+      session(agent: "K", finished: "2026-10-10T10:00:00Z"),
+      session(agent: "K", finished: "2026-10-10T18:00:00Z"),
+      session(agent: "K", finished: "2026-10-11T09:00:00Z")
+    ]
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, period: :day, now: @now).report
+    buckets = report[:trends].map { |t| t[:bucket] }
+    assert_equal %w[2026-10-10 2026-10-11], buckets
+    assert_equal 2, report[:trends].first[:metrics][:sessions]
+  end
+
+  def test_trends_bucketed_by_week
+    sessions = [
+      session(agent: "K", finished: "2026-10-05T10:00:00Z"),
+      session(agent: "K", finished: "2026-10-12T10:00:00Z")
+    ]
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, period: :week, now: @now).report
+    assert_equal 2, report[:trends].size
+    assert_match(/\A\d{4}-W\d{2}\z/, report[:trends].first[:bucket])
+  end
+
+  def test_breakdown_by_agent_sorted_by_volume
+    sessions = [
+      session(agent: "Kaylee", finished: "2026-10-10T10:00:00Z"),
+      session(agent: "Kaylee", finished: "2026-10-10T11:00:00Z"),
+      session(agent: "Galen", finished: "2026-10-10T12:00:00Z")
+    ]
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    assert_equal "Kaylee", report[:by_agent].first[:key]
+    assert_equal 2, report[:by_agent].first[:metrics][:sessions]
+  end
+
+  def test_recommendation_high_crash_rate_targets_persona
+    sessions = Array.new(5) do |i|
+      session(agent: "Crashy", finished: "2026-10-10T1#{i}:00:00Z", exit_status: i < 2 ? 1 : 0)
+    end
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    persona_rec = report[:recommendations].find { |r| r[:target] == :persona }
+    refute_nil persona_rec
+    assert_equal "Crashy", persona_rec[:subject]
+  end
+
+  def test_recommendation_high_error_rate_targets_skills
+    sessions = Array.new(4) do |i|
+      session(agent: "Erry", finished: "2026-10-10T1#{i}:00:00Z", errors: ["RuntimeError: x"])
+    end
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    assert(report[:recommendations].any? { |r| r[:target] == :skills && r[:subject] == "Erry" })
+  end
+
+  def test_recommendation_heavy_context_targets_knowledge
+    sessions = Array.new(3) do |i|
+      session(agent: "K", model: "opus", finished: "2026-10-10T1#{i}:00:00Z", context: 90.0)
+    end
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    rec = report[:recommendations].find { |r| r[:target] == :knowledge && r[:subject] == "opus" }
+    refute_nil rec
+  end
+
+  def test_recommendation_recurring_error_targets_brain
+    sessions = Array.new(3) do |i|
+      session(agent: "K#{i}", finished: "2026-10-10T1#{i}:00:00Z",
+              errors: ["sh: tsc: command not found at /some/path/#{i}"])
+    end
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    brain_rec = report[:recommendations].find { |r| r[:subject] == "brain" }
+    refute_nil brain_rec
+    assert_match(/recurring error in 3 sessions/, brain_rec[:message])
+  end
+
+  def test_small_sample_not_moralized
+    sessions = [session(agent: "Lonely", finished: "2026-10-10T10:00:00Z", exit_status: 1)]
+    report = Brainiac::Forensics::PerformanceTracker.new(sessions, now: @now).report
+    lonely = report[:recommendations].select { |r| r[:subject] == "Lonely" }
+    assert_empty lonely
+  end
+
+  def test_performance_report_since_filter
+    p1 = write_log(name: "old", timestamp: "20261001-100000")
+    p2 = write_log(name: "new", timestamp: "20261015-100000")
+    write_history([
+                    { "agent" => "K", "model" => "sonnet", "source" => "fizzy", "log_file" => p1,
+                      "exit_status" => 0, "finished_at" => "2026-10-01T10:00:00Z" },
+                    { "agent" => "K", "model" => "sonnet", "source" => "fizzy", "log_file" => p2,
+                      "exit_status" => 0, "finished_at" => "2026-10-15T10:00:00Z" }
+                  ])
+    report = analyzer.performance_report(since: Time.utc(2026, 10, 10))
+    assert_equal 1, report[:overall][:sessions]
+  end
+
+  def test_performance_report_end_to_end
+    path = write_log(name: "e2e", timestamp: "20261015-100000")
+    write_history([{ "agent" => "K", "model" => "sonnet", "source" => "fizzy", "log_file" => path,
+                     "exit_status" => 0, "duration_seconds" => 50, "finished_at" => "2026-10-15T10:00:00Z" }])
+    report = analyzer.performance_report
+    assert_equal :day, report[:period]
+    assert_equal 1, report[:overall][:sessions]
+    assert(report[:by_agent].any? { |b| b[:key] == "K" })
+    assert(report[:by_model].any? { |b| b[:key] == "sonnet" })
+  end
 end

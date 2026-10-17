@@ -330,6 +330,21 @@ get "/api/forensics" do
   report.to_json
 end
 
+# Performance over time — trends, per-agent/model/source breakdowns, and
+# calibration recommendations (which persona/skill/knowledge to tune). Params:
+#   ?period=day|week|month  ?since=ISO8601
+get "/api/forensics/performance" do
+  content_type :json
+  reload_projects!
+  period = %w[day week month].include?(params["period"]) ? params["period"].to_sym : :day
+  since = begin
+    params["since"] && Time.parse(params["since"])
+  rescue ArgumentError
+    halt 400, { error: "invalid since date" }.to_json
+  end
+  Brainiac::Forensics.performance(period: period, since: since).to_json
+end
+
 # Shape the forensics report for the API: optionally trim to anomalies-only and
 # clamp the session list to a sane limit.
 def forensics_response(report, params)

@@ -200,7 +200,23 @@ module Brainiac
         }
       end
 
+      # Performance-over-time report: trends, per-dimension breakdowns, and
+      # calibration recommendations. `since` (a Time) scopes to recent sessions so
+      # you can measure "has it improved since I changed the persona?".
+      def performance_report(period: :day, since: nil)
+        sessions = correlate
+        sessions = scope_since(sessions, since) if since
+        PerformanceTracker.new(sessions, period: period, now: @now).report
+      end
+
       private
+
+      def scope_since(sessions, since)
+        sessions.select do |s|
+          t = parse_time(s[:finished_at] || s[:started_at])
+          t && t >= since
+        end
+      end
 
       def read_history
         records = load_history_records
@@ -394,6 +410,219 @@ module Brainiac
       end
     end
 
+    # Aggregate performance metrics for a set of sessions. This is the unit that
+    # every breakdown (per-agent, per-model, per-time-bucket) is built from, so a
+    # bucket and the global rollup are described the same way.
+    #
+    # The point of these numbers is *calibration over time*: if a persona tweak or a
+    # new skill actually helped, the agent's crash/error rate should fall and its
+    # context/credit cost should drop in later buckets. These are the levers to watch.
+    class MetricSet
+      def self.from(sessions)
+        finished = sessions.select { |s| s[:has_history] }
+        {
+          sessions: sessions.size,
+          finished: finished.size,
+          crash_rate: rate(finished) { |s| crashed?(s) },
+          error_rate: rate(sessions) { |s| (s[:log_error_hits] || []).any? },
+          resume_rate: rate(sessions) { |s| s[:resumed] },
+          avg_duration_seconds: avg(finished) { |s| s[:duration_seconds] },
+          p95_duration_seconds: pct(finished, 0.95) { |s| s[:duration_seconds] },
+          avg_context_pct: avg(finished) { |s| s[:context_usage_pct] },
+          max_context_pct: max(finished) { |s| s[:context_usage_pct] },
+          total_credits: sum(finished) { |s| s[:credits_used] },
+          avg_credits: avg(finished) { |s| s[:credits_used] }
+        }
+      end
+
+      def self.crashed?(session)
+        es = session[:exit_status]
+        !es.nil? && !es.zero?
+      end
+
+      def self.rate(sessions, &)
+        return 0.0 if sessions.empty?
+
+        (sessions.count(&).to_f / sessions.size).round(3)
+      end
+
+      def self.values(sessions, &)
+        sessions.filter_map(&)
+      end
+
+      def self.avg(sessions, &)
+        vals = values(sessions, &)
+        return nil if vals.empty?
+
+        (vals.sum.to_f / vals.size).round(2)
+      end
+
+      def self.sum(sessions, &)
+        vals = values(sessions, &)
+        return nil if vals.empty?
+
+        vals.sum.round(4)
+      end
+
+      def self.max(sessions, &)
+        values(sessions, &).max
+      end
+
+      def self.pct(sessions, quantile, &)
+        vals = values(sessions, &).sort
+        return nil if vals.empty?
+
+        vals[[(quantile * vals.size).ceil - 1, 0].max]
+      end
+    end
+
+    # Turns correlated sessions into a performance-over-time report: time-bucketed
+    # trends, per-dimension breakdowns (agent / model / source), and calibration
+    # recommendations. This is the feedback loop Adam asked for — the output points
+    # at *which* agent/persona/skill/knowledge to tune, not just "something broke".
+    class PerformanceTracker
+      # Calibration thresholds — when a breakdown crosses these, we recommend action.
+      CRASH_RATE_WARN = 0.15     # >15% of finished sessions crashing
+      ERROR_RATE_WARN = 0.30     # >30% of sessions carrying error signatures
+      CONTEXT_WARN = 75.0        # avg context usage this high = knowledge/prompt bloat
+      MIN_SAMPLE = 3             # don't moralize about an agent with 1 data point
+      RECURRING_ERROR_MIN = 3    # same error signature across N sessions = systemic
+
+      def initialize(sessions, period: :day, now: Time.now)
+        @sessions = sessions
+        # Breakdowns and per-agent/model recommendations only make sense for sessions
+        # that produced a history record — those carry authoritative agent/model/source
+        # identity. Orphan logs (log name only, no history) would otherwise masquerade
+        # as "agents" like "followup-1047" and pollute the calibration signal.
+        @finished = sessions.select { |s| s[:has_history] }
+        @period = period
+        @now = now
+      end
+
+      def report
+        {
+          generated_at: @now.utc.iso8601,
+          period: @period,
+          overall: MetricSet.from(@sessions),
+          trends: trends,
+          by_agent: breakdown { |s| s[:agent] },
+          by_model: breakdown { |s| s[:model] },
+          by_source: breakdown { |s| s[:source] },
+          recommendations: recommendations
+        }
+      end
+
+      private
+
+      # Sessions grouped into time buckets (oldest first), each with its MetricSet,
+      # so you can see whether the numbers improve after a calibration change.
+      def trends
+        bucketed = @sessions.group_by { |s| bucket_key(s) }.reject { |k, _| k.nil? }
+        bucketed.sort_by { |k, _| k }.map do |key, group|
+          { bucket: key, metrics: MetricSet.from(group) }
+        end
+      end
+
+      def bucket_key(session)
+        t = parse_time(session[:finished_at] || session[:started_at])
+        return nil unless t
+
+        case @period
+        when :week then t.strftime("%G-W%V")
+        when :month then t.strftime("%Y-%m")
+        else t.strftime("%Y-%m-%d")
+        end
+      end
+
+      # One MetricSet per distinct value of the yielded dimension, richest first.
+      # Scoped to sessions with history so dimensions reflect real identity.
+      def breakdown
+        grouped = @finished.group_by { |s| yield(s) || "unknown" }
+        grouped.map { |key, group| { key: key, metrics: MetricSet.from(group) } }
+               .sort_by { |b| -b[:metrics][:sessions] }
+      end
+
+      # Derive actionable calibration signals. Each recommendation names a target
+      # (an agent, a model, or the knowledge base) and *why* — so the human knows
+      # which persona/skill/knowledge file to go edit.
+      def recommendations
+        recs = []
+        recs.concat(agent_recommendations)
+        recs.concat(model_recommendations)
+        recs.concat(recurring_error_recommendations)
+        recs
+      end
+
+      def agent_recommendations
+        breakdown { |s| s[:agent] }.flat_map do |b|
+          next [] if b[:metrics][:sessions] < MIN_SAMPLE
+
+          agent_signals(b[:key], b[:metrics])
+        end
+      end
+
+      def agent_signals(agent, metrics)
+        out = []
+        if metrics[:crash_rate] && metrics[:crash_rate] >= CRASH_RATE_WARN
+          out << rec(:persona, agent, "#{agent}: crash rate #{pctf(metrics[:crash_rate])} across " \
+                                      "#{metrics[:finished]} sessions — review this agent's persona/skills and recent prompts")
+        end
+        if metrics[:error_rate] && metrics[:error_rate] >= ERROR_RATE_WARN
+          out << rec(:skills, agent, "#{agent}: error rate #{pctf(metrics[:error_rate])} — likely a missing " \
+                                     "tool/skill or stale knowledge; add a skill or knowledge entry for the recurring failure")
+        end
+        out
+      end
+
+      def model_recommendations
+        breakdown { |s| s[:model] }.flat_map do |b|
+          m = b[:metrics]
+          next [] if b[:key] == "unknown" || m[:sessions] < MIN_SAMPLE
+          next [] unless m[:avg_context_pct] && m[:avg_context_pct] >= CONTEXT_WARN
+
+          [rec(:knowledge, b[:key], "model #{b[:key]}: avg context #{m[:avg_context_pct]}% — " \
+                                    "trim injected knowledge/prompt size or raise the model, context is running hot")]
+        end
+      end
+
+      # The same error signature recurring across many sessions is a systemic gap in
+      # knowledge/skills, not a one-off — worth a knowledge entry or skill.
+      def recurring_error_recommendations
+        counts = Hash.new(0)
+        @sessions.each do |s|
+          (s[:log_error_hits] || []).each { |h| counts[normalize_error(h)] += 1 }
+        end
+        counts.select { |_sig, n| n >= RECURRING_ERROR_MIN }
+              .sort_by { |_sig, n| -n }
+              .map do |sig, n|
+          rec(:knowledge, "brain", "recurring error in #{n} sessions: #{sig} — " \
+                                   "capture the fix as a knowledge entry or skill so agents stop re-hitting it")
+        end
+      end
+
+      # Collapse volatile bits (numbers, hex, paths) so "error at line 42" and
+      # "error at line 99" count as the same recurring signature.
+      def normalize_error(hit)
+        hit.gsub(%r{/\S+}, "<path>").gsub(/0x[0-9a-f]+/i, "<addr>").gsub(/\d+/, "<n>").strip[0, 120]
+      end
+
+      def rec(target, subject, message)
+        { target: target, subject: subject, message: message }
+      end
+
+      def pctf(rate)
+        "#{(rate * 100).round(1)}%"
+      end
+
+      def parse_time(str)
+        return nil unless str
+
+        Time.parse(str.to_s)
+      rescue ArgumentError
+        nil
+      end
+    end
+
     module_function
 
     # Convenience entry point: build an analyzer over the standard brainiac locations
@@ -405,6 +634,15 @@ module Brainiac
       dirs = (default_log_dirs + Array(extra_dirs)).uniq
       hist = history_file || default_history_file
       Analyzer.new(log_dirs: dirs, history_file: hist, thresholds: thresholds, now: now).report
+    end
+
+    # Performance-tracking entry point: build the standard analyzer, then return its
+    # performance report (trends + breakdowns + calibration recommendations).
+    def performance(extra_dirs: [], history_file: nil, period: :day, since: nil, now: Time.now)
+      dirs = (default_log_dirs + Array(extra_dirs)).uniq
+      hist = history_file || default_history_file
+      Analyzer.new(log_dirs: dirs, history_file: hist, now: now)
+              .performance_report(period: period, since: since)
     end
 
     # tmp/ of every registered repo, every existing worktree sibling of those repos,
