@@ -9,6 +9,9 @@
 #
 # Events:
 #   :agent_completed    — After an agent session finishes (success or failure)
+#   :session_stalled    — When a session's log goes silent (hung operation); plugins
+#                         can surface it to the user. ctx: card_key, agent_name,
+#                         channel_id, idle_seconds, killed
 #   :agent_added        — When a new agent appears in the registry (after reload)
 #   :agent_removed      — When an agent is removed from the registry (after reload)
 #   :pr_merged          — After a GitHub PR is merged

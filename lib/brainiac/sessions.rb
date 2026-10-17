@@ -225,6 +225,80 @@ def kill_session(session_key)
   end
 end
 
+# --- Stall watchdog (hung-operation detection) ---
+#
+# Scans active sessions for ones whose log has gone silent (stuck on a hung
+# subprocess). On the first stall it warns the originating channel so a human can
+# intervene; with a configured hard cap it auto-kills. See lib/brainiac/stall.rb.
+STALL_WATCHDOG = { ref: nil }
+
+# One scan pass over the active sessions. Pure w.r.t. time (`now` injectable) and
+# side effects routed through injectable lambdas, so it's unit-testable without
+# real threads/processes. Returns the list of actions taken: [{card_key, action}].
+def scan_stalls!(warn_seconds:, kill_seconds:, now: Time.now, notify: method(:notify_stalled_session), kill: method(:kill_session))
+  actions = []
+  snapshot = ACTIVE_SESSIONS_MUTEX.synchronize { ACTIVE_SESSIONS.map { |k, v| [k, v] } }
+
+  snapshot.each do |card_key, info|
+    idle = Brainiac::Stall.idle_seconds(info[:log_file], now: now)
+    decision = Brainiac::Stall.classify(idle_seconds: idle, warned: info[:stall_warned],
+                                        warn_seconds: warn_seconds, kill_seconds: kill_seconds)
+    case decision
+    when :warn
+      ACTIVE_SESSIONS_MUTEX.synchronize { ACTIVE_SESSIONS[card_key]&.[]=(:stall_warned, true) }
+      notify.call(card_key, info, idle)
+      actions << { card_key: card_key, action: :warned, idle_seconds: idle }
+    when :kill
+      notify.call(card_key, info, idle, killed: true)
+      kill.call(card_key)
+      actions << { card_key: card_key, action: :killed, idle_seconds: idle }
+    end
+  end
+  actions
+end
+
+# Warn (or report auto-kill of) a stalled session. Emits :session_stalled for plugins
+# and sends a notification to the originating channel so a human can step in.
+def notify_stalled_session(card_key, info, idle_seconds, killed: false)
+  mins = (idle_seconds.to_i / 60.0).round(1)
+  agent = info[:agent_name] || "agent"
+  verb = killed ? "was auto-killed after" : "appears stuck — no output for"
+  hint = killed ? "" : " React ❌ on your message to cancel it, or wait."
+  message = "⚠️ #{agent}'s session on #{card_key} #{verb} #{mins} min " \
+            "(likely a hung operation).#{hint}"
+
+  Brainiac.logger(:Stall).warn("#{card_key}: idle #{mins}min, #{killed ? "auto-killed" : "warned"}")
+  Brainiac.emit(:session_stalled, card_key: card_key, agent_name: info[:agent_name],
+                                  channel_id: info[:channel_id], idle_seconds: idle_seconds, killed: killed)
+  return unless info[:channel_id] && defined?(send_notification)
+
+  send_notification(:stall, message, target: info[:channel_id], channel: :discord, agent: info[:agent_name])
+rescue StandardError => e
+  Brainiac.logger(:Stall).exception(e, label: "notify #{card_key}")
+end
+
+# Start the background watchdog thread. Idempotent — a second call is a no-op while
+# the first thread is alive. Started from server boot.
+def start_stall_watchdog
+  return STALL_WATCHDOG[:ref] if STALL_WATCHDOG[:ref]&.alive?
+
+  cfg = Brainiac::Stall.config
+  Brainiac.logger(:Stall).info(
+    "watchdog started (warn #{cfg[:warn_seconds]}s, " \
+    "kill #{cfg[:kill_seconds].positive? ? "#{cfg[:kill_seconds]}s" : "off"}, poll #{cfg[:poll_seconds]}s)"
+  )
+  STALL_WATCHDOG[:ref] = Thread.new do
+    loop do
+      sleep cfg[:poll_seconds]
+      Brainiac.guard(:Stall, label: "scan") do
+        scan_stalls!(warn_seconds: cfg[:warn_seconds], kill_seconds: cfg[:kill_seconds])
+      end
+    end
+  end
+  STALL_WATCHDOG[:ref].report_on_exception = true
+  STALL_WATCHDOG[:ref]
+end
+
 # --- Comment cooldown ---
 
 COMMENT_COOLDOWN = 60

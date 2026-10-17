@@ -521,6 +521,37 @@ React with ❌ to any message that triggered an agent to immediately terminate t
 4. Session removed from active sessions
 5. Reactions update: 👀 → 🛑
 
+### Hung-Operation Detection (Stall Watchdog)
+
+An agent can get wedged on a long-running subprocess that never returns — a hung
+`xcodebuild`, a prompt waiting on stdin, a network call with no timeout. The process
+stays alive, so the normal safety nets don't fire: the session just goes quiet.
+
+A background watchdog detects this by watching each active session's **log mtime**:
+agents write to their log continuously while working, so when a session's log stops
+advancing while the process is still alive, it's stalled. On the first stall the
+watchdog warns the originating channel once ("⚠️ Avon's session … appears stuck — no
+output for N min … React ❌ to cancel it, or wait.") so a human can intervene using the
+existing ❌ cancel. It emits a `:session_stalled` hook, and `/api/status` reports
+per-session `idle_seconds` and `stalled` for the dashboard.
+
+Thresholds are configurable in `~/.brainiac/brainiac.json` (or `BRAINIAC_STALL_*` env):
+
+```json
+{
+  "stall": {
+    "warn_seconds": 600,
+    "kill_seconds": 0,
+    "poll_seconds": 30
+  }
+}
+```
+
+`warn_seconds` is how long a log may be silent before warning (default 10 min).
+`kill_seconds` enables an optional hard cap that auto-kills a session stuck that long
+(default `0` = warn-only, the least-surprising behavior). `poll_seconds` is the scan
+interval.
+
 ### Setup
 
 #### Step 1: Create Discord Applications

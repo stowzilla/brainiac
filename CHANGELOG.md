@@ -20,6 +20,12 @@ Minor release. Forensics & observability.
   `Brainiac.guard` for the rescue/log/swallow pattern — adopted by the hook emitter,
   completion steps, and forensics endpoints.
 - `brainiac update` now confirms a 0.x → 0.y minor-version move before upgrading core.
+- **Hung-operation (stall) watchdog**: detects sessions whose log has gone silent
+  (stuck on a hung subprocess like `xcodebuild`), warns the originating channel once so
+  a human can intervene (❌ to cancel), and optionally auto-kills after a hard cap.
+  Emits a `:session_stalled` hook; thresholds configurable via `brainiac.json` → `stall`
+  (`warn_seconds`/`kill_seconds`/`poll_seconds`) or `BRAINIAC_STALL_*` env. `/api/status`
+  now reports per-session `idle_seconds` + `stalled`.
 
 ## 0.9.1 — 2026-04-21
 

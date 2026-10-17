@@ -20,6 +20,7 @@ require_relative "lib/brainiac/agents"
 require_relative "lib/brainiac/brain"
 require_relative "lib/brainiac/skills"
 require_relative "lib/brainiac/sessions"
+require_relative "lib/brainiac/stall"
 require_relative "lib/brainiac/session_history"
 require_relative "lib/brainiac/forensics"
 require_relative "lib/brainiac/prompts"
@@ -201,6 +202,9 @@ start_brainiac_restart_monitor
 
 LOG.info "[Cron] Starting cron thread..."
 start_cron_thread
+
+# Stall watchdog: warns (and optionally auto-kills) sessions hung on a silent operation.
+start_stall_watchdog
 
 # Skill curator: runs daily, archives stale skills, logs consolidation candidates.
 CURATOR_THREAD = Thread.new do

@@ -18,12 +18,16 @@ def reap_dead_sessions
 end
 
 def format_active_sessions
+  warn_seconds = Brainiac::Stall.config[:warn_seconds]
   ACTIVE_SESSIONS.map do |card_key, info|
     agent_name = resolve_session_agent_name(card_key, info)
+    idle = Brainiac::Stall.idle_seconds(info[:log_file])
     {
       card_key: card_key, agent: agent_name, pid: info[:pid],
       started_at: info[:started_at].iso8601,
       elapsed_seconds: (Time.now - info[:started_at]).to_i,
+      idle_seconds: idle,
+      stalled: !idle.nil? && idle >= warn_seconds,
       log_file: info[:log_file], alive: true,
       channel_id: info[:channel_id],
       children: child_processes_for(info[:pid])
