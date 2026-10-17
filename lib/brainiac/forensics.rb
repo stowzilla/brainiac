@@ -2,6 +2,7 @@
 
 require "json"
 require "time"
+require "yaml"
 
 # Log / retrieval forensics for Brainiac agent sessions.
 #
@@ -207,6 +208,18 @@ module Brainiac
         sessions = correlate
         sessions = scope_since(sessions, since) if since
         PerformanceTracker.new(sessions, period: period, now: @now).report
+      end
+
+      # Inventory of all brainiac parameters (agents/personas/skills/knowledge/
+      # models/sources/profiles/roles) with per-item session usage. `paths` lets
+      # tests point at fixture dirs; production uses the config constants.
+      def inventory_report(paths: {})
+        Inventory.new(correlate, paths: paths).report
+      end
+
+      # Sessions tied to a selected parameter value (for the drill-down selector).
+      def sessions_for(dimension, value, paths: {})
+        Inventory.new(correlate, paths: paths).sessions_for(dimension, value)
       end
 
       private
@@ -623,6 +636,201 @@ module Brainiac
       end
     end
 
+    # Enumerates every "brainiac parameter" that shapes an agent run — the inputs,
+    # not just the outputs — and ties each to how it's been used in sessions.
+    #
+    # Categories: agents, personas, skills, knowledge, models, sources, profiles,
+    # roles. Each item reports whether it's `available` (present on disk / in config)
+    # and a `usage` blob. Usage fidelity varies by what brainiac actually records:
+    #   - agents / models / sources: sessions carry these fields, so usage = real
+    #     session counts + crash/error rates (via MetricSet).
+    #   - skills: brain tracks view/use counts in SKILL.usage.json sidecars.
+    #   - personas: one persona dir per agent, so persona usage mirrors that agent's
+    #     sessions.
+    #   - knowledge / profiles / roles: enumerable and available, but brainiac does
+    #     not (yet) log which were injected per session — reported as inventory with
+    #     usage_tracked: false so the UI is honest about it rather than faking numbers.
+    #
+    # Paths come from config constants (KNOWLEDGE_DIR, PERSONA_BASE_DIR, etc.) when
+    # loaded; every lookup is guarded so the class is testable in isolation.
+    class Inventory
+      # Dimensions that correlate directly to a session field.
+      SESSION_DIMENSIONS = %w[agent model source].freeze
+
+      def initialize(sessions, paths: {})
+        @sessions = sessions
+        @finished = sessions.select { |s| s[:has_history] }
+        @paths = paths
+      end
+
+      def report
+        {
+          agents: agents,
+          personas: personas,
+          skills: skills,
+          knowledge: knowledge,
+          models: dimension_items("model"),
+          sources: dimension_items("source"),
+          profiles: profiles,
+          roles: roles
+        }
+      end
+
+      # Sessions associated with a selected parameter value along a dimension.
+      # dimension ∈ agent|model|source|persona (persona resolves to its agent).
+      def sessions_for(dimension, value)
+        field = dimension == "persona" ? "agent" : dimension
+        return [] unless SESSION_DIMENSIONS.include?(field)
+
+        key = value.to_s.downcase
+        @sessions.select { |s| s[field.to_sym].to_s.downcase == key }
+      end
+
+      private
+
+      # agents: registry + anyone who shows up in a *finished* session (those carry
+      # authoritative agent identity). Orphan log names are excluded so the list is
+      # real agents, not per-card log names like "followup-1047".
+      def agents
+        names = registry_agent_names | finished_session_values("agent")
+        names.reject(&:empty?).sort.map do |name|
+          { name: name, available: registry_agent_names.include?(name),
+            usage: session_usage("agent", name) }
+        end
+      end
+
+      # personas: one dir per agent under PERSONA_BASE_DIR; usage = that agent's sessions.
+      def personas
+        dir = @paths[:persona] || (defined?(PERSONA_BASE_DIR) ? PERSONA_BASE_DIR : nil)
+        list_dirs(dir).map do |name|
+          { name: name, available: true, usage: session_usage("agent", name) }
+        end
+      end
+
+      # skills: SKILL.md inventory + view/use counts from the .usage.json sidecars.
+      def skills
+        dir = @paths[:skills] || (defined?(SKILLS_DIR) ? SKILLS_DIR : nil)
+        return [] unless dir && Dir.exist?(dir)
+
+        items = Dir.glob(File.join(dir, "**", "SKILL.md")).reject { |p| p.include?("_archived/") }.map do |path|
+          fm = skill_frontmatter(path)
+          { name: fm[:name] || File.basename(File.dirname(path)), available: true,
+            description: fm[:description], usage: skill_usage(path).merge(usage_tracked: true) }
+        end
+        items.sort_by { |s| -(s[:usage][:uses] || 0) }
+      end
+
+      # knowledge: enumerable by category; per-session injection isn't logged.
+      def knowledge
+        dir = @paths[:knowledge] || (defined?(KNOWLEDGE_DIR) ? KNOWLEDGE_DIR : nil)
+        return [] unless dir && Dir.exist?(dir)
+
+        by_cat = Dir.glob(File.join(dir, "**", "*.md")).group_by { |p| category_of(p, dir) }
+        by_cat.map { |cat, files| { name: cat, available: true, usage: { files: files.size, usage_tracked: false } } }
+              .sort_by { |k| -k[:usage][:files] }
+      end
+
+      def profiles
+        config_keys(@paths[:profiles] || brainiac_file("profiles.json")).map do |name|
+          { name: name, available: true, usage: { usage_tracked: false } }
+        end
+      end
+
+      def roles
+        dir = @paths[:roles] || (defined?(ROLES_DIR) ? ROLES_DIR : nil)
+        Dir.glob(File.join(dir.to_s, "*.md")).map do |path|
+          { name: File.basename(path, ".md"), available: true, usage: { usage_tracked: false } }
+        end
+      end
+
+      # Distinct values of a session dimension (model/source), each with usage.
+      def dimension_items(field)
+        session_values(field).reject(&:empty?).sort.map do |value|
+          { name: value, available: true, usage: session_usage(field, value) }
+        end
+      end
+
+      def session_usage(field, value)
+        key = value.to_s.downcase
+        matched = @sessions.select { |s| s[field.to_sym].to_s.downcase == key }
+        finished = matched.select { |s| s[:has_history] }
+        m = MetricSet.from(matched)
+        { sessions: matched.size, finished: finished.size, usage_tracked: true,
+          crash_rate: m[:crash_rate], error_rate: m[:error_rate],
+          avg_duration_seconds: m[:avg_duration_seconds], avg_context_pct: m[:avg_context_pct] }
+      end
+
+      def session_values(field)
+        @sessions.filter_map { |s| s[field.to_sym] }.map(&:to_s).uniq
+      end
+
+      def finished_session_values(field)
+        @finished.filter_map { |s| s[field.to_sym] }.map(&:to_s).uniq
+      end
+
+      def registry_agent_names
+        @registry_agent_names ||= begin
+          reg = if @paths[:agents]
+                  parse_json(@paths[:agents])
+                elsif defined?(AGENT_REGISTRY)
+                  AGENT_REGISTRY
+                else
+                  {}
+                end
+          (reg || {}).map { |k, v| (v.is_a?(Hash) && v["display_name"]) || k }.map(&:to_s)
+        end
+      end
+
+      def list_dirs(dir)
+        return [] unless dir && Dir.exist?(dir)
+
+        Dir.children(dir).select { |c| File.directory?(File.join(dir, c)) && !c.start_with?(".") }.sort
+      rescue SystemCallError
+        []
+      end
+
+      def category_of(path, root)
+        rel = path.sub("#{root}/", "")
+        rel.include?("/") ? rel.split("/").first : "(root)"
+      end
+
+      def skill_frontmatter(path)
+        content = File.read(path)
+        return {} unless content.start_with?("---")
+
+        parts = content.split("---", 3)
+        return {} if parts.size < 3
+
+        yaml = YAML.safe_load(parts[1]) || {}
+        { name: yaml["name"], description: yaml["description"] }
+      rescue StandardError
+        {}
+      end
+
+      def skill_usage(path)
+        usage_file = path.sub(/SKILL\.md$/, "SKILL.usage.json")
+        data = parse_json(usage_file) || {}
+        { views: data["views"] || 0, uses: data["uses"] || 0,
+          last_used: data["last_used"], last_viewed: data["last_viewed"] }
+      end
+
+      def config_keys(file)
+        (parse_json(file) || {}).keys.map(&:to_s)
+      end
+
+      def brainiac_file(name)
+        defined?(BRAINIAC_DIR) ? File.join(BRAINIAC_DIR, name) : nil
+      end
+
+      def parse_json(file)
+        return nil unless file && File.exist?(file)
+
+        JSON.parse(File.read(file))
+      rescue StandardError
+        nil
+      end
+    end
+
     module_function
 
     # Convenience entry point: build an analyzer over the standard brainiac locations
@@ -643,6 +851,20 @@ module Brainiac
       hist = history_file || default_history_file
       Analyzer.new(log_dirs: dirs, history_file: hist, now: now)
               .performance_report(period: period, since: since)
+    end
+
+    # Inventory of all brainiac parameters with per-item session usage.
+    def inventory(extra_dirs: [], history_file: nil, now: Time.now)
+      dirs = (default_log_dirs + Array(extra_dirs)).uniq
+      hist = history_file || default_history_file
+      Analyzer.new(log_dirs: dirs, history_file: hist, now: now).inventory_report
+    end
+
+    # Sessions tied to a selected parameter value along a dimension.
+    def sessions_for(dimension, value, extra_dirs: [], history_file: nil, now: Time.now)
+      dirs = (default_log_dirs + Array(extra_dirs)).uniq
+      hist = history_file || default_history_file
+      Analyzer.new(log_dirs: dirs, history_file: hist, now: now).sessions_for(dimension, value)
     end
 
     # tmp/ of every registered repo, every existing worktree sibling of those repos,

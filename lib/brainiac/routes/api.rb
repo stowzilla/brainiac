@@ -345,6 +345,26 @@ get "/api/forensics/performance" do
   Brainiac::Forensics.performance(period: period, since: since).to_json
 end
 
+# Inventory of all brainiac parameters (agents/personas/skills/knowledge/models/
+# sources/profiles/roles) with per-item session usage.
+get "/api/forensics/inventory" do
+  content_type :json
+  reload_projects!
+  Brainiac::Forensics.inventory.to_json
+end
+
+# Sessions tied to a selected parameter value. ?dimension=agent|model|source|persona&value=…
+get "/api/forensics/sessions" do
+  content_type :json
+  reload_projects!
+  dimension = params["dimension"].to_s
+  value = params["value"].to_s
+  halt 400, { error: "missing dimension or value" }.to_json if dimension.empty? || value.empty?
+
+  sessions = Brainiac::Forensics.sessions_for(dimension, value)
+  { dimension: dimension, value: value, count: sessions.size, sessions: sessions.first(200) }.to_json
+end
+
 # Shape the forensics report for the API: optionally trim to anomalies-only and
 # clamp the session list to a sane limit.
 def forensics_response(report, params)

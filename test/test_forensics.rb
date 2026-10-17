@@ -358,4 +358,142 @@ class TestForensics < Minitest::Test
     assert(report[:by_agent].any? { |b| b[:key] == "K" })
     assert(report[:by_model].any? { |b| b[:key] == "sonnet" })
   end
+
+  # --- inventory (all brainiac parameters) --------------------------------
+
+  # Build a fixture brain layout and return a paths hash for Inventory.
+  def build_inventory_fixtures
+    skills_dir = File.join(@dir, "skills")
+    persona_dir = File.join(@dir, "persona")
+    knowledge_dir = File.join(@dir, "knowledge")
+    roles_dir = File.join(@dir, "roles")
+    FileUtils.mkdir_p(File.join(skills_dir, "deploy-thing"))
+    FileUtils.mkdir_p(File.join(skills_dir, "_archived", "old-skill"))
+    FileUtils.mkdir_p(File.join(persona_dir, "kaylee"))
+    FileUtils.mkdir_p(File.join(persona_dir, "galen"))
+    FileUtils.mkdir_p(File.join(knowledge_dir, "lessons"))
+    FileUtils.mkdir_p(roles_dir)
+
+    File.write(File.join(skills_dir, "deploy-thing", "SKILL.md"),
+               "---\nname: deploy-thing\ndescription: Deploy the thing\n---\nSteps\n")
+    File.write(File.join(skills_dir, "deploy-thing", "SKILL.usage.json"),
+               JSON.generate({ "views" => 5, "uses" => 3, "last_used" => "2026-10-10T00:00:00Z" }))
+    File.write(File.join(skills_dir, "_archived", "old-skill", "SKILL.md"),
+               "---\nname: old-skill\ndescription: archived\n---\n")
+    File.write(File.join(knowledge_dir, "lessons", "a.md"), "x")
+    File.write(File.join(knowledge_dir, "lessons", "b.md"), "y")
+    File.write(File.join(roles_dir, "reviewer.md"), "# Reviewer")
+    agents_file = File.join(@dir, "agents.json")
+    File.write(agents_file, JSON.generate({ "kaylee" => { "display_name" => "Kaylee" }, "galen" => { "display_name" => "Galen" } }))
+    profiles_file = File.join(@dir, "profiles.json")
+    File.write(profiles_file, JSON.generate({ "q" => { "default" => true }, "k+" => {} }))
+
+    { skills: skills_dir, persona: persona_dir, knowledge: knowledge_dir,
+      roles: roles_dir, agents: agents_file, profiles: profiles_file }
+  end
+
+  def inventory_sessions
+    p1 = write_log(name: "s1", timestamp: "20261015-100000")
+    p2 = write_log(name: "s2", timestamp: "20261015-110000")
+    write_history([
+                    { "agent" => "Kaylee", "model" => "sonnet", "source" => "fizzy", "log_file" => p1,
+                      "exit_status" => 0, "duration_seconds" => 100, "finished_at" => "2026-10-15T10:01:00Z" },
+                    { "agent" => "Kaylee", "model" => "opus", "source" => "discord", "log_file" => p2,
+                      "exit_status" => 1, "duration_seconds" => 200, "finished_at" => "2026-10-15T11:01:00Z" }
+                  ])
+  end
+
+  def test_inventory_enumerates_all_categories
+    inventory_sessions
+    paths = build_inventory_fixtures
+    inv = analyzer.inventory_report(paths: paths)
+    %i[agents personas skills knowledge models sources profiles roles].each do |cat|
+      assert inv.key?(cat), "missing category #{cat}"
+    end
+  end
+
+  def test_inventory_skills_from_sidecar_excludes_archived
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    names = inv[:skills].map { |s| s[:name] }
+    assert_includes names, "deploy-thing"
+    refute_includes names, "old-skill"
+    deploy = inv[:skills].find { |s| s[:name] == "deploy-thing" }
+    assert_equal 3, deploy[:usage][:uses]
+    assert_equal 5, deploy[:usage][:views]
+  end
+
+  def test_inventory_agents_tie_to_session_usage
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    kaylee = inv[:agents].find { |a| a[:name] == "Kaylee" }
+    refute_nil kaylee
+    assert kaylee[:available]
+    assert_equal 2, kaylee[:usage][:sessions]
+    assert_in_delta 0.5, kaylee[:usage][:crash_rate], 0.001
+  end
+
+  def test_inventory_personas_mirror_agent_sessions
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    kaylee = inv[:personas].find { |p| p[:name] == "kaylee" }
+    refute_nil kaylee
+    # persona "kaylee" resolves to agent usage (case-insensitive)
+    assert_equal 2, kaylee[:usage][:sessions]
+  end
+
+  def test_inventory_excludes_orphan_log_names_from_agents
+    write_log(name: "followup-999", timestamp: "20261015-120000") # no history record
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    names = inv[:agents].map { |a| a[:name] }
+    refute_includes names, "followup-999"
+    assert_includes names, "Kaylee"
+  end
+
+  def test_inventory_models_and_sources
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    assert_includes inv[:models].map { |m| m[:name] }, "sonnet"
+    assert_includes inv[:models].map { |m| m[:name] }, "opus"
+    assert_includes inv[:sources].map { |s| s[:name] }, "fizzy"
+  end
+
+  def test_inventory_knowledge_counts_files_untracked
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    lessons = inv[:knowledge].find { |k| k[:name] == "lessons" }
+    refute_nil lessons
+    assert_equal 2, lessons[:usage][:files]
+    refute lessons[:usage][:usage_tracked]
+  end
+
+  def test_inventory_profiles_and_roles
+    inventory_sessions
+    inv = analyzer.inventory_report(paths: build_inventory_fixtures)
+    assert_includes inv[:profiles].map { |p| p[:name] }, "q"
+    assert_includes inv[:roles].map { |r| r[:name] }, "reviewer"
+  end
+
+  def test_sessions_for_agent
+    inventory_sessions
+    sessions = analyzer.sessions_for("agent", "Kaylee")
+    assert_equal 2, sessions.size
+  end
+
+  def test_sessions_for_model_case_insensitive
+    inventory_sessions
+    assert_equal 1, analyzer.sessions_for("model", "SONNET").size
+    assert_equal 1, analyzer.sessions_for("source", "discord").size
+  end
+
+  def test_sessions_for_persona_resolves_to_agent
+    inventory_sessions
+    assert_equal 2, analyzer.sessions_for("persona", "kaylee").size
+  end
+
+  def test_sessions_for_unknown_dimension_empty
+    inventory_sessions
+    assert_empty analyzer.sessions_for("bogus", "x")
+  end
 end

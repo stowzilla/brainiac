@@ -44,6 +44,26 @@
   .anomaly-row .msg { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .anomaly-row .drill { color: var(--blue); font-size: 12px; flex-shrink: 0; }
   .empty { text-align: center; padding: 32px; color: var(--dim); }
+  /* parameters section */
+  .param-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .param-tab { background: var(--bg); border: 1px solid var(--border); color: var(--dim); padding: 5px 12px; border-radius: 14px; cursor: pointer; font-size: 12px; text-transform: capitalize; }
+  .param-tab:hover { color: var(--text); border-color: var(--blue); }
+  .param-tab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .param-tab .count { opacity: 0.7; margin-left: 4px; }
+  .param-layout { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; }
+  @media (max-width: 760px) { .param-layout { grid-template-columns: 1fr; } }
+  .param-list { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .param-item { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+  .param-item:last-child { border-bottom: none; }
+  .param-item:hover { background: rgba(88,166,255,0.06); }
+  .param-item.selected { background: rgba(88,166,255,0.12); border-left: 3px solid var(--blue); }
+  .param-item.unselectable { cursor: default; opacity: 0.85; }
+  .param-item .name { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+  .param-item .name .pill { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--border); color: var(--dim); font-weight: 500; white-space: nowrap; }
+  .param-item .desc { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .param-detail { border: 1px solid var(--border); border-radius: 6px; padding: 14px; max-height: 420px; overflow-y: auto; }
+  .param-detail h3 { font-size: 14px; margin-bottom: 10px; }
+  .param-detail .note { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
   /* log drill-down modal */
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 50; }
   .modal.open { display: flex; }
@@ -79,6 +99,15 @@
 
   <div class="container">
     <div class="kpis" id="kpis"><div class="loading">Loading KPIs…</div></div>
+
+    <div class="section-title">Parameters <span class="meta">— what's available to agents &amp; how it's used</span></div>
+    <div class="panel">
+      <div class="param-tabs" id="paramTabs"></div>
+      <div class="param-layout">
+        <div class="param-list" id="paramList"><div class="loading">Loading inventory…</div></div>
+        <div class="param-detail" id="paramDetail"><div class="empty">Select a parameter to see its sessions.</div></div>
+      </div>
+    </div>
 
     <div class="section-title">Trend over time</div>
     <div class="panel">
@@ -138,6 +167,7 @@
       renderBreakdown('byAgent', perf.by_agent || []);
       renderBreakdown('byModel', perf.by_model || []);
       renderAnomalies(fx.anomalies || []);
+      loadInventory();
       document.getElementById('meta').textContent =
         'Generated ' + (perf.generated_at || '') + ' · ' + (perf.overall ? perf.overall.sessions : 0) + ' sessions';
     } catch (e) {
@@ -231,6 +261,101 @@
       const f = row.getAttribute('data-log');
       if (f) row.addEventListener('click', () => openLog(f));
     });
+  }
+
+  // Parameters / inventory
+  let INVENTORY = null;
+  const CATEGORIES = ['agents', 'personas', 'skills', 'knowledge', 'models', 'sources', 'profiles', 'roles'];
+  // Which categories map to a session dimension you can drill into.
+  const DRILL_DIMENSION = { agents: 'agent', personas: 'persona', models: 'model', sources: 'source' };
+  let activeCategory = 'agents';
+
+  async function loadInventory() {
+    try {
+      INVENTORY = await fetch(apiUrl('/api/forensics/inventory')).then(r => r.json());
+      renderParamTabs();
+      renderParamList();
+    } catch (e) {
+      document.getElementById('paramList').innerHTML = '<div class="empty">Error loading inventory: ' + esc(e) + '</div>';
+    }
+  }
+
+  function renderParamTabs() {
+    document.getElementById('paramTabs').innerHTML = CATEGORIES.map(cat => {
+      const n = (INVENTORY[cat] || []).length;
+      const active = cat === activeCategory ? ' active' : '';
+      return '<span class="param-tab' + active + '" data-cat="' + cat + '">' + cat + '<span class="count">' + n + '</span></span>';
+    }).join('');
+    document.querySelectorAll('.param-tab').forEach(t => t.addEventListener('click', () => {
+      activeCategory = t.getAttribute('data-cat');
+      renderParamTabs();
+      renderParamList();
+      document.getElementById('paramDetail').innerHTML = '<div class="empty">Select a parameter to see its sessions.</div>';
+    }));
+  }
+
+  function renderParamList() {
+    const items = INVENTORY[activeCategory] || [];
+    const dim = DRILL_DIMENSION[activeCategory];
+    if (!items.length) { document.getElementById('paramList').innerHTML = '<div class="empty">None</div>'; return; }
+    document.getElementById('paramList').innerHTML = items.map((it, i) => {
+      const u = it.usage || {};
+      let pill = 'inventory';
+      if (u.sessions != null) pill = u.sessions + ' sessions';
+      else if (u.uses != null) pill = u.uses + ' uses';
+      else if (u.files != null) pill = u.files + ' files';
+      const cls = dim ? '' : ' unselectable';
+      const desc = it.description ? '<div class="desc">' + esc(it.description) + '</div>' : '';
+      return '<div class="param-item' + cls + '" data-i="' + i + '">' +
+        '<div class="name"><span>' + esc(it.name) + '</span><span class="pill">' + esc(pill) + '</span></div>' + desc + '</div>';
+    }).join('');
+    document.querySelectorAll('#paramList .param-item').forEach(el => {
+      el.addEventListener('click', () => selectParam(items[+el.getAttribute('data-i')], el));
+    });
+  }
+
+  async function selectParam(item, el) {
+    const dim = DRILL_DIMENSION[activeCategory];
+    document.querySelectorAll('#paramList .param-item').forEach(x => x.classList.remove('selected'));
+    const detail = document.getElementById('paramDetail');
+    const u = item.usage || {};
+    if (!dim) {
+      let rows = '';
+      if (u.uses != null) rows += '<div>Uses: <strong>' + u.uses + '</strong> · Views: <strong>' + (u.views || 0) + '</strong>' +
+        (u.last_used ? ' · Last used ' + esc(u.last_used) : '') + '</div>';
+      if (u.files != null) rows += '<div>Files: <strong>' + u.files + '</strong></div>';
+      const note = u.usage_tracked === false
+        ? '<div class="note">Per-session injection isn\'t logged for this parameter yet — showing inventory only.</div>' : '';
+      detail.innerHTML = '<h3>' + esc(item.name) + '</h3>' + note + (rows || '<div class="empty">Inventory only.</div>');
+      return;
+    }
+    el.classList.add('selected');
+    detail.innerHTML = '<div class="loading">Loading sessions…</div>';
+    try {
+      const r = await fetch(apiUrl('/api/forensics/sessions?dimension=' + dim + '&value=' + encodeURIComponent(item.name)));
+      renderParamSessions(item, await r.json());
+    } catch (e) {
+      detail.innerHTML = '<div class="empty">Error: ' + esc(e) + '</div>';
+    }
+  }
+
+  function renderParamSessions(item, data) {
+    const sessions = data.sessions || [];
+    const u = item.usage || {};
+    const head = '<h3>' + esc(item.name) + ' <span class="meta">— ' + data.count + ' session(s)</span></h3>' +
+      '<div class="note">crash ' + fmtPct(u.crash_rate) + ' · error ' + fmtPct(u.error_rate) +
+      ' · avg dur ' + (u.avg_duration_seconds ?? '–') + 's · avg ctx ' + (u.avg_context_pct != null ? u.avg_context_pct + '%' : '–') + '</div>';
+    if (!sessions.length) { document.getElementById('paramDetail').innerHTML = head + '<div class="empty">No sessions.</div>'; return; }
+    const rows = sessions.map(s => {
+      const status = !s.has_history ? 'no-history' : (s.exit_status === 0 ? 'ok' : 'exit=' + s.exit_status);
+      const when = s.finished_at || s.started_at || '';
+      const drill = s.log_file ? '<span class="drill" data-log="' + esc(s.log_file) + '">log →</span>' : '';
+      return '<div class="anomaly-row"><span class="kind">' + esc(s.card_key || status) + '</span>' +
+        '<span class="msg">' + esc(when) + ' · ' + esc(s.model || '') + ' · dur ' + (s.duration_seconds ?? '?') + 's</span>' + drill + '</div>';
+    }).join('');
+    document.getElementById('paramDetail').innerHTML = head + rows;
+    document.querySelectorAll('#paramDetail .drill').forEach(d =>
+      d.addEventListener('click', () => openLog(d.getAttribute('data-log'))));
   }
 
   async function openLog(file) {
