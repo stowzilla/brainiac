@@ -50,11 +50,18 @@ module Brainiac
     # @return [Array] Results from handlers
     def emit(event, **context)
       results = @hooks[event].map do |handler|
-        handler.call(context)
-      rescue StandardError => e
-        LOG.error "[Hooks] Error in #{event} handler: #{e.message}" if defined?(LOG)
-        LOG.error "[Hooks]   #{e.backtrace.first(3).join("\n  ")}" if defined?(LOG)
-        nil
+        # Each handler is isolated: a raising plugin can't break the emit loop or the
+        # other handlers. Uses the shared observability guard when available.
+        if respond_to?(:guard)
+          guard(:Hooks, label: "#{event} handler", fallback: nil) { handler.call(context) }
+        else
+          begin
+            handler.call(context)
+          rescue StandardError => e
+            LOG.error "[Hooks] Error in #{event} handler: #{e.message}" if defined?(LOG)
+            nil
+          end
+        end
       end
       results.compact
     end

@@ -404,8 +404,7 @@ end
 def forensics_guard(label)
   yield
 rescue StandardError => e
-  LOG.warn "[Forensics] /#{label} failed: #{e.class}: #{e.message}"
-  LOG.debug(e.backtrace.first(5).join("\n")) if e.backtrace
+  Brainiac.logger(:Forensics).exception(e, label: "/#{label}", level: :warn)
   status 500
   { error: "#{e.class}: #{e.message}", endpoint: label }.to_json
 end

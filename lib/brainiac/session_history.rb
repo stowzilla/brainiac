@@ -99,6 +99,7 @@ def build_session_record(ctx:, exit_status:, signaled:, finished_at:, heaviness:
     "recorded_at" => finished_at.utc.iso8601,
     "schema" => SESSION_HISTORY_SCHEMA,
     "agent" => ctx[:agent_name] || ctx[:agent_config_name] || "Unknown",
+    "trace_id" => ctx[:trace_id],
     "card_key" => ctx[:card_key] || source_context[:card_key],
     "card_number" => ctx[:card_number] || source_context[:card_number],
     "source" => ctx[:source]&.to_s,

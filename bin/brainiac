@@ -13,6 +13,7 @@ require "time"
 
 BRAINIAC_ROOT = File.expand_path("..", __dir__)
 require_relative "../lib/brainiac/version"
+require_relative "../lib/brainiac/version_compare"
 BRAINIAC_VERSION = Brainiac::VERSION
 
 BRAINIAC_DIR = File.join(Dir.home, ".brainiac")
@@ -30,6 +31,38 @@ def load_projects
   JSON.parse(File.read(PROJECTS_FILE))
 rescue JSON::ParserError
   {}
+end
+
+# Query the latest brainiac version available on the gem host. Returns a version
+# string or nil if it can't be determined (offline, gem command missing, etc.).
+def latest_remote_gem_version(gem_name)
+  out, status = Open3.capture2e("gem", "list", "--remote", "--exact", gem_name)
+  return nil unless status.success?
+
+  # Line looks like: "brainiac (0.2.0, 0.1.10)" — first version is the latest.
+  out[/#{Regexp.escape(gem_name)}\s+\(([^,)]+)/, 1]&.strip
+end
+
+# True when moving from `current` to `target` crosses a minor version within the same
+# 0.x major line (e.g. 0.1.10 → 0.2.0). Pre-1.0, a minor bump can carry breaking
+# changes, so we confirm it with the user. Logic lives in Brainiac::VersionCompare.
+def minor_version_move?(current, target)
+  Brainiac::VersionCompare.minor_move?(current, target)
+end
+
+# Prompt before a 0.x → 0.y minor-version core upgrade. Returns true to proceed.
+# Non-interactive (no TTY) proceeds without prompting so automation isn't blocked.
+def confirm_minor_upgrade?(current, target)
+  return true unless minor_version_move?(current, target)
+
+  puts ""
+  puts "⚠ This is a minor-version upgrade: brainiac #{current} → #{target}"
+  puts "  Pre-1.0 minor bumps may include behavior changes. Review the CHANGELOG first."
+  return true unless $stdin.tty?
+
+  print "  Proceed with the upgrade? [y/N] "
+  answer = $stdin.gets&.strip&.downcase
+  %w[y yes].include?(answer)
 end
 
 # Render the anomaly-mode forensics report to stdout (JSON or human-readable).
@@ -2963,6 +2996,14 @@ when "update", "upgrade"
 
     # --- Update brainiac core ---
     current_version = BRAINIAC_VERSION
+
+    # Confirm a 0.x → 0.y minor-version move before installing (pre-1.0 minors can
+    # carry behavior changes). Skipped automatically if the target can't be determined.
+    target_version = latest_remote_gem_version("brainiac")
+    if target_version && !confirm_minor_upgrade?(current_version, target_version)
+      puts "  Upgrade cancelled."
+      exit 0
+    end
 
     puts "Updating brainiac gem..."
     output, status = Open3.capture2e("gem install brainiac")

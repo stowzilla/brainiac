@@ -962,6 +962,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   head_before, status_before = capture_git_state(chdir)
 
   started_at = Time.now
+  trace_id = Brainiac::Observability.new_trace_id # correlation id for this dispatch's logs
   stdin_redirect = (resolved["prompt_mode"] || "stdin") == "stdin" ? { in: prompt_file } : {}
   pid = spawn(spawn_env, *cmd, chdir: chdir, **stdin_redirect, out: [log_file, "w"], err: %i[child out])
 
@@ -975,11 +976,11 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
     head_before: head_before, status_before: status_before,
     project_key_for_restart: project_key_for_restart, model: model, started_at: started_at,
     profile: effective_profile_name(profile), effort: effort, resumed: should_resume,
-    work_item_id: work_item_id
+    work_item_id: work_item_id, trace_id: trace_id
   )
 
-  LOG.info "#{resolved["agent_cli"]} started (pid: #{pid}, agent: #{agent_config_name || "default"}, " \
-           "model: #{model || "default"}), tail -f #{log_file}"
+  Brainiac.logger(:Dispatch).info("#{resolved["agent_cli"]} started (pid: #{pid}, agent: " \
+                                  "#{agent_config_name || "default"}, model: #{model || "default"}), tail -f #{log_file}")
 
   [pid, log_file]
 end
@@ -987,6 +988,9 @@ end
 # Spawn a background thread that waits for the agent process to finish and runs completion handling.
 def spawn_completion_watcher(**ctx)
   thread = Thread.new do
+    # Adopt the dispatch's trace id in this watcher thread so every completion-step
+    # and hook log line is correlated to the session that produced it.
+    Brainiac.adopt_trace(ctx[:trace_id]) if ctx[:trace_id]
     Process.wait(ctx[:pid])
     handle_agent_completion(**ctx)
   end
@@ -1362,12 +1366,8 @@ end
 # Run an independent post-completion step, logging and swallowing any failure so one
 # broken step (e.g. a plugin-facing call raising) can't abort the remaining steps —
 # notably session-history archival, which must not depend on earlier steps succeeding.
-def completion_step(name)
-  yield
-rescue StandardError => e
-  LOG.error "[Completion] step '#{name}' failed: #{e.class}: #{e.message}"
-  LOG.error "[Completion]   #{e.backtrace.first(3).join("\n  ")}" if e.backtrace
-  nil
+def completion_step(name, &)
+  Brainiac.guard(:Completion, label: "step '#{name}'", &)
 end
 
 # Surface a clean-exit session that produced no response, pulling fields from the

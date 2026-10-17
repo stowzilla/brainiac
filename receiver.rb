@@ -14,6 +14,7 @@ SERVER_ROOT = File.expand_path(__dir__)
 # Load all modules
 require_relative "lib/brainiac/hooks"
 require_relative "lib/brainiac/config"
+require_relative "lib/brainiac/observability"
 require_relative "lib/brainiac/users"
 require_relative "lib/brainiac/agents"
 require_relative "lib/brainiac/brain"
