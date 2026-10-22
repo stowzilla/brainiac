@@ -108,7 +108,7 @@ def generate_output
       emoji = AGENTS.dig((s["agent"] || "").downcase, :emoji) || DEFAULT_EMOJI
       context = format_context(s["card_key"])
       ago = time_ago(s["finished_at"]) || "?"
-      lines << "#{emoji} #{s["agent"]}: #{context} — #{ago}"
+      lines << "#{emoji} #{s["agent"]}: #{context} — #{ago}#{full_log_action(s["log_file"])}"
       lines.concat(render_session_submenu(s))
     end
   end
