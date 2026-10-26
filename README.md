@@ -202,7 +202,7 @@ After setup, `~/.brainiac/` looks like:
 
 ```
 ~/.brainiac/
-├── brainiac.json        # Core config (default_agent)
+├── brainiac.json        # Core config (default_agent, default_cli_provider)
 ├── agents.json          # Agent registry (tokens, display names, local flag)
 ├── projects.json        # Registered projects
 ├── users.json           # Cross-platform user identity registry
@@ -262,6 +262,31 @@ The `agent_flag` field controls how agent identity is passed to the CLI. Differe
 
 Set `agent_flag` to `null` to suppress passing the agent name entirely (for CLIs that don't support persona switching).
 
+`readonly_args` is optional. It replaces `default_args` when a plugin asks an agent something with `readonly: true` (see [Asking an agent from a plugin](#asking-an-agent-from-a-plugin)), so it must only allow tools that read:
+
+| CLI | `readonly_args` |
+|-----|-----------------|
+| Kiro CLI | `chat --no-interactive --trust-tools=fs_read` |
+| Claude Code | `-p --restricted --strict-mcp-config --no-session-persistence --tools Read,Grep,Glob` |
+
+A provider without `readonly_args` can't be used read-only; the call fails instead of falling back to `default_args`.
+
+Which provider runs is decided in this order: a `[cli:X]` tag, the agent's `cli_provider` in `agents.json`, the project's `cli_provider`, then `default_cli_provider` in `brainiac.json`. With none of those set, brainiac uses the `AGENT_CLI` env var, or kiro-cli.
+
+#### Asking an agent from a plugin
+
+`run_agent` starts a session and returns straight away. When a plugin needs the agent's answer back (for example to decide whether an incoming report is a bug), it calls `ask_agent`, which waits and returns the reply text:
+
+```ruby
+reply = ask_agent(prompt, project_config: PROJECTS["my-app"], project_key: "my-app",
+                          readonly: true, topic: "bug triage", timeout: 300)
+```
+
+- The agent and CLI resolve the same way as `run_agent`: `agent_name:`, else the project's `agent_name`, else the default agent.
+- `brain: true` (the default) puts the agent's role, persona and brain knowledge ahead of the prompt. `topic:` seeds the knowledge search.
+- `readonly: true` runs the provider's `readonly_args`. Use it whenever the prompt contains text from outside (webhooks, emails, public forms).
+- It raises `AskAgentError` on a timeout, a CLI failure, or a read-only request to a provider without `readonly_args`.
+
 Brainiac ships with example providers during setup. Your project config references which provider to use.
 
 #### 3. Environment Variables
@@ -269,10 +294,12 @@ Brainiac ships with example providers during setup. Your project config referenc
 Most config lives in JSON files now. The default agent is set in `brainiac.json`:
 
 ```json
-{ "default_agent": "Sherlock" }
+{ "default_agent": "Sherlock", "default_cli_provider": "kiro" }
 ```
 
-Or via environment variable (takes precedence):
+`default_cli_provider` is the CLI used when neither the agent nor the project names one (see [CLI Providers](#2-cli-providers-brainiaccli-providers)).
+
+The default agent can also be set via environment variable (takes precedence):
 
 ```bash
 export AI_AGENT_NAME="Sherlock"

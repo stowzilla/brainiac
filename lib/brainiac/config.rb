@@ -80,6 +80,13 @@ end
 
 AI_AGENT_NAME = resolve_default_agent
 
+# --- Default CLI provider ---
+# Last fallback for which CLI runs an agent, after the agent's and the project's
+# cli_provider. Unset → DEFAULT_PROJECT's AGENT_CLI env var / kiro-cli.
+def default_cli_provider
+  BRAINIAC_CONFIG["default_cli_provider"]
+end
+
 LOG_LEVEL = ENV.fetch("LOG_LEVEL", "info").downcase
 LOG = Logger.new($stdout)
 LOG.level = case LOG_LEVEL

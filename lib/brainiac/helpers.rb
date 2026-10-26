@@ -32,7 +32,7 @@ def load_cli_provider(provider_name)
   config["prompt_mode"] = raw["prompt_mode"] || "stdin"
   # Copy optional fields from raw config when present.
   # Each field controls a specific CLI behavior — see comments in the template.
-  %w[prompt_flag list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
+  %w[prompt_flag readonly_args list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
      session_list_command session_id_field session_directory_field session_updated_field
      session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
      effort_config_key effort_map title_flag heaviness_probe settings_model_cmd].each do |key|
@@ -76,12 +76,14 @@ end
 require_relative "model_parser"
 
 # Resolve CLI config for a project by merging provider defaults with project overrides.
-# Priority: cli_provider_override > agent-level cli_provider > project-level cli_provider > DEFAULT_PROJECT
+# Priority: cli_provider_override > agent-level cli_provider > project-level cli_provider >
+# brainiac.json default_cli_provider > DEFAULT_PROJECT
 def resolve_project_cli_config(project_config, cli_provider_override: nil, agent_name: nil)
-  # Determine which CLI provider to use (priority: override > agent > project)
+  # Determine which CLI provider to use (priority: override > agent > project > default)
   provider_name = cli_provider_override
   provider_name ||= agent_cli_provider_for(agent_name) if agent_name
   provider_name ||= project_config["cli_provider"]
+  provider_name ||= default_cli_provider
 
   provider_config = load_cli_provider(provider_name)
 
