@@ -425,8 +425,11 @@ class TestCodexIntegration < Minitest::Test
   # ─── Agent-Level CLI Provider ───────────────────────────────────────────────
 
   def test_agent_level_cli_provider_resolution
-    # Set up an agent with cli_provider in the registry
-    original_registry = AGENT_REGISTRY.dup
+    # Set up an agent with cli_provider in the registry.
+    # dup the nested hash — AGENT_REGISTRY.dup is shallow, so mutating/restoring
+    # the top level would still leak cli_provider into the shared "sherlock" hash
+    # and poison provider resolution in every later test.
+    original_sherlock = AGENT_REGISTRY["sherlock"].dup
     AGENT_REGISTRY["sherlock"]["cli_provider"] = "codex"
 
     # A project without cli_provider — agent-level should kick in
@@ -434,7 +437,7 @@ class TestCodexIntegration < Minitest::Test
     resolved = resolve_project_cli_config(bare_project, agent_name: "Sherlock")
     assert_equal "codex", resolved["agent_cli"]
   ensure
-    AGENT_REGISTRY.replace(original_registry)
+    AGENT_REGISTRY["sherlock"] = original_sherlock
   end
 
   # ─── End-to-End Command Scenarios ──────────────────────────────────────────
