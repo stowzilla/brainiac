@@ -2974,10 +2974,12 @@ when "install"
       exit 1
     end
 
-    entry_file = File.join(local_path, "lib", "brainiac_#{name}.rb")
-    unless File.exist?(entry_file)
-      puts "Error: Expected entry file not found: #{entry_file}"
-      puts "  Plugin gems must have lib/brainiac_<name>.rb"
+    # `brainiac plugin new posh-nosh` writes lib/brainiac_posh_nosh.rb, and the
+    # loader falls back to the underscored name, so accept either spelling.
+    entry_files = ["brainiac_#{name}.rb", "brainiac_#{name.tr("-", "_")}.rb"].uniq.map { |file| File.join(local_path, "lib", file) }
+    unless entry_files.any? { |file| File.exist?(file) }
+      puts "Error: Expected entry file not found: #{entry_files.join(" or ")}"
+      puts "  Plugin gems must have lib/brainiac_<name>.rb (dashes may be underscores)"
       exit 1
     end
 
