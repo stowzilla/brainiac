@@ -1,6 +1,7 @@
 {
   "binary": "kiro-cli",
   "default_args": "chat --trust-all-tools --no-interactive",
+  "readonly_args": "chat --no-interactive --trust-tools=fs_read",
   "agent_flag": "--agent",
   "model_flag": "--model",
   "effort_flag": "--effort",
