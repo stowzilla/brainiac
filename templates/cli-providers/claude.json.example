@@ -1,0 +1,31 @@
+{
+  "binary": "claude",
+  "default_args": "-p --dangerously-skip-permissions",
+  "readonly_args": "-p --restricted --strict-mcp-config --no-session-persistence --tools Read,Grep,Glob",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "effort_flag": "--effort",
+  "prompt_mode": "stdin",
+  "resume_id_flag": "--resume",
+  "new_session_id_flag": "--session-id",
+  "list_models_command": null,
+  "models": {
+    "opus": "claude-opus-5-5",
+    "opus55": "claude-opus-5-5",
+    "opus5": "claude-opus-5",
+    "opus48": "claude-opus-4-8",
+    "opus47": "claude-opus-4-7",
+    "opus46": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-5-5",
+    "sonnet55": "claude-sonnet-5-5",
+    "sonnet5": "claude-sonnet-5",
+    "sonnet46": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-5-5",
+    "haiku55": "claude-haiku-5-5",
+    "haiku45": "claude-haiku-4-5",
+    "fable": "claude-fable-5-1",
+    "fable51": "claude-fable-5-1",
+    "auto": "claude-opus-5-5"
+  },
+  "efforts": ["low", "medium", "high", "xhigh", "max"]
+}

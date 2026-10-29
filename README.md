@@ -258,6 +258,7 @@ The `agent_flag` field controls how agent identity is passed to the CLI. Differe
 |-----|-------------|-----------------|
 | Kiro CLI | `"--agent"` | `kiro-cli --agent sherlock chat --no-interactive` |
 | Codex CLI | `"--profile"` | `codex --profile sherlock exec --sandbox workspace-write -` |
+| Claude Code | `null` | `claude -p --dangerously-skip-permissions --model claude-opus-5-5` (no agent identity passed) |
 | Grok CLI | `null` | `grok --always-approve` (no agent identity passed) |
 
 Set `agent_flag` to `null` to suppress passing the agent name entirely (for CLIs that don't support persona switching).
