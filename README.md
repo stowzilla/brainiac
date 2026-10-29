@@ -241,16 +241,39 @@ See [Multi-Agent Setup](#multi-agent-setup) for full details.
 
 #### 2. CLI Providers (`~/.brainiac/cli-providers/`)
 
-Configure which AI CLI to use for dispatching agents. Each provider is a JSON file:
+Configure which AI CLI to use for dispatching agents. Each provider is a JSON file. A minimal provider needs only a `binary`; everything else has sensible defaults:
 
 ```json
 {
   "binary": "kiro-cli",
   "default_args": "chat --trust-all-tools --no-interactive",
   "agent_flag": "--agent",
-  "model_flag": "--model"
+  "model_flag": "--model",
+  "prompt_mode": "stdin",
+  "resume_flag": "--resume",
+  "models": { "sonnet": "claude-sonnet-4.6", "auto": "auto" }
 }
 ```
+
+All supported fields (see `templates/cli-providers/*.json.example` for complete, working examples):
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `binary` | — (required) | The CLI executable, e.g. `kiro-cli`, `codex`, `grok`, `claude` |
+| `default_args` | `""` | Args that put the CLI in non-interactive/trust mode |
+| `agent_flag` | `"--agent"` | Flag that passes the agent identity; set to `null` to suppress (see table below) |
+| `model_flag` | — | Flag that selects the model, e.g. `--model`. Omit if the CLI has no model switch |
+| `agent_model` | — | Default model alias when a message doesn't specify one |
+| `models` | — | Map of friendly alias → real model id (e.g. `"opus" => "claude-opus-4.5"`). `auto` is conventional |
+| `prompt_mode` | `"stdin"` | `"stdin"` pipes the prompt in; `"flag"` passes it via `prompt_flag` |
+| `prompt_flag` | — | When `prompt_mode` is `"flag"`, the flag that takes the prompt file (e.g. `--prompt-file`) |
+| `effort_flag` | — | Reasoning-effort flag (e.g. `--effort`); pair with `efforts` |
+| `efforts` | — | Allowed effort levels, e.g. `["low","medium","high"]` |
+| `resume_flag` | — | Flag to continue the last session (e.g. `--resume`, `-r`, `-c`) |
+| `resume_args` | — | For subcommand-based resume (replaces `default_args`), e.g. codex `exec resume --last` |
+| `session_dir` | — | Centralized session dir used to detect a prior session (e.g. `~/.claude/projects`) |
+| `list_models_command` | — | Command that prints available models as JSON, used by `brainiac list-models` |
+| `readonly_args` | — | Args used instead of `default_args` for read-only `ask_agent` calls (see below) |
 
 The `agent_flag` field controls how agent identity is passed to the CLI. Different CLIs use different flags:
 
@@ -259,6 +282,7 @@ The `agent_flag` field controls how agent identity is passed to the CLI. Differe
 | Kiro CLI | `"--agent"` | `kiro-cli --agent sherlock chat --no-interactive` |
 | Codex CLI | `"--profile"` | `codex --profile sherlock exec --sandbox workspace-write -` |
 | Grok CLI | `null` | `grok --always-approve` (no agent identity passed) |
+| Claude Code | `null` | `claude -p --allow-dangerously-skip-permissions` (identity rides in via stdin) |
 
 Set `agent_flag` to `null` to suppress passing the agent name entirely (for CLIs that don't support persona switching).
 

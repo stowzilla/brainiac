@@ -1,0 +1,19 @@
+{
+  "binary": "claude",
+  "default_args": "-p --allow-dangerously-skip-permissions",
+  "readonly_args": "-p --restricted --strict-mcp-config --no-session-persistence --tools Read,Grep,Glob",
+  "agent_flag": null,
+  "model_flag": "--model",
+  "agent_model": "sonnet",
+  "effort_flag": null,
+  "prompt_mode": "stdin",
+  "resume_flag": "-r",
+  "session_dir": "~/.claude/projects",
+  "models": {
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+    "fable": "fable",
+    "auto": "sonnet"
+  }
+}
