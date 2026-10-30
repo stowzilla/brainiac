@@ -25,7 +25,7 @@ class TestCompletionSteps < Minitest::Test
       source_context: { channel_id: "42" },
       log_file: File.join(TEST_BRAINIAC_DIR, "nope.log"),
       agent_cli: "kiro",
-      model: "claude-sonnet-4.5",
+      model: "claude-sonnet-4.6",
       log_name: "sherlock-test",
       resolved: nil,
       chdir: nil
