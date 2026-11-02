@@ -271,6 +271,15 @@ Set `agent_flag` to `null` to suppress passing the agent name entirely (for CLIs
 
 A provider without `readonly_args` can't be used read-only; the call fails instead of falling back to `default_args`.
 
+`stream_args` and `stream_format` are optional and give you a live agent log for CLIs that otherwise print nothing until they exit. `claude -p` is one: by default it prints only the final answer. `stream_args` is added only to background dispatches that write to a log (never `ask_agent`, which needs plain text). `stream_format` sends the output through a formatter that turns the JSON events into readable lines: assistant text, `▸ Bash: git status` for each tool call, and a closing `--- done · 14 turns · 6m12s · $0.82` line.
+
+```json
+"stream_args": "--output-format stream-json --verbose",
+"stream_format": "claude"
+```
+
+`claude` is the only `stream_format` so far. Lines that aren't JSON pass through unchanged.
+
 Which provider runs is decided in this order: a `[cli:X]` tag, the agent's `cli_provider` in `agents.json`, the project's `cli_provider`, then `default_cli_provider` in `brainiac.json`. With none of those set, brainiac uses the `AGENT_CLI` env var, or kiro-cli.
 
 #### Asking an agent from a plugin

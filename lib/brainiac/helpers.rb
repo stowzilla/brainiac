@@ -35,7 +35,7 @@ def load_cli_provider(provider_name)
   %w[prompt_flag readonly_args list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
      session_list_command session_id_field session_directory_field session_updated_field
      session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
-     effort_config_key effort_map title_flag heaviness_probe settings_model_cmd].each do |key|
+     effort_config_key effort_map title_flag heaviness_probe settings_model_cmd stream_args stream_format].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
@@ -942,6 +942,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
                                   prompt_file: prompt_file, resume: should_resume,
                                   output_file: output_file, chdir: chdir, title: work_item_id,
                                   new_session_id: minted_session_id)
+  append_stream_args(cmd, resolved)
   # Profile env (named bundle, e.g. an alternate kiro-cli account) layers between
   # agent env and the explicit `env:` passed in. An explicitly-requested profile
   # wins over agent env; the default profile is only a fallback. See profiles.rb.
@@ -962,10 +963,11 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
 
   started_at = Time.now
   stdin_redirect = (resolved["prompt_mode"] || "stdin") == "stdin" ? { in: prompt_file } : {}
-  pid = spawn(spawn_env, *cmd, chdir: chdir, **stdin_redirect, out: [log_file, "w"], err: %i[child out])
+  pid, formatter = spawn_agent_process(spawn_env, cmd, resolved,
+                                       chdir: chdir, log_file: log_file, stdin_redirect: stdin_redirect)
 
   spawn_completion_watcher(
-    pid: pid, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
+    pid: pid, formatter: formatter, agent_cli: resolved["agent_cli"], agent_config_name: agent_config_name,
     agent_name: agent_name, log_file: log_file, log_name: log_name,
     prompt_file: prompt_file, chdir: chdir, source: source,
     source_context: source_context, project_config: project_config,
@@ -982,10 +984,42 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   [pid, log_file]
 end
 
+# stream_args (e.g. claude's --output-format stream-json) only apply to run_agent, where
+# output goes to a log. ask_agent shares build_agent_cmd and needs plain text on stdout.
+def append_stream_args(cmd, resolved)
+  cmd.concat(resolved["stream_args"].split) if resolved["stream_args"]
+end
+
+STREAM_FORMATTER_PATH = File.expand_path("stream_formatter.rb", __dir__)
+# How long to wait for the formatter to drain after the agent exits. It normally sees EOF
+# right away, but a background process the agent left running can hold the pipe open.
+STREAM_FORMATTER_DRAIN_SECONDS = 10
+
+# Start the agent with its output going to log_file. When the provider sets stream_format,
+# the agent writes to a pipe instead and a separate formatter process turns the JSONL into
+# readable lines in the log. Both are plain child processes, so they outlive a server restart
+# the same way the agent alone does. Returns [agent_pid, formatter_waiter_or_nil].
+def spawn_agent_process(spawn_env, cmd, resolved, chdir:, log_file:, stdin_redirect:)
+  return [spawn(spawn_env, *cmd, chdir: chdir, **stdin_redirect, out: [log_file, "w"], err: %i[child out]), nil] unless resolved["stream_format"]
+
+  reader, writer = IO.pipe
+  formatter_pid = spawn(RbConfig.ruby, STREAM_FORMATTER_PATH, resolved["stream_format"],
+                        in: reader, out: [log_file, "w"], err: %i[child out])
+  pid = spawn(spawn_env, *cmd, chdir: chdir, **stdin_redirect, out: writer, err: writer)
+  [pid, Process.detach(formatter_pid)]
+ensure
+  reader&.close
+  writer&.close
+end
+
 # Spawn a background thread that waits for the agent process to finish and runs completion handling.
 def spawn_completion_watcher(**ctx)
+  formatter = ctx.delete(:formatter)
   thread = Thread.new do
     Process.wait(ctx[:pid])
+    # Let the formatter finish writing the log before completion reads it. It runs in its
+    # own waiter thread, so $CHILD_STATUS here still belongs to the agent.
+    formatter&.join(STREAM_FORMATTER_DRAIN_SECONDS)
     handle_agent_completion(**ctx)
   end
   # Without this, an unrescued exception anywhere in handle_agent_completion silently
