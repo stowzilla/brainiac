@@ -58,6 +58,18 @@ PROMPT_CORE = <<~PROMPT
   Standard unix commands (cd, ls, grep, cat, git, curl, etc.) don't need a brain search.
   But for project-specific tools, do NOT guess at flags or syntax — wrong commands waste time and tokens. Look it up first.
 
+  **NEVER run a whole-filesystem search.** Do not run `find /`, `find ~`, `grep -r /`, `locate`, or any
+  command that walks the entire disk from root or home. On macOS these effectively never return — they
+  block on autofs automounts, iCloud Drive cloud-only files, sealed CoreSimulator volumes, and Spotlight
+  stores — and they pin a CPU for hours. To locate an installed gem or plugin, scope the search:
+  ```
+  gem which <gem-name>                                   # exact file for a loaded gem
+  ruby -e 'puts Gem.loaded_specs.keys.grep(/<pattern>/)' # list matching loaded gems
+  # Only if those fail, scope find to known roots with a timeout and head:
+  find "$(gem env gemdir)" ~/.asdf/installs ./ -maxdepth 6 -path '*<pattern>*' -name '*.rb' 2>/dev/null | head
+  ```
+  Always point `find`/`grep -r` at a specific repo, gem root, or directory — never at `/` or `~`.
+
   **When to save knowledge:** Be selective — only save significant architecture decisions,
   non-obvious gotchas, major workflow changes, or things the user explicitly asks you to remember.
   Routine card work and things already documented in the codebase don't need brain entries.
