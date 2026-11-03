@@ -193,27 +193,55 @@ rescue StandardError
   nil
 end
 
-# Run CLI-time plugin hooks for agent lifecycle events.
-# Loads each installed plugin's CLI module and calls the hook method if defined.
-# This runs synchronously and can prompt for interactive input.
-def notify_plugins_agent_created(agent_key, entry)
+# Installed plugins whose CLI module implements on_agent_created, as
+# [name, module] pairs in plugins.json order.
+def agent_setup_plugins
   plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
-  return unless File.exist?(plugins_file)
+  return [] unless File.exist?(plugins_file)
 
-  plugins_config = JSON.parse(File.read(plugins_file))
-  (plugins_config["plugins"] || []).each do |pentry|
+  (JSON.parse(File.read(plugins_file))["plugins"] || []).filter_map do |pentry|
     pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
     try_require_metadata(pname, pentry)
     try_require_plugin_cli(pname, pentry)
     mod = resolve_plugin_module_for(pname)
-    next unless mod.respond_to?(:on_agent_created)
+    [pname, mod] if mod.respond_to?(:on_agent_created)
+  rescue StandardError, LoadError => e
+    puts "  ⚠ Plugin '#{pname}' couldn't load: #{e.message}"
+    nil
+  end
+rescue JSON::ParserError
+  []
+end
+
+# Run each plugin's on_agent_created hook (Discord bot, Fizzy user, ...).
+# Runs synchronously and can prompt for interactive input. Plugins in `skip`
+# are left alone; when `only` is given, just those plugins run. With
+# `confirm`, each plugin is asked about first and a "no" is added to `skip`
+# (the caller persists it so `agent setup` won't ask again).
+def notify_plugins_agent_created(agent_key, entry, skip: [], only: nil, confirm: false)
+  agent_setup_plugins.each do |pname, mod|
+    if only ? !only.include?(pname) : skip.include?(pname)
+      puts "  [#{pname}] skipped"
+      next
+    end
+
+    if confirm
+      print "\nSet up #{pname} for #{entry["display_name"] || agent_key}? [Y/n]: "
+      if $stdin.gets.to_s.strip.downcase.start_with?("n")
+        skip << pname
+        next
+      end
+    end
 
     mod.on_agent_created(agent_key, entry)
   rescue StandardError => e
     puts "  ⚠ Plugin '#{pname}' hook failed: #{e.message}"
   end
-rescue JSON::ParserError
-  nil
+end
+
+# "--skip basecamp,fizzy" style values → ["basecamp", "fizzy"]
+def plugin_list_arg(value)
+  value.to_s.split(",").map { |p| p.strip.downcase.delete_prefix("brainiac-") }.reject(&:empty?)
 end
 
 AVATAR_EXTENSIONS = %w[.png .jpg .jpeg .gif .webp].freeze
@@ -284,12 +312,15 @@ end
 
 # Payload handed to plugins' on_agent_created: the registry entry plus the
 # setup inputs plugins need to provision accounts (avatar, description, email).
-def agent_hook_payload(agent_key, entry)
+# "open_browser" tells plugins whether they may launch a browser for their
+# manual steps (false with --no-browser, BRAINIAC_NO_BROWSER, or no terminal).
+def agent_hook_payload(agent_key, entry, open_browser: true)
   entry.merge(
     "agent_key" => agent_key,
     "avatar_path" => entry["avatar"],
     "description" => agent_persona_description(agent_key),
-    "email" => entry["email"]
+    "email" => entry["email"],
+    "open_browser" => open_browser && $stdin.tty? && !ENV["BRAINIAC_NO_BROWSER"]
   ).compact
 end
 
@@ -637,6 +668,68 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
     | `:create_work_item` | Create card/issue/ticket |
     | `:detect_cli_provider` | Detect CLI provider |
     | `:detect_effort` | Detect effort level |
+
+    ## Agent Onboarding (`on_agent_created`)
+
+    `brainiac agent create` writes the brainiac files (agents.json, persona, brain),
+    then asks each plugin to provision the new agent on its service: a Discord bot,
+    a Fizzy user, a Basecamp person. `brainiac agent setup <name>` runs the same hook
+    again. If your plugin gives agents an identity on some service, implement it.
+
+    Define it in `cli.rb` (or a file `cli.rb` requires), since it runs in the CLI context:
+
+    ```ruby
+    # cli.rb
+    require_relative "agent_setup"
+
+    module Brainiac
+      module Plugins
+        module MyService
+          # Called by `brainiac agent create` / `brainiac agent setup`.
+          def self.on_agent_created(agent_key, entry)
+            AgentSetup.run(agent_key, entry)
+          end
+
+          def self.on_agent_removed(agent_key, display_name) # optional: clean up config
+          end
+        end
+      end
+    end
+    ```
+
+    `entry` is the agents.json entry plus:
+
+    | Key | Value |
+    |-----|-------|
+    | `agent_key` | Registry key, e.g. `quill` |
+    | `display_name` | e.g. `Quill` |
+    | `avatar_path` | Profile image (png/jpg/gif/webp) or absent |
+    | `description` | Persona text (can be several paragraphs) or absent |
+    | `email` | Email for the agent's accounts (from `--email` / `agent_email_template`) or absent |
+    | `open_browser` | `true` when you may launch a browser for a manual step |
+
+    Rules:
+
+    1. **Idempotent.** `agent setup` re-runs every hook. Check your config first and
+       print `✓ <Name> already ... (skipping)` when the work is done.
+    2. **Automate everything the API allows.** Only stop for steps the service truly
+       can't do by API (e.g. Discord has no create-application endpoint). Then print
+       numbered steps and the URL, and read the result with `$stdin.noecho(&:gets)`
+       for secrets.
+    3. **Browser.** If `entry["open_browser"]` is true, open the URL as well as printing
+       it (`xdg-open` on Linux, `open` on macOS, spawned and detached). Don't open links
+       that must be used while signed in as someone else (e.g. a join link for the bot's
+       own account), because they'd land in the user's own session. Say "open in a
+       private window" instead.
+    4. **Optional inputs.** Skip quietly if `avatar_path`, `description` or `email` is missing.
+       Return without error when `$stdin` isn't a TTY and you need input.
+    5. **Never raise for expected failures.** Print `✗ ... re-run: brainiac agent setup <key>`.
+       Uncaught exceptions are reported as "hook failed" and the next plugin runs.
+    6. **Prefix output** with `  [MyService]` so it's clear whose step is running.
+
+    Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
+    asked during create). Core filters on the plugin name before calling you, so
+    plugins don't need to handle this.
 
     ## Channel Prompts
 
@@ -2338,11 +2431,15 @@ when "agent"
       puts "  --local                Mark agent as local (dispatches on this machine)"
       puts "  --role <role>          Assign a role (repeatable)"
       puts "  --cli <provider>       Set CLI provider (default: kiro)"
+      puts "  --skip <plugins>       Don't set up these plugins for this agent, e.g. --skip basecamp"
+      puts "  --only <plugins>       Set up just these plugins, e.g. --only discord,fizzy"
+      puts "  --no-browser           Print setup links instead of opening them"
       puts ""
       puts "With no flags and a terminal, interactive mode is used. If no description is"
       puts "given on a terminal, $EDITOR opens so you can write a full persona."
       puts "After the brainiac files are written, each installed plugin sets up its part"
-      puts "(Discord bot, Fizzy user, Basecamp person). Re-run with: brainiac agent setup <name>"
+      puts "(Discord bot, Fizzy user, Basecamp person), asking first unless --skip/--only"
+      puts "is given. Re-run with: brainiac agent setup <name>"
       puts ""
       puts "Examples:"
       puts "  brainiac agent create Quill --local --avatar quill.png   # opens $EDITOR for the persona"
@@ -2367,6 +2464,9 @@ when "agent"
     persona_text = nil
     avatar = nil
     email = nil
+    skip_plugins = []
+    only_plugins = nil
+    open_browser = true
 
     if ARGV.any?
       # Flag mode
@@ -2393,6 +2493,15 @@ when "agent"
         when "--email"
           ARGV.shift
           email = ARGV.shift
+        when "--skip"
+          ARGV.shift
+          skip_plugins.concat(plugin_list_arg(ARGV.shift))
+        when "--only"
+          ARGV.shift
+          only_plugins = plugin_list_arg(ARGV.shift)
+        when "--no-browser"
+          ARGV.shift
+          open_browser = false
         else
           puts "Unknown option: #{ARGV[0]}"
           exit 1
@@ -2445,6 +2554,7 @@ when "agent"
     entry["cli_provider"] = cli_provider if cli_provider
     entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
     entry["email"] = email if email
+    entry["skip_plugins"] = skip_plugins.uniq if skip_plugins.any?
 
     if avatar
       begin
@@ -2489,8 +2599,18 @@ when "agent"
       brain_init(name)
     end
 
-    # Each plugin provisions its side (Discord bot, Fizzy user, Basecamp person, ...)
-    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry))
+    # Each plugin provisions its side (Discord bot, Fizzy user, Basecamp person, ...).
+    # Without --skip/--only, a terminal user is asked per plugin; "no" answers
+    # are saved so `agent setup` leaves those plugins alone too.
+    confirm = $stdin.tty? && skip_plugins.empty? && only_plugins.nil?
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: skip_plugins, only: only_plugins, confirm: confirm)
+    if skip_plugins.any? && entry["skip_plugins"] != skip_plugins.uniq
+      entry["skip_plugins"] = skip_plugins.uniq
+      registry[agent_key] = entry
+      File.write(agent_registry_file, JSON.pretty_generate(registry))
+      puts "  Skipping #{skip_plugins.uniq.join(", ")} for #{name} (undo: brainiac agent setup #{agent_key} --only <plugin>)"
+    end
 
     # Notify running server to reload and trigger :agent_added hook
     notify_server_reload
@@ -2498,11 +2618,15 @@ when "agent"
   when "setup"
     name = ARGV.shift
     unless name
-      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>]"
+      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>] [--skip <plugins>] [--only <plugins>] [--no-browser]"
       puts ""
       puts "Re-runs every plugin's agent setup (Discord bot, Fizzy user, Basecamp person)."
       puts "Steps that are already done are skipped, so it's safe to run after an"
       puts "interrupted 'agent create' or to set up a newly installed plugin."
+      puts ""
+      puts "  --skip a,b    Never set up these plugins for this agent (saved)"
+      puts "  --only a,b    Run just these plugins (also un-skips them)"
+      puts "  --no-browser  Print links instead of opening them"
       exit 1
     end
 
@@ -2514,8 +2638,16 @@ when "agent"
       exit 1
     end
 
+    only_plugins = nil
+    open_browser = true
     while ARGV.any?
       case ARGV.shift
+      when "--skip"
+        entry["skip_plugins"] = ((entry["skip_plugins"] || []) + plugin_list_arg(ARGV.shift)).uniq
+      when "--only"
+        only_plugins = plugin_list_arg(ARGV.shift)
+      when "--no-browser"
+        open_browser = false
       when "--avatar"
         begin
           entry["avatar"] = store_agent_avatar(agent_key, ARGV.shift.to_s)
@@ -2526,17 +2658,21 @@ when "agent"
       when "--email"
         entry["email"] = ARGV.shift
       else
-        puts "Unknown option. Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>]"
+        puts "Unknown option. Run 'brainiac agent setup' for usage."
         exit 1
       end
     end
     entry["email"] ||= default_agent_email(agent_key, entry["display_name"] || name)
     entry.delete("email") unless entry["email"]
+    # Explicitly running a plugin with --only un-skips it for good.
+    entry["skip_plugins"] -= only_plugins if only_plugins && entry["skip_plugins"]
+    entry.delete("skip_plugins") if entry["skip_plugins"] == []
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
 
     puts "Setting up #{entry["display_name"] || name} (#{agent_key})"
-    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry))
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: entry["skip_plugins"] || [], only: only_plugins)
     notify_server_reload
 
   when "remove", "delete", "rm"
@@ -2572,7 +2708,7 @@ when "agent"
              brainiac agent list
              brainiac agent default [name]
              brainiac agent create <name> [options]
-             brainiac agent setup <name>
+             brainiac agent setup <name> [--skip|--only <plugins>]
              brainiac agent remove <name>
 
       Commands:
@@ -2594,6 +2730,9 @@ when "agent"
         --local              Mark agent as local (dispatches on this machine)
         --role <role>        Assign a role (repeatable)
         --cli <provider>     Set CLI provider (default: kiro)
+        --skip <plugins>     Don't set up these plugins for this agent (saved; also for setup)
+        --only <plugins>     Set up just these plugins (also for setup)
+        --no-browser         Print setup links instead of opening them
 
       Examples:
         brainiac agent list
@@ -3419,6 +3558,12 @@ when "plugin"
             def self.cli(args)
               Cli.run(args)
             end
+
+            # Optional: provision a new agent on #{pascal_name} during
+            # `brainiac agent create` / `brainiac agent setup`. Must be idempotent.
+            # See "Agent Onboarding" in skills/#{plugin_name}/SKILL.md for the payload and rules.
+            # def self.on_agent_created(agent_key, entry)
+            # end
 
             # Subcommand names for bash completion.
             def self.completions

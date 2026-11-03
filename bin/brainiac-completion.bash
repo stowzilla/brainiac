@@ -116,7 +116,7 @@ _brainiac() {
           case "$agent_name" in
             list|remove|delete|rm|setup) ;;
             create|add)
-              COMPREPLY=($(compgen -W "--avatar --description --description-file --email --local --role --cli" -- "$cur"))
+              COMPREPLY=($(compgen -W "--avatar --description --description-file --email --local --role --cli --skip --only --no-browser" -- "$cur"))
               ;;
             *)
               COMPREPLY=($(compgen -W "show env" -- "$cur"))

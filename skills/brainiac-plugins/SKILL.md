@@ -110,6 +110,68 @@ Available hooks:
 | `:detect_cli_provider` | Detect CLI provider | metadata hash |
 | `:detect_effort` | Detect effort level | metadata hash |
 
+## Agent Onboarding (`on_agent_created`)
+
+`brainiac agent create` writes the brainiac files (agents.json, persona, brain),
+then asks each plugin to provision the new agent on its service: a Discord bot,
+a Fizzy user, a Basecamp person. `brainiac agent setup <name>` runs the same hook
+again. If your plugin gives agents an identity on some service, implement it.
+
+Define it in `cli.rb` (or a file `cli.rb` requires), since it runs in the CLI context:
+
+```ruby
+# cli.rb
+require_relative "agent_setup"
+
+module Brainiac
+  module Plugins
+    module MyService
+      # Called by `brainiac agent create` / `brainiac agent setup`.
+      def self.on_agent_created(agent_key, entry)
+        AgentSetup.run(agent_key, entry)
+      end
+
+      def self.on_agent_removed(agent_key, display_name) # optional: clean up config
+      end
+    end
+  end
+end
+```
+
+`entry` is the agents.json entry plus:
+
+| Key | Value |
+|-----|-------|
+| `agent_key` | Registry key, e.g. `quill` |
+| `display_name` | e.g. `Quill` |
+| `avatar_path` | Profile image (png/jpg/gif/webp) or absent |
+| `description` | Persona text (can be several paragraphs) or absent |
+| `email` | Email for the agent's accounts (from `--email` / `agent_email_template`) or absent |
+| `open_browser` | `true` when you may launch a browser for a manual step |
+
+Rules:
+
+1. **Idempotent.** `agent setup` re-runs every hook. Check your config first and
+   print `✓ <Name> already ... (skipping)` when the work is done.
+2. **Automate everything the API allows.** Only stop for steps the service truly
+   can't do by API (e.g. Discord has no create-application endpoint). Then print
+   numbered steps and the URL, and read the result with `$stdin.noecho(&:gets)`
+   for secrets.
+3. **Browser.** If `entry["open_browser"]` is true, open the URL as well as printing
+   it (`xdg-open` on Linux, `open` on macOS, spawned and detached). Don't open links
+   that must be used while signed in as someone else (e.g. a join link for the bot's
+   own account), because they'd land in the user's own session. Say "open in a
+   private window" instead.
+4. **Optional inputs.** Skip quietly if `avatar_path`, `description` or `email` is missing.
+   Return without error when `$stdin` isn't a TTY and you need input.
+5. **Never raise for expected failures.** Print `✗ ... re-run: brainiac agent setup <key>`.
+   Uncaught exceptions are reported as "hook failed" and the next plugin runs.
+6. **Prefix output** with `  [MyService]` so it's clear whose step is running.
+
+Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
+asked during create). Core filters on the plugin name before calling you, so
+plugins don't need to handle this.
+
 ## Channel Prompts
 
 If your plugin is a communication channel (like Discord, Fizzy), register a prompt:
