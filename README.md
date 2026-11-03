@@ -13,6 +13,7 @@ brainiac install fizzy       # Card management
 brainiac install discord     # Conversational bots
 brainiac install github      # PR reviews, CI notifications
 brainiac install zoho        # Email notifications and triage
+brainiac install featureparity  # Agents take work from FeatureParity
 ```
 
 Because each agent maintains its own unique persona and configuration, you can deploy a specialized team—all managed through `~/.brainiac/agents.json`. Project tracking is handled via `~/.brainiac/projects.json`, and because the system reloads configurations dynamically, you can iterate on your agent workflows in real-time without ever needing a restart.
@@ -34,6 +35,7 @@ Each plugin adds its own webhook routes and event handling. Here's what's availa
 | GitHub    | Workflow run        | `brainiac-github` | Notifies on CI failures and deploys                                     |
 | Discord   | @bot mention        | `brainiac-discord` | Each agent has its own bot — @mention routes directly, conversational   |
 | Zoho Mail | Incoming email      | `brainiac-zoho` | Rule-based matching, notifies via Discord or triages to card             |
+| FeatureParity | Start work / agent tagged | `brainiac-featureparity` | Picked agent implements the requirement, or answers the comment, in an `fp-<slug>` worktree |
 
 ### Inline Tags
 
@@ -177,6 +179,7 @@ brainiac install discord     # Discord bots
 brainiac install fizzy       # Fizzy card management
 brainiac install github      # GitHub webhooks
 brainiac install zoho        # Zoho Mail
+brainiac install featureparity  # FeatureParity requirements
 brainiac restart             # Restart to activate
 ```
 
@@ -345,6 +348,7 @@ brainiac install discord     # Discord bots
 brainiac install fizzy       # Fizzy card management
 brainiac install github      # GitHub webhooks
 brainiac install zoho        # Zoho Mail
+brainiac install featureparity  # FeatureParity requirements
 ```
 
 Each plugin has its own setup command (e.g. `brainiac github setup`) and documentation. See [Plugins](#plugins-gem-based-handlers) for details.
@@ -356,6 +360,7 @@ Each plugin provides its own webhook endpoint. Point your tools at your ngrok UR
 - **Fizzy:** `https://your-ngrok.ngrok-free.app/fizzy/<board-key>` (see `brainiac fizzy setup`)
 - **GitHub:** `https://your-ngrok.ngrok-free.app/github` (see `brainiac github setup`)
 - **Zoho:** `https://your-ngrok.ngrok-free.app/zoho` (see `brainiac zoho setup`)
+- **FeatureParity:** `https://your-ngrok.ngrok-free.app/featureparity`, set as each agent's wake-up address in FeatureParity (see `brainiac featureparity setup`)
 
 #### 8. Start
 
@@ -1219,6 +1224,7 @@ The `Brainiac::Plugins` namespace is defined in `lib/brainiac.rb`. Plugin module
 | fizzy | `brainiac-fizzy` | Fizzy card management — assignment, comments, @mentions, cross-agent reviews, duplicate detection, planning mode |
 | github | `brainiac-github` | GitHub webhooks — PR reviews, PR comments, PR merges, CI workflow notifications, deploy tracking |
 | zoho | `brainiac-zoho` | Zoho Mail webhooks — rule-based email notifications, AI triage, OAuth for content fetching |
+| featureparity | `brainiac-featureparity` | FeatureParity — starts the agent picked for a requirement, answers comments that tag it, writes missing tests, reworks rejected proposals; verifies signed deliveries |
 | whatsapp | `brainiac-whatsapp` | WhatsApp Business API integration |
 
 ### Backward Compatibility
