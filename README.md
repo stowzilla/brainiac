@@ -212,7 +212,7 @@ A `--role-file` keeps its file name: `law-specialist.md` becomes the `law-specia
 |--------|-----------|--------|
 | discord | Bot username, avatar, app icon and description, Message Content intent, token saved to agents.json, `user_mappings`, invite link opened | Create the application in the developer portal (opened for you) and paste the bot token |
 | fizzy | Name, avatar, `authorized_users`, `FIZZY_TOKEN` | Open the printed join link in a **private window**, sign up as the agent's email, create an access token and paste it |
-| basecamp | Finds or invites the person (after a y/N), adds them to every mapped project, `bot_accounts` entry | Nothing |
+| basecamp | Finds the person by name, or invites them by email after a confirm prompt; adds them to every mapped project, `bot_accounts` entry | Nothing |
 
 Before each plugin runs you're asked `Set up basecamp for Judge Dredd? [Y/n]`. Answer up front with `--skip basecamp` or `--only discord,fizzy`; skips are saved on the agent. `--no-browser` (or `BRAINIAC_NO_BROWSER=1`) prints links instead of opening them.
 
