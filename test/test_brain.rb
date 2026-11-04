@@ -23,6 +23,21 @@ class TestBrain < Minitest::Test
     assert_equal "robin-persona", persona_collection_for("Robin")
   end
 
+  def test_load_persona_returns_nil_without_style_file
+    assert_nil load_persona("Nobody")
+  end
+
+  def test_load_persona_reads_style_md_without_frontmatter
+    dir = persona_dir_for("Robin")
+    FileUtils.mkdir_p(dir)
+    File.write(File.join(dir, "style.md"), "---\nname: robin-style\n---\n# Robin\nDry wit.")
+    content = load_persona("Robin")
+    refute_includes content, "robin-style"
+    assert_includes content, "Dry wit."
+  ensure
+    FileUtils.rm_rf(dir)
+  end
+
   def test_brain_git_repo_false_without_git_dir
     refute brain_git_repo?
   end
