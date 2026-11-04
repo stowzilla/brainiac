@@ -15,7 +15,7 @@ BRAINIAC_ROOT = File.expand_path("..", __dir__)
 require_relative "../lib/brainiac/version"
 BRAINIAC_VERSION = Brainiac::VERSION
 
-BRAINIAC_DIR = File.join(Dir.home, ".brainiac")
+BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
 PROJECTS_FILE = File.join(BRAINIAC_DIR, "projects.json")
 CONFIG_FILE = File.join(BRAINIAC_DIR, "config.json")
 PID_FILE = File.join(BRAINIAC_DIR, "server.pid")
@@ -193,27 +193,135 @@ rescue StandardError
   nil
 end
 
-# Run CLI-time plugin hooks for agent lifecycle events.
-# Loads each installed plugin's CLI module and calls the hook method if defined.
-# This runs synchronously and can prompt for interactive input.
-def notify_plugins_agent_created(agent_key, entry)
+# Installed plugins whose CLI module implements on_agent_created, as
+# [name, module] pairs in plugins.json order.
+def agent_setup_plugins
   plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
-  return unless File.exist?(plugins_file)
+  return [] unless File.exist?(plugins_file)
 
-  plugins_config = JSON.parse(File.read(plugins_file))
-  (plugins_config["plugins"] || []).each do |pentry|
+  (JSON.parse(File.read(plugins_file))["plugins"] || []).filter_map do |pentry|
     pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
     try_require_metadata(pname, pentry)
     try_require_plugin_cli(pname, pentry)
     mod = resolve_plugin_module_for(pname)
-    next unless mod.respond_to?(:on_agent_created)
+    [pname, mod] if mod.respond_to?(:on_agent_created)
+  rescue StandardError, LoadError => e
+    puts "  ⚠ Plugin '#{pname}' couldn't load: #{e.message}"
+    nil
+  end
+rescue JSON::ParserError
+  []
+end
+
+# Run each plugin's on_agent_created hook (Discord bot, Fizzy user, ...).
+# Runs synchronously and can prompt for interactive input. Plugins in `skip`
+# are left alone; when `only` is given, just those plugins run. With
+# `confirm`, each plugin is asked about first and a "no" is added to `skip`
+# (the caller persists it so `agent setup` won't ask again).
+def notify_plugins_agent_created(agent_key, entry, skip: [], only: nil, confirm: false)
+  agent_setup_plugins.each do |pname, mod|
+    if only ? !only.include?(pname) : skip.include?(pname)
+      puts "  [#{pname}] skipped"
+      next
+    end
+
+    if confirm
+      print "\nSet up #{pname} for #{entry["display_name"] || agent_key}? [Y/n]: "
+      if $stdin.gets.to_s.strip.downcase.start_with?("n")
+        skip << pname
+        next
+      end
+    end
 
     mod.on_agent_created(agent_key, entry)
   rescue StandardError => e
     puts "  ⚠ Plugin '#{pname}' hook failed: #{e.message}"
   end
-rescue JSON::ParserError
-  nil
+end
+
+# "--skip basecamp,fizzy" style values → ["basecamp", "fizzy"]
+def plugin_list_arg(value)
+  value.to_s.split(",").map { |p| p.strip.downcase.delete_prefix("brainiac-") }.reject(&:empty?)
+end
+
+AVATAR_EXTENSIONS = %w[.png .jpg .jpeg .gif .webp].freeze
+
+# Resolve a description flag value: "-" reads stdin, "@path" reads a file,
+# anything else is the literal text.
+def read_description_arg(value)
+  return $stdin.read.strip if value == "-"
+  return File.read(File.expand_path(value[1..])).strip if value.start_with?("@")
+
+  value
+end
+
+# Open $VISUAL/$EDITOR on a scratch file so a multi-paragraph persona can be
+# written comfortably. HTML comment lines are instructions and get stripped.
+# Returns nil when the result is blank.
+def edit_description_in_editor(display_name, initial = nil)
+  require "tempfile"
+  require "shellwords"
+  editor = ENV["VISUAL"] || ENV["EDITOR"] || "vi"
+  Tempfile.create(["#{display_name.downcase}-persona", ".md"]) do |f|
+    f.write(initial || <<~MD)
+      <!-- Describe #{display_name}: personality, tone, voice, what they focus on. -->
+      <!-- Paragraphs and markdown are fine. Lines like this one are removed. Save and quit when done. -->
+
+    MD
+    f.flush
+    system(*Shellwords.split(editor), f.path)
+    text = File.read(f.path).gsub(/^\s*<!--.*?-->\s*\n?/, "").strip
+    text.empty? ? nil : text
+  end
+end
+
+# Default agent email from brainiac.json "agent_email_template",
+# e.g. "agent+{key}@example.com". Returns nil when no template is configured.
+def default_agent_email(agent_key, display_name)
+  config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  template = File.exist?(config_path) ? JSON.parse(File.read(config_path))["agent_email_template"] : nil
+  return nil if template.nil? || template.strip.empty?
+
+  template.gsub("{key}", agent_key).gsub("{name}", display_name)
+end
+
+# Copy an avatar image into the agent's persona dir (synced with the brain)
+# and return the stored path.
+def store_agent_avatar(agent_key, source)
+  path = File.expand_path(source)
+  ext = File.extname(path).downcase
+  raise ArgumentError, "Avatar not found: #{source}" unless File.file?(path)
+  raise ArgumentError, "Avatar must be one of #{AVATAR_EXTENSIONS.join(", ")}" unless AVATAR_EXTENSIONS.include?(ext)
+
+  persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
+  FileUtils.mkdir_p(persona_dir)
+  dest = File.join(persona_dir, "avatar#{ext}")
+  FileUtils.cp(path, dest) unless File.identical?(path, dest)
+  dest
+end
+
+# The persona text for an agent, read back from its style.md (frontmatter and
+# the generated "# Name — Persona" heading removed).
+def agent_persona_description(agent_key)
+  file = File.join(BRAINIAC_DIR, "brain", "persona", agent_key, "style.md")
+  return nil unless File.exist?(file)
+
+  body = File.read(file).sub(/\A---\n.*?\n---\n/m, "").sub(/\A\s*# .*— Persona\n/, "").strip
+  body.empty? ? nil : body
+end
+
+# Payload handed to plugins' on_agent_created: the registry entry plus the
+# setup inputs plugins need to provision accounts (avatar, description, email).
+# "open_browser" tells plugins whether they may launch a browser for their
+# manual steps (false with --no-browser, BRAINIAC_NO_BROWSER, or no terminal).
+def agent_hook_payload(agent_key, entry, open_browser: true)
+  entry.merge(
+    "agent_key" => agent_key,
+    "avatar_path" => entry["avatar"],
+    "description" => agent_persona_description(agent_key),
+    "email" => entry["email"],
+    "open_browser" => open_browser && $stdin.tty? && !ENV["BRAINIAC_NO_BROWSER"]
+  ).compact
 end
 
 # Run CLI-time plugin hooks for agent removal.
@@ -560,6 +668,68 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
     | `:create_work_item` | Create card/issue/ticket |
     | `:detect_cli_provider` | Detect CLI provider |
     | `:detect_effort` | Detect effort level |
+
+    ## Agent Onboarding (`on_agent_created`)
+
+    `brainiac agent create` writes the brainiac files (agents.json, persona, brain),
+    then asks each plugin to provision the new agent on its service: a Discord bot,
+    a Fizzy user, a Basecamp person. `brainiac agent setup <name>` runs the same hook
+    again. If your plugin gives agents an identity on some service, implement it.
+
+    Define it in `cli.rb` (or a file `cli.rb` requires), since it runs in the CLI context:
+
+    ```ruby
+    # cli.rb
+    require_relative "agent_setup"
+
+    module Brainiac
+      module Plugins
+        module MyService
+          # Called by `brainiac agent create` / `brainiac agent setup`.
+          def self.on_agent_created(agent_key, entry)
+            AgentSetup.run(agent_key, entry)
+          end
+
+          def self.on_agent_removed(agent_key, display_name) # optional: clean up config
+          end
+        end
+      end
+    end
+    ```
+
+    `entry` is the agents.json entry plus:
+
+    | Key | Value |
+    |-----|-------|
+    | `agent_key` | Registry key, e.g. `quill` |
+    | `display_name` | e.g. `Quill` |
+    | `avatar_path` | Profile image (png/jpg/gif/webp) or absent |
+    | `description` | Persona text (can be several paragraphs) or absent |
+    | `email` | Email for the agent's accounts (from `--email` / `agent_email_template`) or absent |
+    | `open_browser` | `true` when you may launch a browser for a manual step |
+
+    Rules:
+
+    1. **Idempotent.** `agent setup` re-runs every hook. Check your config first and
+       print `✓ <Name> already ... (skipping)` when the work is done.
+    2. **Automate everything the API allows.** Only stop for steps the service truly
+       can't do by API (e.g. Discord has no create-application endpoint). Then print
+       numbered steps and the URL, and read the result with `$stdin.noecho(&:gets)`
+       for secrets.
+    3. **Browser.** If `entry["open_browser"]` is true, open the URL as well as printing
+       it (`xdg-open` on Linux, `open` on macOS, spawned and detached). Don't open links
+       that must be used while signed in as someone else (e.g. a join link for the bot's
+       own account), because they'd land in the user's own session. Say "open in a
+       private window" instead.
+    4. **Optional inputs.** Skip quietly if `avatar_path`, `description` or `email` is missing.
+       Return without error when `$stdin` isn't a TTY and you need input.
+    5. **Never raise for expected failures.** Print `✗ ... re-run: brainiac agent setup <key>`.
+       Uncaught exceptions are reported as "hook failed" and the next plugin runs.
+    6. **Prefix output** with `  [MyService]` so it's clear whose step is running.
+
+    Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
+    asked during create). Core filters on the plugin name before calling you, so
+    plugins don't need to handle this.
 
     ## Channel Prompts
 
@@ -2254,18 +2424,28 @@ when "agent"
       puts "Usage: brainiac agent create <name> [options]"
       puts ""
       puts "Options:"
-      puts "  --local              Mark agent as local (dispatches on this machine)"
-      puts "  --role <role>        Assign a role (repeatable)"
-      puts "  --cli <provider>     Set CLI provider (default: kiro)"
-      puts "  --persona <text>     Create a persona style file with this description"
+      puts "  --avatar <path>        Profile picture (png/jpg/gif/webp), used by plugins (Discord, Fizzy)"
+      puts "  --description <text>   Persona description (\"-\" reads stdin, \"@file\" reads a file)"
+      puts "  --description-file <path>  Read the persona description from a file"
+      puts "  --email <address>      Email for the agent's accounts (default: agent_email_template)"
+      puts "  --local                Mark agent as local (dispatches on this machine)"
+      puts "  --role <role>          Assign a role (repeatable)"
+      puts "  --cli <provider>       Set CLI provider (default: kiro)"
+      puts "  --skip <plugins>       Don't set up these plugins for this agent, e.g. --skip basecamp"
+      puts "  --only <plugins>       Set up just these plugins, e.g. --only discord,fizzy"
+      puts "  --no-browser           Print setup links instead of opening them"
       puts ""
-      puts "If no options are given and stdin is a terminal, interactive mode is used."
+      puts "With no flags and a terminal, interactive mode is used. If no description is"
+      puts "given on a terminal, $EDITOR opens so you can write a full persona."
+      puts "After the brainiac files are written, each installed plugin sets up its part"
+      puts "(Discord bot, Fizzy user, Basecamp person), asking first unless --skip/--only"
+      puts "is given. Re-run with: brainiac agent setup <name>"
       puts ""
       puts "Examples:"
-      puts "  brainiac agent create MyAgent   # interactive"
+      puts "  brainiac agent create Quill --local --avatar quill.png   # opens $EDITOR for the persona"
+      puts "  brainiac agent create Quill --local --avatar quill.png --description @quill.md"
+      puts "  brainiac agent create MyAgent                            # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
-      puts "  brainiac agent create Jane --role general-engineer --cli grok"
-      puts "  brainiac agent create Merlin --persona \"Wise, enigmatic, helpful\""
       exit 1
     end
 
@@ -2273,7 +2453,8 @@ when "agent"
     registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
 
     if registry[agent_key]
-      puts "Agent '#{name}' already exists. Use 'brainiac agent #{agent_key} show' to view."
+      puts "Agent '#{name}' already exists. Use 'brainiac agent #{agent_key} show' to view,"
+      puts "or 'brainiac agent setup #{agent_key}' to finish plugin setup."
       exit 1
     end
 
@@ -2281,6 +2462,11 @@ when "agent"
     roles = []
     cli_provider = nil
     persona_text = nil
+    avatar = nil
+    email = nil
+    skip_plugins = []
+    only_plugins = nil
+    open_browser = true
 
     if ARGV.any?
       # Flag mode
@@ -2295,9 +2481,27 @@ when "agent"
         when "--cli"
           ARGV.shift
           cli_provider = ARGV.shift
-        when "--persona"
+        when "--description", "--persona"
           ARGV.shift
-          persona_text = ARGV.shift
+          persona_text = read_description_arg(ARGV.shift.to_s)
+        when "--description-file"
+          ARGV.shift
+          persona_text = File.read(File.expand_path(ARGV.shift.to_s)).strip
+        when "--avatar"
+          ARGV.shift
+          avatar = ARGV.shift
+        when "--email"
+          ARGV.shift
+          email = ARGV.shift
+        when "--skip"
+          ARGV.shift
+          skip_plugins.concat(plugin_list_arg(ARGV.shift))
+        when "--only"
+          ARGV.shift
+          only_plugins = plugin_list_arg(ARGV.shift)
+        when "--no-browser"
+          ARGV.shift
+          open_browser = false
         else
           puts "Unknown option: #{ARGV[0]}"
           exit 1
@@ -2327,15 +2531,39 @@ when "agent"
       input = $stdin.gets.chomp
       roles = input.empty? ? [] : input.split(",").map(&:strip)
 
-      print "Persona description (tone/style, or blank to skip) []: "
+      print "Avatar image path (or blank to skip) []: "
       input = $stdin.gets.chomp
-      persona_text = input.empty? ? nil : input
+      avatar = input.empty? ? nil : input
+
+      default_email = default_agent_email(agent_key, name)
+      print "Email for the agent's accounts#{" [#{default_email}]" if default_email}: "
+      input = $stdin.gets.chomp
+      email = input.empty? ? default_email : input
     end
+
+    # A persona is usually a paragraph or more — give it a real editor.
+    if persona_text.nil? && $stdin.tty?
+      print "Write #{name}'s persona description in #{ENV["VISUAL"] || ENV["EDITOR"] || "vi"}? [Y/n]: "
+      persona_text = edit_description_in_editor(name) unless $stdin.gets.to_s.strip.downcase.start_with?("n")
+    end
+
+    email ||= default_agent_email(agent_key, name)
 
     entry = { "display_name" => name }
     entry["local"] = true if local
     entry["cli_provider"] = cli_provider if cli_provider
     entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
+    entry["email"] = email if email
+    entry["skip_plugins"] = skip_plugins.uniq if skip_plugins.any?
+
+    if avatar
+      begin
+        entry["avatar"] = store_agent_avatar(agent_key, avatar)
+      rescue ArgumentError => e
+        puts "❌ #{e.message}"
+        exit 1
+      end
+    end
 
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
@@ -2343,6 +2571,8 @@ when "agent"
     puts "  Local: #{local}" if local
     puts "  Role: #{roles.join(", ")}" if roles.any?
     puts "  CLI: #{cli_provider}" if cli_provider
+    puts "  Email: #{email}" if email
+    puts "  Avatar: #{entry["avatar"]}" if entry["avatar"]
 
     # Create persona directory and style file if requested
     if persona_text
@@ -2356,6 +2586,7 @@ when "agent"
           description: Persona voice for #{name}.
           ---
           # #{name} — Persona
+
           #{persona_text}
         MD
         puts "  Persona: #{persona_file}"
@@ -2368,10 +2599,80 @@ when "agent"
       brain_init(name)
     end
 
-    # Let plugins prompt for additional config (e.g. Discord user ID)
-    notify_plugins_agent_created(agent_key, entry)
+    # Each plugin provisions its side (Discord bot, Fizzy user, Basecamp person, ...).
+    # Without --skip/--only, a terminal user is asked per plugin; "no" answers
+    # are saved so `agent setup` leaves those plugins alone too.
+    confirm = $stdin.tty? && skip_plugins.empty? && only_plugins.nil?
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: skip_plugins, only: only_plugins, confirm: confirm)
+    if skip_plugins.any? && entry["skip_plugins"] != skip_plugins.uniq
+      entry["skip_plugins"] = skip_plugins.uniq
+      registry[agent_key] = entry
+      File.write(agent_registry_file, JSON.pretty_generate(registry))
+      puts "  Skipping #{skip_plugins.uniq.join(", ")} for #{name} (undo: brainiac agent setup #{agent_key} --only <plugin>)"
+    end
 
     # Notify running server to reload and trigger :agent_added hook
+    notify_server_reload
+
+  when "setup"
+    name = ARGV.shift
+    unless name
+      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>] [--skip <plugins>] [--only <plugins>] [--no-browser]"
+      puts ""
+      puts "Re-runs every plugin's agent setup (Discord bot, Fizzy user, Basecamp person)."
+      puts "Steps that are already done are skipped, so it's safe to run after an"
+      puts "interrupted 'agent create' or to set up a newly installed plugin."
+      puts ""
+      puts "  --skip a,b    Never set up these plugins for this agent (saved)"
+      puts "  --only a,b    Run just these plugins (also un-skips them)"
+      puts "  --no-browser  Print links instead of opening them"
+      exit 1
+    end
+
+    agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    entry = registry[agent_key]
+    unless entry
+      puts "Agent '#{name}' not found in registry."
+      exit 1
+    end
+
+    only_plugins = nil
+    open_browser = true
+    while ARGV.any?
+      case ARGV.shift
+      when "--skip"
+        entry["skip_plugins"] = ((entry["skip_plugins"] || []) + plugin_list_arg(ARGV.shift)).uniq
+      when "--only"
+        only_plugins = plugin_list_arg(ARGV.shift)
+      when "--no-browser"
+        open_browser = false
+      when "--avatar"
+        begin
+          entry["avatar"] = store_agent_avatar(agent_key, ARGV.shift.to_s)
+        rescue ArgumentError => e
+          puts "❌ #{e.message}"
+          exit 1
+        end
+      when "--email"
+        entry["email"] = ARGV.shift
+      else
+        puts "Unknown option. Run 'brainiac agent setup' for usage."
+        exit 1
+      end
+    end
+    entry["email"] ||= default_agent_email(agent_key, entry["display_name"] || name)
+    entry.delete("email") unless entry["email"]
+    # Explicitly running a plugin with --only un-skips it for good.
+    entry["skip_plugins"] -= only_plugins if only_plugins && entry["skip_plugins"]
+    entry.delete("skip_plugins") if entry["skip_plugins"] == []
+    registry[agent_key] = entry
+    File.write(agent_registry_file, JSON.pretty_generate(registry))
+
+    puts "Setting up #{entry["display_name"] || name} (#{agent_key})"
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: entry["skip_plugins"] || [], only: only_plugins)
     notify_server_reload
 
   when "remove", "delete", "rm"
@@ -2407,12 +2708,14 @@ when "agent"
              brainiac agent list
              brainiac agent default [name]
              brainiac agent create <name> [options]
+             brainiac agent setup <name> [--skip|--only <plugins>]
              brainiac agent remove <name>
 
       Commands:
         list                              List all agents in the registry
         default [name]                    Show or set the default agent
-        create <name> [options]           Add a new agent to the registry
+        create <name> [options]           Add a new agent and run every plugin's setup
+        setup <name>                      Re-run plugin setup (skips steps already done)
         remove <name>                     Remove an agent from the registry
         <name> show                       Show agent configuration (tokens redacted)
         <name> set <field> <value>        Update a config field (local, cli, role, persona, display_name)
@@ -2421,14 +2724,21 @@ when "agent"
         <name> env --delete <KEY>         Remove an env var from an agent
 
       Create options (or interactive if no flags given):
+        --avatar <path>      Profile picture, used by plugins (Discord, Fizzy)
+        --description <text> Persona description ("-" = stdin, "@file" = file; $EDITOR if omitted)
+        --email <address>    Email for the agent's accounts (default: agent_email_template)
         --local              Mark agent as local (dispatches on this machine)
         --role <role>        Assign a role (repeatable)
         --cli <provider>     Set CLI provider (default: kiro)
-        --persona <text>     Create a persona style file
+        --skip <plugins>     Don't set up these plugins for this agent (saved; also for setup)
+        --only <plugins>     Set up just these plugins (also for setup)
+        --no-browser         Print setup links instead of opening them
 
       Examples:
         brainiac agent list
         brainiac agent default Sherlock
+        brainiac agent create Quill --local --avatar quill.png
+        brainiac agent setup quill
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
@@ -3248,6 +3558,12 @@ when "plugin"
             def self.cli(args)
               Cli.run(args)
             end
+
+            # Optional: provision a new agent on #{pascal_name} during
+            # `brainiac agent create` / `brainiac agent setup`. Must be idempotent.
+            # See "Agent Onboarding" in skills/#{plugin_name}/SKILL.md for the payload and rules.
+            # def self.on_agent_created(agent_key, entry)
+            # end
 
             # Subcommand names for bash completion.
             def self.completions
