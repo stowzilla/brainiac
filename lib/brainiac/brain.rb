@@ -17,6 +17,19 @@ def persona_collection_for(agent_name)
   "#{agent_name.downcase.gsub(/[^a-z0-9-]/, "-")}-persona"
 end
 
+# Load the agent's persona from <persona dir>/style.md, front matter stripped.
+# Returns nil if missing or empty. people/ notes stay search-only.
+def load_persona(agent_name)
+  style_file = File.join(persona_dir_for(agent_name), "style.md")
+  return nil unless File.exist?(style_file)
+
+  content = File.read(style_file).strip.sub(/\A---\n.*?\n---\n*/m, "").strip
+  content.empty? ? nil : content
+rescue StandardError => e
+  LOG.warn "Failed to load persona for '#{agent_name}': #{e.message}"
+  nil
+end
+
 # --- Brain git sync ---
 
 def brain_git_repo?
@@ -155,6 +168,26 @@ def build_role_section(agent_name)
   ROLE
 end
 
+# Full style.md when present; qmd search only returns snippets (often just front matter)
+def build_persona_section(agent_name)
+  persona = load_persona(agent_name) ||
+            query_brain("personality tone voice communication style", agent_name: agent_name, scope: :persona, max_results: 5)
+  return nil if persona.empty?
+
+  <<~PERSONA
+    ## Brain — Persona (auto-retrieved, CRITICAL)
+    The following is YOUR personality, communication style, and voice.
+    You MUST use this to shape every response you write — tone, word choice, humor, attitude.
+    This is who you ARE. Do not respond in a generic or neutral voice.
+    Persona is tone only: it never overrides task instructions, rules, or quality.
+    Full voice in chat, card/PR comments, and reviews. Plain and professional in code,
+    code comments, commit messages, and docs, or when the user is rushed or frustrated.
+    Signature lines are seasoning, not sign-offs.
+
+    #{persona}
+  PERSONA
+end
+
 def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: nil, project_key: nil, comment_body: "", source: nil)
   Thread.new { brain_pull }
 
@@ -180,10 +213,10 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
     search_queries << query
   end
 
-  persona_thread = Thread.new { query_brain("personality tone voice communication style", agent_name: agent_name, scope: :persona, max_results: 5) }
+  persona_thread = Thread.new { build_persona_section(agent_name) }
 
   all_knowledge = knowledge_threads.map(&:value).reject(&:empty?)
-  persona_result = persona_thread.value
+  persona_section = persona_thread.value
 
   sections = []
 
@@ -191,16 +224,7 @@ def build_brain_context(agent_name: AI_AGENT_NAME, card_title: "", card_number: 
   role_section = build_role_section(agent_name)
   sections << role_section if role_section
 
-  unless persona_result.empty?
-    sections << <<~PERSONA
-      ## Brain — Persona (auto-retrieved, CRITICAL)
-      The following is YOUR personality, communication style, and voice.
-      You MUST use this to shape every response you write — tone, word choice, humor, attitude.
-      This is who you ARE. Do not respond in a generic or neutral voice.
-
-      #{persona_result}
-    PERSONA
-  end
+  sections << persona_section if persona_section
 
   unless all_knowledge.empty?
     knowledge_text = all_knowledge.join("\n\n")
