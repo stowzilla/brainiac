@@ -310,6 +310,114 @@ def agent_persona_description(agent_key)
   body.empty? ? nil : body
 end
 
+# Markdown that already opens with YAML frontmatter is kept as written, so a
+# hand-made style.md or role file isn't wrapped in a second frontmatter block.
+def frontmatter?(text)
+  text.to_s.lstrip.start_with?("---\n")
+end
+
+def available_roles
+  roles_dir = File.join(BRAINIAC_DIR, "roles")
+  Dir.exist?(roles_dir) ? Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") }.sort : []
+end
+
+def role_name_arg(value)
+  value.to_s.downcase.gsub(/[^a-z0-9-]/, "-")
+end
+
+# Starting point for a new role, shaped like the built-in ones. HTML comment
+# lines are instructions and get stripped by edit_description_in_editor.
+def role_template(role_name, agent_name = nil)
+  title = role_name.split("-").map(&:capitalize).join(" ")
+  you = agent_name ? "You are #{agent_name}, the #{title.downcase}." : "You are the #{title.downcase}."
+  <<~MD
+    <!-- Role "#{role_name}": WHAT this agent does. HOW it talks belongs in its persona (style.md). -->
+    <!-- Fill in or delete sections. Lines like this one are removed. Save and quit when done; empty = cancel. -->
+    # Role: #{title}
+
+    #{you} Your primary responsibility is ...
+
+    ## Primary Responsibilities
+
+    - **...**: ...
+
+    ## Checklist
+
+    When taking on any task:
+
+    1. ...
+
+    ## What You Don't Do
+
+    - ...
+
+    ## Looping In Other Agents (opt-in ONLY)
+
+    Do NOT tag, @mention, or "flag for" other agents by default. Every cross-agent
+    mention triggers an automated dispatch that spends the user's credits.
+    Only bring another agent in when the user explicitly asks for it. If you think
+    another agent should weigh in, say so in plain prose WITHOUT an @mention.
+  MD
+end
+
+# Write ~/.brainiac/roles/<name>.md, adding frontmatter unless the text has its own.
+def write_role_file(role_name, text, agent_name = nil)
+  roles_dir = File.join(BRAINIAC_DIR, "roles")
+  FileUtils.mkdir_p(roles_dir)
+  file = File.join(roles_dir, "#{role_name}.md")
+  body = text.strip
+  unless frontmatter?(body)
+    description = agent_name ? "Role definition for #{agent_name}" : "Role definition: #{role_name}"
+    body = "---\nname: #{role_name}\ndescription: #{description}\ninclusion: manual\n---\n\n#{body}"
+  end
+  File.write(file, "#{body}\n")
+  file
+end
+
+# Add roles to a registry entry, keeping the string-or-array shape.
+def assign_roles(entry, new_roles)
+  roles = (Array(entry["role"]) + new_roles).uniq
+  entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
+  roles
+end
+
+# Interactive role step for create/setup: pick existing roles by number or
+# name, write a new one in $EDITOR, or skip. Returns the chosen role names.
+def prompt_for_agent_role(agent_key, display_name)
+  existing = available_roles
+  puts ""
+  puts "Role for #{display_name} (what they do; the persona is how they talk):"
+  existing.each_with_index { |r, i| puts "  #{i + 1}. #{r}" }
+  puts "  n. New role (opens #{ENV["VISUAL"] || ENV["EDITOR"] || "vi"})"
+  print "Choose #{"numbers/names (comma-separated), " if existing.any?}n, or blank to skip: "
+  input = $stdin.gets.to_s.strip
+  return [] if input.empty?
+
+  if input.downcase.start_with?("n") && !existing.include?(input)
+    print "Role name [#{agent_key}]: "
+    name = role_name_arg($stdin.gets.to_s.strip)
+    name = agent_key if name.empty?
+    if existing.include?(name)
+      puts "  Role '#{name}' already exists; assigning it."
+      return [name]
+    end
+    text = edit_description_in_editor(name, role_template(name, display_name))
+    unless text
+      puts "  Empty role, skipped."
+      return []
+    end
+    puts "  Created #{write_role_file(name, text, display_name)}"
+    return [name]
+  end
+
+  picked = input.split(",").map(&:strip).filter_map do |token|
+    token.match?(/\A\d+\z/) ? existing[token.to_i - 1] : token
+  end
+  unknown = picked - existing
+  puts "  Unknown role(s) ignored: #{unknown.join(", ")}" if unknown.any?
+  picked & existing
+end
+
 # Payload handed to plugins' on_agent_created: the registry entry plus the
 # setup inputs plugins need to provision accounts (avatar, description, email).
 # "open_browser" tells plugins whether they may launch a browser for their
@@ -2440,13 +2548,16 @@ when "agent"
       puts "  --email <address>      Email for the agent's accounts (default: agent_email_template)"
       puts "  --local                Mark agent as local (dispatches on this machine)"
       puts "  --role <role>          Assign a role (repeatable)"
+      puts "  --role-file <path>     Create a role from a markdown file and assign it"
+      puts "                         (named after the agent, or after a new --role name)"
       puts "  --cli <provider>       Set CLI provider (default: kiro)"
       puts "  --skip <plugins>       Don't set up these plugins for this agent, e.g. --skip basecamp"
       puts "  --only <plugins>       Set up just these plugins, e.g. --only discord,fizzy"
       puts "  --no-browser           Print setup links instead of opening them"
       puts ""
       puts "With no flags and a terminal, interactive mode is used. If no description is"
-      puts "given on a terminal, $EDITOR opens so you can write a full persona."
+      puts "given on a terminal, $EDITOR opens so you can write a full persona. Without"
+      puts "--role/--role-file you're asked to pick an existing role or write a new one."
       puts "After the brainiac files are written, each installed plugin sets up its part"
       puts "(Discord bot, Fizzy user, Basecamp person), asking first unless --skip/--only"
       puts "is given. Re-run with: brainiac agent setup <name>"
@@ -2456,6 +2567,8 @@ when "agent"
       puts "  brainiac agent create Quill --local --avatar quill.png --description @quill.md"
       puts "  brainiac agent create MyAgent                            # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
+      puts "  brainiac agent create \"Judge Dredd\" --local --avatar dredd.png \\"
+      puts "    --description-file dredd-style.md --role-file dredd-role.md"
       exit 1
     end
 
@@ -2470,6 +2583,7 @@ when "agent"
 
     local = false
     roles = []
+    role_file = nil
     cli_provider = nil
     persona_text = nil
     avatar = nil
@@ -2487,7 +2601,10 @@ when "agent"
           local = true
         when "--role"
           ARGV.shift
-          roles << ARGV.shift
+          roles << role_name_arg(ARGV.shift)
+        when "--role-file"
+          ARGV.shift
+          role_file = File.expand_path(ARGV.shift.to_s)
         when "--cli"
           ARGV.shift
           cli_provider = ARGV.shift
@@ -2533,14 +2650,6 @@ when "agent"
       input = $stdin.gets.chomp
       cli_provider = input.empty? ? nil : input
 
-      # Show available roles
-      roles_dir = File.join(BRAINIAC_DIR, "roles")
-      available_roles = Dir.exist?(roles_dir) ? Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") } : []
-      hint = available_roles.any? ? " (#{available_roles.join(", ")})" : ""
-      print "Roles#{hint} (comma-separated) []: "
-      input = $stdin.gets.chomp
-      roles = input.empty? ? [] : input.split(",").map(&:strip)
-
       print "Avatar image path (or blank to skip) []: "
       input = $stdin.gets.chomp
       avatar = input.empty? ? nil : input
@@ -2555,6 +2664,30 @@ when "agent"
     if persona_text.nil? && $stdin.tty?
       print "Write #{name}'s persona description in #{ENV["VISUAL"] || ENV["EDITOR"] || "vi"}? [Y/n]: "
       persona_text = edit_description_in_editor(name) unless $stdin.gets.to_s.strip.downcase.start_with?("n")
+    end
+
+    new_role = nil
+    if role_file && !File.file?(role_file)
+      puts "❌ Role file not found: #{role_file}"
+      exit 1
+    end
+    if role_file
+      # --role-file names its role after a --role that doesn't exist yet, else the agent key.
+      new_role = (roles - available_roles).first || agent_key
+      if available_roles.include?(new_role)
+        puts "❌ Role '#{new_role}' already exists. Pass --role <new-name> to name the role from #{role_file}."
+        exit 1
+      end
+      roles |= [new_role]
+    elsif roles.empty? && $stdin.tty?
+      roles = prompt_for_agent_role(agent_key, name)
+    end
+
+    missing_roles = roles - available_roles - [new_role]
+    if missing_roles.any?
+      puts "❌ Unknown role(s): #{missing_roles.join(", ")}. Available: #{available_roles.join(", ")}"
+      puts "   Create one with --role-file, or 'brainiac role create <name>'."
+      exit 1
     end
 
     email ||= default_agent_email(agent_key, name)
@@ -2575,6 +2708,8 @@ when "agent"
       end
     end
 
+    puts "✓ Created role #{write_role_file(new_role, File.read(role_file), name)}" if new_role
+
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Created agent '#{name}' (#{agent_key})"
@@ -2589,7 +2724,12 @@ when "agent"
       persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
       FileUtils.mkdir_p(persona_dir)
       persona_file = File.join(persona_dir, "style.md")
-      unless File.exist?(persona_file)
+      if File.exist?(persona_file)
+        # Already there (e.g. a re-create); leave it alone.
+      elsif frontmatter?(persona_text)
+        File.write(persona_file, "#{persona_text.strip}\n")
+        puts "  Persona: #{persona_file}"
+      else
         File.write(persona_file, <<~MD)
           ---
           name: #{agent_key}-style
@@ -2632,12 +2772,16 @@ when "agent"
   when "setup"
     name = ARGV.shift
     unless name
-      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>] [--skip <plugins>] [--only <plugins>] [--no-browser]"
+      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>] [--role <role>] [--role-file <path>]"
+      puts "                                   [--skip <plugins>] [--only <plugins>] [--no-browser]"
       puts ""
       puts "Re-runs every plugin's agent setup (Discord bot, Fizzy user, Basecamp person)."
       puts "Steps that are already done are skipped, so it's safe to run after an"
       puts "interrupted 'agent create' or to set up a newly installed plugin."
+      puts "An agent without a role is asked to pick or write one."
       puts ""
+      puts "  --role r      Assign an existing role"
+      puts "  --role-file f Create a role from a markdown file (named after the agent) and assign it"
       puts "  --skip a,b    Never set up these plugins for this agent (saved)"
       puts "  --only a,b    Run just these plugins (also un-skips them)"
       puts "  --no-browser  Print links instead of opening them"
@@ -2654,8 +2798,18 @@ when "agent"
 
     only_plugins = nil
     open_browser = true
+    new_roles = []
+    role_file = nil
     while ARGV.any?
       case ARGV.shift
+      when "--role"
+        new_roles << role_name_arg(ARGV.shift)
+      when "--role-file"
+        role_file = File.expand_path(ARGV.shift.to_s)
+        unless File.file?(role_file)
+          puts "❌ Role file not found: #{role_file}"
+          exit 1
+        end
       when "--skip"
         entry["skip_plugins"] = ((entry["skip_plugins"] || []) + plugin_list_arg(ARGV.shift)).uniq
       when "--only"
@@ -2681,6 +2835,26 @@ when "agent"
     # Explicitly running a plugin with --only un-skips it for good.
     entry["skip_plugins"] -= only_plugins if only_plugins && entry["skip_plugins"]
     entry.delete("skip_plugins") if entry["skip_plugins"] == []
+
+    display = entry["display_name"] || name
+    if role_file
+      role_name = (new_roles - available_roles).first || agent_key
+      if available_roles.include?(role_name)
+        puts "❌ Role '#{role_name}' already exists. Pass --role <new-name> to name the role from #{role_file}."
+        exit 1
+      end
+      puts "✓ Created role #{write_role_file(role_name, File.read(role_file), display)}"
+      new_roles |= [role_name]
+    elsif new_roles.empty? && entry["role"].nil? && $stdin.tty?
+      new_roles = prompt_for_agent_role(agent_key, display)
+    end
+    unknown = new_roles - available_roles
+    if unknown.any?
+      puts "❌ Unknown role(s): #{unknown.join(", ")}. Available: #{available_roles.join(", ")}"
+      exit 1
+    end
+    puts "✓ Role: #{assign_roles(entry, new_roles).join(", ")}" if new_roles.any?
+
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
 
@@ -2951,8 +3125,9 @@ when "role"
 
       files.each do |f|
         name = File.basename(f, ".md")
-        # Read first non-empty, non-heading line as description
-        desc = File.readlines(f).find { |l| !l.strip.empty? && !l.start_with?("#") && !l.start_with?("---") }&.strip || ""
+        # First non-empty, non-heading line after any frontmatter is the description
+        body = File.read(f).sub(/\A---\n.*?\n---\n/m, "")
+        desc = body.lines.find { |l| !l.strip.empty? && !l.start_with?("#") }&.strip || ""
         agents = agent_roles[name]
         agent_str = agents ? " (#{agents.join(", ")})" : ""
         puts "#{name}#{agent_str} — #{desc[0..70]}"
@@ -3049,19 +3224,64 @@ when "role"
     puts "✓ Removed role '#{role_name}' from #{agent_name}"
 
   when "create", "add"
-    name = ARGV[0]
-    unless name
-      puts "Usage: brainiac role create <name>"
+    name = ARGV.shift
+    if name.nil? || name.start_with?("--")
+      puts "Usage: brainiac role create <name> [--from <file>] [--assign <agent>]"
+      puts ""
+      puts "Without --from, $EDITOR opens on a role template (or the template is written"
+      puts "as-is when there's no terminal)."
       exit 1
     end
-    FileUtils.mkdir_p(roles_dir)
+    name = role_name_arg(name)
+    from = nil
+    assign_to = nil
+    while ARGV.any?
+      case ARGV.shift
+      when "--from" then from = File.expand_path(ARGV.shift.to_s)
+      when "--assign" then assign_to = ARGV.shift
+      else
+        puts "Unknown option. Run 'brainiac role create' for usage."
+        exit 1
+      end
+    end
+
     file = File.join(roles_dir, "#{name}.md")
     if File.exist?(file)
       puts "Role '#{name}' already exists. Edit #{file} directly."
       exit 1
     end
-    File.write(file, "# Role: #{name.split("-").map(&:capitalize).join(" ")}\n\nDescribe this role's responsibilities here.\n")
-    puts "Created #{file} — edit it to define the role."
+    if from && !File.file?(from)
+      puts "File not found: #{from}"
+      exit 1
+    end
+
+    agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    agent_key = assign_to && role_name_arg(assign_to)
+    if agent_key && !registry[agent_key]
+      puts "Agent '#{assign_to}' not found."
+      exit 1
+    end
+    agent_display = agent_key && (registry[agent_key]["display_name"] || assign_to)
+
+    text = if from
+             File.read(from)
+           elsif $stdin.tty?
+             edit_description_in_editor(name, role_template(name, agent_display))
+           else
+             role_template(name, agent_display).gsub(/^\s*<!--.*?-->\s*\n?/, "")
+           end
+    unless text
+      puts "Empty role, nothing created."
+      exit 1
+    end
+    puts "✓ Created #{write_role_file(name, text, agent_display)}"
+
+    if agent_key
+      assign_roles(registry[agent_key], [name])
+      File.write(agent_registry_file, JSON.pretty_generate(registry))
+      puts "✓ Assigned role '#{name}' to #{agent_display}"
+    end
 
   else
     puts <<~HELP
@@ -3070,7 +3290,8 @@ when "role"
       Commands:
         list                   List configured roles
         show <name>            Show role definition
-        create <name>          Create a new role file
+        create <name> [--from <file>] [--assign <agent>]
+                               Create a role (opens $EDITOR on a template)
         assign <agent> <role>    Assign a role to an agent (additive)
         unassign <agent> <role>  Remove a role from an agent
     HELP
@@ -4392,7 +4613,7 @@ when "help", "--help", "-h", nil
       Role Commands:
         role list                        List configured roles and assignments
         role show <name>                 Show role definition
-        role create <name>               Create a new role file
+        role create <name> [--from f] [--assign a]  Create a role (template in $EDITOR)
         role assign <agent> <role>       Assign a role to an agent (additive)
         role unassign <agent> <role>     Remove a role from an agent
 
