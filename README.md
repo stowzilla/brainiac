@@ -90,7 +90,7 @@ Any agent can be tagged on any card. If Merlin is working card #42 and someone c
 
 #### Display Name Accuracy
 
-Agents need to spell @mentions exactly as they appear in Fizzy (e.g. `@Robin` not `@robin`). The agent registry's `fizzy_name` field handles this — every prompt includes an agent roster with the correct spelling:
+Agents need to spell @mentions exactly (e.g. `@Robin` not `@robin`). The agent registry's `display_name` field handles this — every prompt includes an agent roster with the correct spelling:
 
 ```
 ## Agent Roster
@@ -100,7 +100,7 @@ When @mentioning other agents in Fizzy comments, use the EXACT spelling below.
   - @Merlin
 ```
 
-Detection is case-insensitive (inbound `@robin` still matches Robin), but outbound mentions use the exact `fizzy_name` from the registry.
+Detection is case-insensitive (inbound `@robin` still matches Robin), but outbound mentions use the exact `display_name` from the registry.
 
 #### Agent-to-Agent Loop Prevention
 
@@ -162,25 +162,73 @@ This installs the `brainiac` binary to your gem bin path (just like `rails`, `rs
 
 ### Quick Start (New Machine)
 
-After installing the gem:
+From zero to an agent you can @mention in Discord:
 
 ```bash
-brainiac setup
+gem install brainiac
+brainiac setup                    # ~/.brainiac/ dirs, example configs, CLI providers
+brainiac install discord          # plus any of: fizzy, github, zoho, basecamp
+cd ~/Code/my-app && brainiac register
+brainiac server --daemon
+
+brainiac agent create Quill --local --avatar ~/quill.png --icon 🪶
 ```
 
-This creates the `~/.brainiac/` directory structure, detects existing agents in `~/.brainiac/agents.json`, and sets your default agent. If no agents exist, it offers to create your first one.
+`agent create` walks you through the rest: it opens `$EDITOR` for the agent's persona, asks for a role, then lets each installed plugin set up its part (for Discord that's one pasted bot token). The bot comes online without a restart. See [Adding an Agent](#adding-an-agent) for what each step does. (If you gave `brainiac setup` a first agent name, finish that agent with `brainiac agent setup <key>` instead.)
 
-Then install the plugins you need:
+Make sure the [prerequisites](#prerequisites) are installed first, at least Ruby, an agent CLI, and qmd.
+
+Each plugin also has its own setup/config commands (e.g. `brainiac discord default <project>`, `brainiac github setup`) and README.
+
+### Adding an Agent
+
+One command creates everything an agent needs:
 
 ```bash
-brainiac install discord     # Discord bots
-brainiac install fizzy       # Fizzy card management
-brainiac install github      # GitHub webhooks
-brainiac install zoho        # Zoho Mail
-brainiac restart             # Restart to activate
+brainiac agent create "Judge Dredd" --local \
+  --avatar ~/dredd.png --icon ⚖️ \
+  --description-file ~/dredd-style.md \
+  --role-file ~/law-specialist.md
 ```
 
-Each plugin has its own setup command (e.g. `brainiac discord setup`, `brainiac github setup`) that creates the necessary config files.
+**Names.** Type the name the way people should see it, quoted if it has spaces. `Judge Dredd` is the display name (Discord username, Fizzy/Basecamp name, @mentions). `judge-dredd` is the key (agents.json, `persona/judge-dredd/`, `memory/judge-dredd/`, `brainiac agent setup judge-dredd`).
+
+**What core writes**
+
+| Input | Flag | Ends up in | If you leave it out |
+|-------|------|------------|---------------------|
+| Persona (how they talk) | `--description-file f`, `--description "text"`, `--description @f`, `--description -` | `brain/persona/<key>/style.md` | `$EDITOR` opens |
+| Role (what they do) | `--role-file f.md` or `--role <existing>` (repeatable) | `roles/<name>.md`, `role` in agents.json | Pick existing roles by number, `n` for a new one in `$EDITOR`, blank to skip |
+| Avatar | `--avatar pic.png` | `brain/persona/<key>/avatar.png` | Plugins skip the picture |
+| Status bar icon | `--icon 🪶` | `waybar.json` (Omarchy bar, waybar, xbar) | Asked for an emoji |
+| Email | `--email a@b.com` | agents.json `email` | `agent_email_template` in `brainiac.json`, e.g. `"agent+{key}@example.com"` |
+| Local dispatch | `--local` | agents.json `local: true` | Agent is known but won't pick up work on this machine |
+
+A `--role-file` keeps its file name: `law-specialist.md` becomes the `law-specialist` role, so the same file can be passed for several agents. Pass `--role <new-name>` to name it something else. If your persona or role file already has YAML frontmatter it's kept as-is.
+
+**What the plugins do** (each installed plugin implements `on_agent_created`)
+
+| Plugin | Automated | You do |
+|--------|-----------|--------|
+| discord | Bot username, avatar, app icon and description, Message Content intent, token saved to agents.json, `user_mappings`, invite link opened | Create the application in the developer portal (opened for you) and paste the bot token |
+| fizzy | Name, avatar, `authorized_users`, `FIZZY_TOKEN` | Open the printed join link in a **private window**, sign up as the agent's email, create an access token and paste it |
+| basecamp | Finds the person by name, or invites them by email after a confirm prompt; adds them to every mapped project, `bot_accounts` entry | Nothing |
+
+Before each plugin runs you're asked `Set up basecamp for Judge Dredd? [Y/n]`. Answer up front with `--skip basecamp` or `--only discord,fizzy`; skips are saved on the agent. `--no-browser` (or `BRAINIAC_NO_BROWSER=1`) prints links instead of opening them.
+
+**Finishing or changing an agent later**
+
+```bash
+brainiac agent setup judge-dredd                      # re-run every plugin; finished steps are skipped
+brainiac agent setup judge-dredd --only fizzy         # just one plugin (also un-skips it)
+brainiac agent setup judge-dredd --icon ⚖️ --only none # change the icon, no plugin steps
+brainiac agent setup judge-dredd --role-file ~/r.md    # add a role
+brainiac agent remove judge-dredd                     # remove from the registry and bars
+```
+
+`agent setup` also asks for a role or icon if the agent doesn't have one yet. With the server running, a new or changed token is picked up without a restart.
+
+Writing a plugin that should take part in this? See "Agent Onboarding (`on_agent_created`)" in [skills/brainiac-plugins/SKILL.md](skills/brainiac-plugins/SKILL.md). `brainiac plugin new` scaffolds the hook for you.
 
 ### Prerequisites
 
@@ -203,13 +251,16 @@ After setup, `~/.brainiac/` looks like:
 ```
 ~/.brainiac/
 ├── brainiac.json        # Core config (default_agent, default_cli_provider)
-├── agents.json          # Agent registry (tokens, display names, local flag)
+├── agents.json          # Agent registry (display names, tokens, role, local flag)
 ├── projects.json        # Registered projects
 ├── users.json           # Cross-platform user identity registry
 ├── plugins.json         # Installed plugins
+├── waybar.json          # Status bar icons/colors per agent (Omarchy bar, waybar, xbar)
+├── roles/               # Role definitions (<name>.md), assigned via agents.json "role"
+├── cli-providers/       # One JSON per agent CLI (kiro, claude, codex, ...)
 ├── brain/
 │   ├── knowledge/       # Shared technical knowledge (all agents)
-│   ├── persona/         # Per-agent personality files
+│   ├── persona/         # Per-agent personality files (style.md, avatar)
 │   └── memory/          # Per-agent session memory
 ├── handlers/            # Legacy custom webhook handlers
 ├── plans/               # Planning mode output
@@ -222,12 +273,12 @@ Plugins add their own config files when installed (e.g. `discord.json`, `fizzy.j
 
 #### 1. Agent Registry (`~/.brainiac/agents.json`)
 
-Maps agents to their identity and environment. Every agent that should dispatch on this machine needs an entry here with `"local": true`:
+Maps agents to their identity and environment. Every agent that should dispatch on this machine needs an entry here with `"local": true`. `brainiac agent create` writes these entries for you (see [Adding an Agent](#adding-an-agent)); this is what one looks like:
 
 ```json
 {
   "sherlock": {
-    "fizzy_name": "Sherlock",
+    "display_name": "Sherlock",
     "local": true,
     "env": {
       "FIZZY_TOKEN": "fizzy_abc...",
@@ -389,6 +440,8 @@ Both machines receive the same webhooks. The agent registry (`~/.brainiac/agents
 
 ### Step 1: Agent Registry
 
+`brainiac agent create` writes the entry, persona, role and plugin tokens for you (see [Adding an Agent](#adding-an-agent)). The rest of this section explains what it produces, in case you want to edit it by hand.
+
 The agent registry at `~/.brainiac/agents.json` is the authority for agent identity. This serves four purposes:
 
 1. **Per-agent environment variables** — any env var can be set per-agent via the `env` hash (e.g. `FIZZY_TOKEN`, `DISCORD_BOT_TOKEN`, custom vars)
@@ -399,7 +452,7 @@ The agent registry at `~/.brainiac/agents.json` is the authority for agent ident
 ```json
 {
   "sherlock": {
-    "fizzy_name": "Sherlock",
+    "display_name": "Sherlock",
     "local": true,
     "env": {
       "FIZZY_TOKEN": "fizzy_abc...",
@@ -407,19 +460,19 @@ The agent registry at `~/.brainiac/agents.json` is the authority for agent ident
     }
   },
   "robin": {
-    "fizzy_name": "Robin",
+    "display_name": "Robin",
     "env": {
       "FIZZY_TOKEN": "fizzy_xyz...",
       "DISCORD_BOT_TOKEN": "Bot_xyz..."
     }
   },
   "merlin": {
-    "fizzy_name": "Merlin"
+    "display_name": "Merlin"
   }
 }
 ```
 
-Keys are lowercase lookup keys (normalized: non-alphanumeric chars become hyphens). `fizzy_name` is the exact Fizzy account display name. The `env` hash is injected into the spawned agent process — every key/value pair becomes an environment variable.
+Keys are lowercase lookup keys (normalized: non-alphanumeric chars become hyphens). `display_name` is the exact name used for @mentions and on every platform (Discord, Fizzy, Basecamp). The `env` hash is injected into the spawned agent process — every key/value pair becomes an environment variable.
 
 The `local` flag controls which agents pick up card assignments on this machine. Agents without `"local": true` are still known for mention detection, display names, tokens, and cross-agent interactions — they just won't pick up card assignments. The default agent (from `AI_AGENT_NAME` or `brainiac.json`) is always considered local.
 
@@ -427,13 +480,13 @@ Agents without an `env` block (like Merlin above on a Linux box) still appear in
 
 The registry reloads on every webhook and via `POST /api/reload`.
 
-### Step 3: Seed Agent Persona and Knowledge
+### Step 2: Seed Agent Persona and Knowledge
 
 Agents get their personality from persona files and their technical context from knowledge files. These live in the brain directory and are indexed by qmd for semantic search.
 
 #### Persona
 
-Each agent needs at least one persona file. Create it directly in the brain:
+Each agent needs at least one persona file. `brainiac agent create` writes `style.md` from `--description-file` or `$EDITOR`. To create one by hand:
 
 ```bash
 # Create persona file for your agent
@@ -471,7 +524,7 @@ qmd update
 
 Agents also update knowledge themselves during sessions (when they learn something significant), but seeding it with your project's conventions and tool docs gives them a head start.
 
-### Step 4: Initialize Each Agent's Brain
+### Step 3: Initialize Each Agent's Brain
 
 ```bash
 brainiac brain init              # Default agent (from brainiac.json or AI_AGENT_NAME)
@@ -479,7 +532,7 @@ brainiac brain init SecurityBot  # Additional agent
 brainiac brain list              # Verify all agents
 ```
 
-This creates the directory structure, sets up qmd collections, and indexes everything. Run this after you've placed your persona and knowledge files.
+This creates the directory structure, sets up qmd collections, and indexes everything. Run this after you've placed your persona and knowledge files (`agent create --local` already does it for the new agent).
 
 ### How Dispatch Works
 
@@ -559,6 +612,8 @@ React with ❌ to any message that triggered an agent to immediately terminate t
 
 ### Setup
 
+**For a new agent, use `brainiac agent create` (or `brainiac agent setup <key> --only discord` for an existing one).** It covers steps 1-3 below: it opens the developer portal, takes the pasted token, sets the bot's name, avatar and Message Content intent, and opens the invite link. The manual steps are here for reference.
+
 #### Step 1: Create Discord Applications
 
 Create one Discord application per agent at https://discord.com/developers/applications:
@@ -588,7 +643,7 @@ brainiac discord token robin "BOT_TOKEN_FOR_ROBIN"
 This adds `DISCORD_BOT_TOKEN` to the agent's `env` hash in `~/.brainiac/agents.json`. You can verify with:
 
 ```bash
-brainiac discord agents
+brainiac agent <name> show
 ```
 
 #### Step 3: Invite Bots to Your Server
@@ -597,18 +652,22 @@ Go to the "OAuth2" tab for each application:
 
 1. Under "OAuth2 URL Generator", check the **bot** scope
 2. Under "Bot Permissions", select:
+   - View Channels
    - Send Messages
+   - Embed Links
+   - Attach Files
+   - Read Message History
+   - Add Reactions
    - Create Public Threads
    - Send Messages in Threads
-   - Add Reactions
-   - Read Message History
+   - Manage Threads
 3. Copy the generated URL and open it in your browser
 4. Select your server and authorize
 
-The permission integer for these permissions is `326417591296`. You can also construct the invite URL manually:
+The permission integer for these permissions is `326417632320`. You can also construct the invite URL manually:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=326417591296
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=326417632320
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from the "General Information" tab. Repeat for each agent bot.
@@ -709,7 +768,7 @@ Leave `authorized_role_ids` and `authorized_user_ids` empty to allow everyone in
 
 ```bash
 brainiac discord token <agent> <token>        # Set Discord bot token for an agent
-brainiac discord agents                       # List agents with Discord bot tokens
+brainiac discord owner <user-id>              # Set the owner's Discord user ID
 brainiac discord default <project>            # Set default project for all channels
 brainiac discord map <channel-id> <project>   # Override for a specific channel
 brainiac discord config                       # Show current Discord config
@@ -1124,8 +1183,8 @@ Brainiac supports a plugin system that lets you extend functionality via Ruby ge
 ### Installing Plugins
 
 ```bash
-brainiac install whatsapp      # Installs brainiac-whatsapp gem + registers it
-brainiac install slack         # Installs brainiac-slack gem + registers it
+brainiac install discord       # Installs brainiac-discord gem + registers it
+brainiac install fizzy         # Installs brainiac-fizzy gem + registers it
 brainiac restart               # Restart server to load new plugins
 ```
 
@@ -1134,7 +1193,7 @@ This runs `gem install brainiac-<name>`, adds the plugin to `~/.brainiac/plugins
 You can also install a specific version:
 
 ```bash
-brainiac install whatsapp --version 0.2.0
+brainiac install discord --version 0.0.25
 ```
 
 ### Managing Plugins
@@ -1147,8 +1206,8 @@ brainiac uninstall <name>      # Remove plugin from config (gem stays installed)
 To fully remove the gem after uninstalling:
 
 ```bash
-brainiac uninstall whatsapp
-gem uninstall brainiac-whatsapp
+brainiac uninstall discord
+gem uninstall brainiac-discord
 ```
 
 ### Configuration
@@ -1158,7 +1217,7 @@ Installed plugins are tracked in `~/.brainiac/plugins.json`:
 ```json
 {
   "plugins": [
-    { "name": "whatsapp", "gem": "brainiac-whatsapp", "installed_at": "2026-06-30T14:00:00-04:00" }
+    { "name": "discord", "gem": "brainiac-discord", "installed_at": "2026-06-30T14:00:00-04:00" }
   ]
 }
 ```
@@ -1167,7 +1226,7 @@ At server startup, `load_plugins!` iterates this list, requires each gem, and ca
 
 ### Creating a Plugin
 
-Any Ruby gem named `brainiac-<name>` can be a Brainiac plugin. The gem must:
+Any Ruby gem named `brainiac-<name>` can be a Brainiac plugin. `brainiac plugin new <name>` generates a working skeleton (gemspec, module, CLI with an `on_agent_created` stub, tests, and a skill doc); the full contract is in [skills/brainiac-plugins/SKILL.md](skills/brainiac-plugins/SKILL.md). The gem must:
 
 1. **Define a module** at `Brainiac::Plugins::<Name>`
 2. **Implement `.register(app)`** — receives the Sinatra app instance for defining routes and starting threads
@@ -1222,7 +1281,8 @@ The `Brainiac::Plugins` namespace is defined in `lib/brainiac.rb`. Plugin module
 | fizzy | `brainiac-fizzy` | Fizzy card management — assignment, comments, @mentions, cross-agent reviews, duplicate detection, planning mode |
 | github | `brainiac-github` | GitHub webhooks — PR reviews, PR comments, PR merges, CI workflow notifications, deploy tracking |
 | zoho | `brainiac-zoho` | Zoho Mail webhooks — rule-based email notifications, AI triage, OAuth for content fetching |
-| whatsapp | `brainiac-whatsapp` | WhatsApp Business API integration |
+| basecamp | `brainiac-basecamp` | Basecamp epic orchestration — card tables, review gates, epic branches |
+| featureparity | `brainiac-featureparity` | FeatureParity integration for Brainiac agents |
 
 ### Backward Compatibility
 
@@ -1275,10 +1335,31 @@ brainiac brain search --persona <query>  # Search agent persona
 brainiac brain list                      # List everything
 ```
 
+### Agents
+
+```bash
+brainiac agent create <name> [flags]     # New agent + persona + role + plugin setup (see Adding an Agent)
+brainiac agent setup <name> [flags]      # Finish/re-run plugin setup; change icon, avatar, email, role
+brainiac agent remove <name>             # Remove from the registry
+brainiac agent list                      # List agents
+brainiac agent <name> show               # Show config (tokens redacted)
+brainiac agent <name> env <KEY> <VALUE>  # Set an env var
+```
+
+### Roles
+
+```bash
+brainiac role list                         # Roles and who has them
+brainiac role show <name>                  # Print a role
+brainiac role create <name> [--from f] [--assign agent]  # New role ($EDITOR on a template)
+brainiac role assign <agent> <role>        # Add a role to an agent
+brainiac role unassign <agent> <role>      # Remove it
+```
+
 ### Plugins
 
 ```bash
-brainiac install <name>                  # Install a plugin gem (e.g., whatsapp)
+brainiac install <name>                  # Install a plugin gem (e.g., discord)
 brainiac install <name> --version 0.2.0  # Install specific version
 brainiac uninstall <name>                # Remove plugin from config
 brainiac plugins                         # List installed plugins
@@ -1439,7 +1520,7 @@ ls brainiac receiver.rb lib/brainiac/*.rb lib/brainiac/handlers/*.rb | entr -r b
 
 **Agent commenting as wrong user:** Check `~/.brainiac/agents.json` has the correct `FIZZY_TOKEN` in the agent's `env` hash. The env is injected into the spawned agent process — verify with `curl http://localhost:4567/api/agents` to see the roster.
 
-**Agent @mention not linking in Fizzy:** The `fizzy_name` in `agents.json` must match the exact Fizzy account name (case-sensitive). Check `curl http://localhost:4567/api/agents` to see what the roster looks like.
+**Agent @mention not linking in Fizzy:** The `display_name` in `agents.json` must match the exact Fizzy account name (case-sensitive). Check `curl http://localhost:4567/api/agents` to see what the roster looks like.
 
 **Agent-to-agent loop:** Shouldn't happen — dispatch depth is capped at 10 hops by default. Check `curl http://localhost:4567/api/dispatch-depth` to see current state. Adjust `AGENT_DISPATCH_MAX_DEPTH` in `lib/brainiac/sessions.rb` if needed.
 
