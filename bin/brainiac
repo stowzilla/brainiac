@@ -668,6 +668,9 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
     | `:create_work_item` | Create card/issue/ticket |
     | `:detect_cli_provider` | Detect CLI provider |
     | `:detect_effort` | Detect effort level |
+    | `:agent_added` | New agent in agents.json (after reload) |
+    | `:agent_updated` | Existing agent's entry changed (after reload) |
+    | `:agent_removed` | Agent removed from agents.json (after reload) |
 
     ## Agent Onboarding (`on_agent_created`)
 
@@ -730,6 +733,13 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
     Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
     asked during create). Core filters on the plugin name before calling you, so
     plugins don't need to handle this.
+
+    **Going live without a restart.** `agent create` / `agent setup` tell the running
+    server to reload `agents.json`. The server may already have seen the agent before
+    your hook wrote its token, so a server-side plugin that starts something per agent
+    (a gateway connection, a poller) must handle `:agent_updated` as well as
+    `:agent_added`: start it when the credential appears or changes, stop it when it's
+    removed.
 
     ## Channel Prompts
 
@@ -2606,8 +2616,12 @@ when "agent"
     notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
                                  skip: skip_plugins, only: only_plugins, confirm: confirm)
     if skip_plugins.any? && entry["skip_plugins"] != skip_plugins.uniq
-      entry["skip_plugins"] = skip_plugins.uniq
-      registry[agent_key] = entry
+      # Re-read: the plugin hooks above wrote their tokens (DISCORD_BOT_TOKEN,
+      # FIZZY_TOKEN, ...) into agents.json, and the copy we loaded at the start
+      # would clobber them.
+      registry = JSON.parse(File.read(agent_registry_file))
+      registry[agent_key] ||= entry
+      registry[agent_key]["skip_plugins"] = skip_plugins.uniq
       File.write(agent_registry_file, JSON.pretty_generate(registry))
       puts "  Skipping #{skip_plugins.uniq.join(", ")} for #{name} (undo: brainiac agent setup #{agent_key} --only <plugin>)"
     end
