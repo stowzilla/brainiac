@@ -109,6 +109,9 @@ Available hooks:
 | `:create_work_item` | Create a card/issue/ticket | title, body, project |
 | `:detect_cli_provider` | Detect CLI provider | metadata hash |
 | `:detect_effort` | Detect effort level | metadata hash |
+| `:agent_added` | New key in agents.json (after reload) | agent_key, display_name, entry |
+| `:agent_updated` | Existing agent's entry changed (after reload) | agent_key, display_name, entry, previous_entry |
+| `:agent_removed` | Key gone from agents.json (after reload) | agent_key |
 
 ## Agent Onboarding (`on_agent_created`)
 
@@ -171,6 +174,13 @@ Rules:
 Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
 asked during create). Core filters on the plugin name before calling you, so
 plugins don't need to handle this.
+
+**Going live without a restart.** `agent create` / `agent setup` tell the running
+server to reload `agents.json`. The server may already have seen the agent before
+your hook wrote its token, so a server-side plugin that starts something per agent
+(a gateway connection, a poller) must handle `:agent_updated` as well as
+`:agent_added`: start it when the credential appears or changes, stop it when it's
+removed.
 
 ## Channel Prompts
 
