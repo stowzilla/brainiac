@@ -374,6 +374,25 @@ def write_role_file(role_name, text, agent_name = nil)
   file
 end
 
+# Role for --role-file: named after the first --role that doesn't exist yet,
+# else the file's name (blog-writer.md → blog-writer), so one file can be
+# reused across agents. Reusing an existing role is fine when the file is
+# that role or has the same content; a different role by that name is an error.
+# Returns [role_name, needs_write].
+def role_from_file(role_file, requested_roles)
+  name = requested_roles.find { |r| !available_roles.include?(r) } || role_name_arg(File.basename(role_file, ".*"))
+  existing = File.join(BRAINIAC_DIR, "roles", "#{name}.md")
+  return [name, true] unless File.exist?(existing)
+
+  same = File.expand_path(existing) == role_file || File.read(existing).strip == File.read(role_file).strip ||
+         File.read(existing).include?(File.read(role_file).strip)
+  return [name, false] if same
+
+  puts "❌ A different role named '#{name}' already exists (#{existing})."
+  puts "   Use --role #{name} to assign it as-is, or --role <new-name> to name the role from #{role_file}."
+  exit 1
+end
+
 # Add roles to a registry entry, keeping the string-or-array shape.
 def assign_roles(entry, new_roles)
   roles = (Array(entry["role"]) + new_roles).uniq
@@ -1537,10 +1556,14 @@ when "setup"
 
   puts ""
   puts "Next steps:"
-  puts "  1. Register projects: cd ~/Code/myproject && brainiac register"
-  puts "  2. Initialize brain: brainiac brain init"
-  puts "  3. Install plugins: brainiac install discord / fizzy / github / zoho"
-  puts "  4. Start server: brainiac server"
+  puts "  1. Install plugins: brainiac install discord / fizzy / github / zoho / basecamp"
+  puts "  2. Register projects: cd ~/Code/myproject && brainiac register"
+  puts "  3. Start server: brainiac server --daemon"
+  if agent_name
+    puts "  4. Finish #{agent_name} (persona, role, icon, plugin accounts): brainiac agent setup #{existing_agents.first}"
+  else
+    puts "  4. Add an agent (persona, role, icon, plugin accounts): brainiac agent create <Name> --local"
+  end
 
   # Shell completion setup
   puts ""
@@ -2592,7 +2615,8 @@ when "agent"
       puts "  --local                Mark agent as local (dispatches on this machine)"
       puts "  --role <role>          Assign a role (repeatable)"
       puts "  --role-file <path>     Create a role from a markdown file and assign it"
-      puts "                         (named after the agent, or after a new --role name)"
+      puts "                         (named after the file, e.g. blog-writer.md → blog-writer,"
+      puts "                         or after a new --role name; an identical role is reused)"
       puts "  --cli <provider>       Set CLI provider (default: kiro)"
       puts "  --skip <plugins>       Don't set up these plugins for this agent, e.g. --skip basecamp"
       puts "  --only <plugins>       Set up just these plugins, e.g. --only discord,fizzy"
@@ -2612,7 +2636,7 @@ when "agent"
       puts "  brainiac agent create MyAgent                            # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
       puts "  brainiac agent create \"Judge Dredd\" --local --avatar dredd.png --icon ⚖️ \\"
-      puts "    --description-file dredd-style.md --role-file dredd-role.md"
+      puts "    --description-file dredd-style.md --role-file law-specialist.md"
       exit 1
     end
 
@@ -2720,13 +2744,9 @@ when "agent"
       exit 1
     end
     if role_file
-      # --role-file names its role after a --role that doesn't exist yet, else the agent key.
-      new_role = (roles - available_roles).first || agent_key
-      if available_roles.include?(new_role)
-        puts "❌ Role '#{new_role}' already exists. Pass --role <new-name> to name the role from #{role_file}."
-        exit 1
-      end
-      roles |= [new_role]
+      role_name, write_role = role_from_file(role_file, roles)
+      new_role = role_name if write_role
+      roles |= [role_name]
     elsif roles.empty? && $stdin.tty?
       roles = prompt_for_agent_role(agent_key, name)
     end
@@ -2757,7 +2777,7 @@ when "agent"
       end
     end
 
-    puts "✓ Created role #{write_role_file(new_role, File.read(role_file), name)}" if new_role
+    puts "✓ Created role #{write_role_file(new_role, File.read(role_file))}" if new_role
 
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
@@ -2836,7 +2856,7 @@ when "agent"
       puts ""
       puts "  --icon e      Set the status bar icon (Omarchy bar, waybar, xbar)"
       puts "  --role r      Assign an existing role"
-      puts "  --role-file f Create a role from a markdown file (named after the agent) and assign it"
+      puts "  --role-file f Create a role from a markdown file (named after the file) and assign it"
       puts "  --skip a,b    Never set up these plugins for this agent (saved)"
       puts "  --only a,b    Run just these plugins (also un-skips them)"
       puts "  --no-browser  Print links instead of opening them"
@@ -2896,12 +2916,8 @@ when "agent"
 
     display = entry["display_name"] || name
     if role_file
-      role_name = (new_roles - available_roles).first || agent_key
-      if available_roles.include?(role_name)
-        puts "❌ Role '#{role_name}' already exists. Pass --role <new-name> to name the role from #{role_file}."
-        exit 1
-      end
-      puts "✓ Created role #{write_role_file(role_name, File.read(role_file), display)}"
+      role_name, write_role = role_from_file(role_file, new_roles)
+      puts "✓ Created role #{write_role_file(role_name, File.read(role_file))}" if write_role
       new_roles |= [role_name]
     elsif new_roles.empty? && entry["role"].nil? && $stdin.tty?
       new_roles = prompt_for_agent_role(agent_key, display)
@@ -4608,7 +4624,7 @@ when "help", "--help", "-h", nil
       Brainiac CLI - Manage projects with Brainiac server
 
       Usage:
-        brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
+        brainiac setup                  Bootstrap a new machine (dirs, example configs, CLI providers)
         brainiac server [options]       Start the Brainiac webhook server (foreground)
         brainiac start [options]        Alias for 'brainiac server'
         brainiac stop                   Stop the running server
@@ -4683,6 +4699,9 @@ when "help", "--help", "-h", nil
         role unassign <agent> <role>     Remove a role from an agent
 
       Agent Commands:
+        agent create <name> [options]      Add an agent: persona, role, icon, plugin accounts
+        agent setup <name> [options]       Finish or re-run plugin setup (skips what's done)
+        agent remove <name>                Remove an agent from the registry
         agent list                         List all agents in the registry
         agent <name> show                  Show agent configuration (tokens redacted)
         agent <name> env <KEY> <VALUE>     Set an env var for an agent
