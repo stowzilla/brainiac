@@ -652,18 +652,22 @@ Go to the "OAuth2" tab for each application:
 
 1. Under "OAuth2 URL Generator", check the **bot** scope
 2. Under "Bot Permissions", select:
+   - View Channels
    - Send Messages
+   - Embed Links
+   - Attach Files
+   - Read Message History
+   - Add Reactions
    - Create Public Threads
    - Send Messages in Threads
-   - Add Reactions
-   - Read Message History
+   - Manage Threads
 3. Copy the generated URL and open it in your browser
 4. Select your server and authorize
 
-The permission integer for these permissions is `326417591296`. You can also construct the invite URL manually:
+The permission integer for these permissions is `326417632320`. You can also construct the invite URL manually:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=326417591296
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=326417632320
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from the "General Information" tab. Repeat for each agent bot.
