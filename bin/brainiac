@@ -418,6 +418,48 @@ def prompt_for_agent_role(agent_key, display_name)
   picked & existing
 end
 
+# Status bar icons (Omarchy bar, waybar, xbar) live in ~/.brainiac/waybar.json,
+# keyed by display name (matched case-insensitively). Unlisted agents show ❓.
+def bar_config_file
+  File.join(BRAINIAC_DIR, "waybar.json")
+end
+
+def read_bar_config
+  File.exist?(bar_config_file) ? JSON.parse(File.read(bar_config_file, encoding: "utf-8")) : {}
+rescue JSON::ParserError
+  {}
+end
+
+def bar_icon(display_name)
+  (read_bar_config["agents"] || []).find { |a| a["name"].to_s.casecmp?(display_name) }&.dig("emoji")
+end
+
+# Add or update the agent's bar icon, keeping its color and the other agents.
+# A nil icon removes the agent from the file.
+def write_bar_icon(display_name, icon)
+  config = read_bar_config
+  agents = config["agents"] || []
+  existing = agents.find { |a| a["name"].to_s.casecmp?(display_name) }
+  if icon.nil?
+    agents.delete(existing)
+  elsif existing
+    existing["emoji"] = icon
+  else
+    agents << { "name" => display_name, "emoji" => icon }
+  end
+  config["agents"] = agents
+  config["default_emoji"] ||= "❓"
+  config["schema_version"] ||= "1.0"
+  config["last_updated"] = Time.now.iso8601
+  File.write(bar_config_file, "#{JSON.pretty_generate(config)}\n")
+end
+
+def prompt_for_bar_icon(display_name)
+  print "Status bar icon for #{display_name} (an emoji, blank to skip): "
+  icon = $stdin.gets.to_s.strip
+  icon.empty? ? nil : icon
+end
+
 # Payload handed to plugins' on_agent_created: the registry entry plus the
 # setup inputs plugins need to provision accounts (avatar, description, email).
 # "open_browser" tells plugins whether they may launch a browser for their
@@ -2543,6 +2585,7 @@ when "agent"
       puts ""
       puts "Options:"
       puts "  --avatar <path>        Profile picture (png/jpg/gif/webp), used by plugins (Discord, Fizzy)"
+      puts "  --icon <emoji>         Status bar icon (Omarchy bar, waybar, xbar), e.g. --icon ⚖️"
       puts "  --description <text>   Persona description (\"-\" reads stdin, \"@file\" reads a file)"
       puts "  --description-file <path>  Read the persona description from a file"
       puts "  --email <address>      Email for the agent's accounts (default: agent_email_template)"
@@ -2557,7 +2600,8 @@ when "agent"
       puts ""
       puts "With no flags and a terminal, interactive mode is used. If no description is"
       puts "given on a terminal, $EDITOR opens so you can write a full persona. Without"
-      puts "--role/--role-file you're asked to pick an existing role or write a new one."
+      puts "--role/--role-file you're asked to pick an existing role or write a new one,"
+      puts "and without --icon you're asked for a status bar emoji."
       puts "After the brainiac files are written, each installed plugin sets up its part"
       puts "(Discord bot, Fizzy user, Basecamp person), asking first unless --skip/--only"
       puts "is given. Re-run with: brainiac agent setup <name>"
@@ -2567,7 +2611,7 @@ when "agent"
       puts "  brainiac agent create Quill --local --avatar quill.png --description @quill.md"
       puts "  brainiac agent create MyAgent                            # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
-      puts "  brainiac agent create \"Judge Dredd\" --local --avatar dredd.png \\"
+      puts "  brainiac agent create \"Judge Dredd\" --local --avatar dredd.png --icon ⚖️ \\"
       puts "    --description-file dredd-style.md --role-file dredd-role.md"
       exit 1
     end
@@ -2587,6 +2631,7 @@ when "agent"
     cli_provider = nil
     persona_text = nil
     avatar = nil
+    icon = nil
     email = nil
     skip_plugins = []
     only_plugins = nil
@@ -2617,6 +2662,9 @@ when "agent"
         when "--avatar"
           ARGV.shift
           avatar = ARGV.shift
+        when "--icon"
+          ARGV.shift
+          icon = ARGV.shift.to_s.strip
         when "--email"
           ARGV.shift
           email = ARGV.shift
@@ -2682,6 +2730,7 @@ when "agent"
     elsif roles.empty? && $stdin.tty?
       roles = prompt_for_agent_role(agent_key, name)
     end
+    icon = prompt_for_bar_icon(name) if icon.nil? && $stdin.tty?
 
     missing_roles = roles - available_roles - [new_role]
     if missing_roles.any?
@@ -2718,6 +2767,10 @@ when "agent"
     puts "  CLI: #{cli_provider}" if cli_provider
     puts "  Email: #{email}" if email
     puts "  Avatar: #{entry["avatar"]}" if entry["avatar"]
+    if icon && !icon.empty?
+      write_bar_icon(name, icon)
+      puts "  Bar icon: #{icon}"
+    end
 
     # Create persona directory and style file if requested
     if persona_text
@@ -2772,14 +2825,16 @@ when "agent"
   when "setup"
     name = ARGV.shift
     unless name
-      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--email <address>] [--role <role>] [--role-file <path>]"
-      puts "                                   [--skip <plugins>] [--only <plugins>] [--no-browser]"
+      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--icon <emoji>] [--email <address>] [--role <role>]"
+      puts "                                   [--role-file <path>] [--skip <plugins>] [--only <plugins>] [--no-browser]"
       puts ""
       puts "Re-runs every plugin's agent setup (Discord bot, Fizzy user, Basecamp person)."
       puts "Steps that are already done are skipped, so it's safe to run after an"
       puts "interrupted 'agent create' or to set up a newly installed plugin."
-      puts "An agent without a role is asked to pick or write one."
+      puts "An agent without a role is asked to pick or write one, and one without a"
+      puts "status bar icon is asked for an emoji."
       puts ""
+      puts "  --icon e      Set the status bar icon (Omarchy bar, waybar, xbar)"
       puts "  --role r      Assign an existing role"
       puts "  --role-file f Create a role from a markdown file (named after the agent) and assign it"
       puts "  --skip a,b    Never set up these plugins for this agent (saved)"
@@ -2800,8 +2855,11 @@ when "agent"
     open_browser = true
     new_roles = []
     role_file = nil
+    icon = nil
     while ARGV.any?
       case ARGV.shift
+      when "--icon"
+        icon = ARGV.shift.to_s.strip
       when "--role"
         new_roles << role_name_arg(ARGV.shift)
       when "--role-file"
@@ -2855,6 +2913,12 @@ when "agent"
     end
     puts "✓ Role: #{assign_roles(entry, new_roles).join(", ")}" if new_roles.any?
 
+    icon = prompt_for_bar_icon(display) if icon.nil? && bar_icon(display).nil? && $stdin.tty?
+    if icon && !icon.empty?
+      write_bar_icon(display, icon)
+      puts "✓ Bar icon: #{icon}"
+    end
+
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
 
@@ -2883,6 +2947,7 @@ when "agent"
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Removed agent '#{display}' (#{agent_key}) from registry"
     puts "  Note: Persona files at ~/.brainiac/brain/persona/#{agent_key}/ were not deleted."
+    write_bar_icon(display, nil) if bar_icon(display)
 
     # Let plugins clean up their config
     notify_plugins_agent_removed(agent_key, display)

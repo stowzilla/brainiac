@@ -30,6 +30,19 @@ This file configures how agents appear in the status bar — waybar on Linux, xb
 }
 ```
 
+## Setting an agent's icon
+
+You don't need to edit this file by hand. `brainiac agent create` asks for an
+icon (or takes `--icon`), and `brainiac agent setup` asks for one if the agent
+has none. To change one later:
+
+```bash
+brainiac agent setup "Judge Dredd" --icon ⚖️
+```
+
+The Omarchy bar plugin, waybar and xbar all read this file, so one entry covers
+every bar. Agents without an entry show `default_emoji`.
+
 ## Fields
 
 - **name**: Agent name (must match agent registry)

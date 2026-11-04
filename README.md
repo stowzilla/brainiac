@@ -932,6 +932,9 @@ Configure how agents appear in the status bar via `~/.brainiac/waybar.json`:
 }
 ```
 
+`brainiac agent create` asks for each new agent's icon (or pass `--icon ⚖️`).
+Change one later with `brainiac agent setup <name> --icon <emoji>`.
+
 ### macOS (xbar)
 
 Requires [xbar](https://xbarapp.com) (free, formerly BitBar).
