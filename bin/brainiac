@@ -15,7 +15,7 @@ BRAINIAC_ROOT = File.expand_path("..", __dir__)
 require_relative "../lib/brainiac/version"
 BRAINIAC_VERSION = Brainiac::VERSION
 
-BRAINIAC_DIR = File.join(Dir.home, ".brainiac")
+BRAINIAC_DIR = ENV.fetch("BRAINIAC_DIR", File.join(Dir.home, ".brainiac"))
 PROJECTS_FILE = File.join(BRAINIAC_DIR, "projects.json")
 CONFIG_FILE = File.join(BRAINIAC_DIR, "config.json")
 PID_FILE = File.join(BRAINIAC_DIR, "server.pid")
@@ -193,27 +193,304 @@ rescue StandardError
   nil
 end
 
-# Run CLI-time plugin hooks for agent lifecycle events.
-# Loads each installed plugin's CLI module and calls the hook method if defined.
-# This runs synchronously and can prompt for interactive input.
-def notify_plugins_agent_created(agent_key, entry)
+# Installed plugins whose CLI module implements on_agent_created, as
+# [name, module] pairs in plugins.json order.
+def agent_setup_plugins
   plugins_file = File.join(BRAINIAC_DIR, "plugins.json")
-  return unless File.exist?(plugins_file)
+  return [] unless File.exist?(plugins_file)
 
-  plugins_config = JSON.parse(File.read(plugins_file))
-  (plugins_config["plugins"] || []).each do |pentry|
+  (JSON.parse(File.read(plugins_file))["plugins"] || []).filter_map do |pentry|
     pname = pentry.is_a?(Hash) ? pentry["name"] : pentry.to_s
     try_require_metadata(pname, pentry)
     try_require_plugin_cli(pname, pentry)
     mod = resolve_plugin_module_for(pname)
-    next unless mod.respond_to?(:on_agent_created)
+    [pname, mod] if mod.respond_to?(:on_agent_created)
+  rescue StandardError, LoadError => e
+    puts "  ⚠ Plugin '#{pname}' couldn't load: #{e.message}"
+    nil
+  end
+rescue JSON::ParserError
+  []
+end
+
+# Run each plugin's on_agent_created hook (Discord bot, Fizzy user, ...).
+# Runs synchronously and can prompt for interactive input. Plugins in `skip`
+# are left alone; when `only` is given, just those plugins run. With
+# `confirm`, each plugin is asked about first and a "no" is added to `skip`
+# (the caller persists it so `agent setup` won't ask again).
+def notify_plugins_agent_created(agent_key, entry, skip: [], only: nil, confirm: false)
+  agent_setup_plugins.each do |pname, mod|
+    if only ? !only.include?(pname) : skip.include?(pname)
+      puts "  [#{pname}] skipped"
+      next
+    end
+
+    if confirm
+      print "\nSet up #{pname} for #{entry["display_name"] || agent_key}? [Y/n]: "
+      if $stdin.gets.to_s.strip.downcase.start_with?("n")
+        skip << pname
+        next
+      end
+    end
 
     mod.on_agent_created(agent_key, entry)
   rescue StandardError => e
     puts "  ⚠ Plugin '#{pname}' hook failed: #{e.message}"
   end
+end
+
+# "--skip basecamp,fizzy" style values → ["basecamp", "fizzy"]
+def plugin_list_arg(value)
+  value.to_s.split(",").map { |p| p.strip.downcase.delete_prefix("brainiac-") }.reject(&:empty?)
+end
+
+AVATAR_EXTENSIONS = %w[.png .jpg .jpeg .gif .webp].freeze
+
+# Resolve a description flag value: "-" reads stdin, "@path" reads a file,
+# anything else is the literal text.
+def read_description_arg(value)
+  return $stdin.read.strip if value == "-"
+  return File.read(File.expand_path(value[1..])).strip if value.start_with?("@")
+
+  value
+end
+
+# Open $VISUAL/$EDITOR on a scratch file so a multi-paragraph persona can be
+# written comfortably. HTML comment lines are instructions and get stripped.
+# Returns nil when the result is blank.
+def edit_description_in_editor(display_name, initial = nil)
+  require "tempfile"
+  require "shellwords"
+  editor = ENV["VISUAL"] || ENV["EDITOR"] || "vi"
+  Tempfile.create(["#{display_name.downcase}-persona", ".md"]) do |f|
+    f.write(initial || <<~MD)
+      <!-- Describe #{display_name}: personality, tone, voice, what they focus on. -->
+      <!-- Paragraphs and markdown are fine. Lines like this one are removed. Save and quit when done. -->
+
+    MD
+    f.flush
+    system(*Shellwords.split(editor), f.path)
+    text = File.read(f.path).gsub(/^\s*<!--.*?-->\s*\n?/, "").strip
+    text.empty? ? nil : text
+  end
+end
+
+# Default agent email from brainiac.json "agent_email_template",
+# e.g. "agent+{key}@example.com". Returns nil when no template is configured.
+def default_agent_email(agent_key, display_name)
+  config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  template = File.exist?(config_path) ? JSON.parse(File.read(config_path))["agent_email_template"] : nil
+  return nil if template.nil? || template.strip.empty?
+
+  template.gsub("{key}", agent_key).gsub("{name}", display_name)
+end
+
+# Copy an avatar image into the agent's persona dir (synced with the brain)
+# and return the stored path.
+def store_agent_avatar(agent_key, source)
+  path = File.expand_path(source)
+  ext = File.extname(path).downcase
+  raise ArgumentError, "Avatar not found: #{source}" unless File.file?(path)
+  raise ArgumentError, "Avatar must be one of #{AVATAR_EXTENSIONS.join(", ")}" unless AVATAR_EXTENSIONS.include?(ext)
+
+  persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
+  FileUtils.mkdir_p(persona_dir)
+  dest = File.join(persona_dir, "avatar#{ext}")
+  FileUtils.cp(path, dest) unless File.identical?(path, dest)
+  dest
+end
+
+# The persona text for an agent, read back from its style.md (frontmatter and
+# the generated "# Name — Persona" heading removed).
+def agent_persona_description(agent_key)
+  file = File.join(BRAINIAC_DIR, "brain", "persona", agent_key, "style.md")
+  return nil unless File.exist?(file)
+
+  body = File.read(file).sub(/\A---\n.*?\n---\n/m, "").sub(/\A\s*# .*— Persona\n/, "").strip
+  body.empty? ? nil : body
+end
+
+# Markdown that already opens with YAML frontmatter is kept as written, so a
+# hand-made style.md or role file isn't wrapped in a second frontmatter block.
+def frontmatter?(text)
+  text.to_s.lstrip.start_with?("---\n")
+end
+
+def available_roles
+  roles_dir = File.join(BRAINIAC_DIR, "roles")
+  Dir.exist?(roles_dir) ? Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") }.sort : []
+end
+
+def role_name_arg(value)
+  value.to_s.downcase.gsub(/[^a-z0-9-]/, "-")
+end
+
+# Starting point for a new role, shaped like the built-in ones. HTML comment
+# lines are instructions and get stripped by edit_description_in_editor.
+def role_template(role_name, agent_name = nil)
+  title = role_name.split("-").map(&:capitalize).join(" ")
+  you = agent_name ? "You are #{agent_name}, the #{title.downcase}." : "You are the #{title.downcase}."
+  <<~MD
+    <!-- Role "#{role_name}": WHAT this agent does. HOW it talks belongs in its persona (style.md). -->
+    <!-- Fill in or delete sections. Lines like this one are removed. Save and quit when done; empty = cancel. -->
+    # Role: #{title}
+
+    #{you} Your primary responsibility is ...
+
+    ## Primary Responsibilities
+
+    - **...**: ...
+
+    ## Checklist
+
+    When taking on any task:
+
+    1. ...
+
+    ## What You Don't Do
+
+    - ...
+
+    ## Looping In Other Agents (opt-in ONLY)
+
+    Do NOT tag, @mention, or "flag for" other agents by default. Every cross-agent
+    mention triggers an automated dispatch that spends the user's credits.
+    Only bring another agent in when the user explicitly asks for it. If you think
+    another agent should weigh in, say so in plain prose WITHOUT an @mention.
+  MD
+end
+
+# Write ~/.brainiac/roles/<name>.md, adding frontmatter unless the text has its own.
+def write_role_file(role_name, text, agent_name = nil)
+  roles_dir = File.join(BRAINIAC_DIR, "roles")
+  FileUtils.mkdir_p(roles_dir)
+  file = File.join(roles_dir, "#{role_name}.md")
+  body = text.strip
+  unless frontmatter?(body)
+    description = agent_name ? "Role definition for #{agent_name}" : "Role definition: #{role_name}"
+    body = "---\nname: #{role_name}\ndescription: #{description}\ninclusion: manual\n---\n\n#{body}"
+  end
+  File.write(file, "#{body}\n")
+  file
+end
+
+# Role for --role-file: named after the first --role that doesn't exist yet,
+# else the file's name (blog-writer.md → blog-writer), so one file can be
+# reused across agents. Reusing an existing role is fine when the file is
+# that role or has the same content; a different role by that name is an error.
+# Returns [role_name, needs_write].
+def role_from_file(role_file, requested_roles)
+  name = requested_roles.find { |r| !available_roles.include?(r) } || role_name_arg(File.basename(role_file, ".*"))
+  existing = File.join(BRAINIAC_DIR, "roles", "#{name}.md")
+  return [name, true] unless File.exist?(existing)
+
+  same = File.expand_path(existing) == role_file || File.read(existing).strip == File.read(role_file).strip ||
+         File.read(existing).include?(File.read(role_file).strip)
+  return [name, false] if same
+
+  puts "❌ A different role named '#{name}' already exists (#{existing})."
+  puts "   Use --role #{name} to assign it as-is, or --role <new-name> to name the role from #{role_file}."
+  exit 1
+end
+
+# Add roles to a registry entry, keeping the string-or-array shape.
+def assign_roles(entry, new_roles)
+  roles = (Array(entry["role"]) + new_roles).uniq
+  entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
+  roles
+end
+
+# Interactive role step for create/setup: pick existing roles by number or
+# name, write a new one in $EDITOR, or skip. Returns the chosen role names.
+def prompt_for_agent_role(agent_key, display_name)
+  existing = available_roles
+  puts ""
+  puts "Role for #{display_name} (what they do; the persona is how they talk):"
+  existing.each_with_index { |r, i| puts "  #{i + 1}. #{r}" }
+  puts "  n. New role (opens #{ENV["VISUAL"] || ENV["EDITOR"] || "vi"})"
+  print "Choose #{"numbers/names (comma-separated), " if existing.any?}n, or blank to skip: "
+  input = $stdin.gets.to_s.strip
+  return [] if input.empty?
+
+  if input.downcase.start_with?("n") && !existing.include?(input)
+    print "Role name [#{agent_key}]: "
+    name = role_name_arg($stdin.gets.to_s.strip)
+    name = agent_key if name.empty?
+    if existing.include?(name)
+      puts "  Role '#{name}' already exists; assigning it."
+      return [name]
+    end
+    text = edit_description_in_editor(name, role_template(name, display_name))
+    unless text
+      puts "  Empty role, skipped."
+      return []
+    end
+    puts "  Created #{write_role_file(name, text, display_name)}"
+    return [name]
+  end
+
+  picked = input.split(",").map(&:strip).filter_map do |token|
+    token.match?(/\A\d+\z/) ? existing[token.to_i - 1] : token
+  end
+  unknown = picked - existing
+  puts "  Unknown role(s) ignored: #{unknown.join(", ")}" if unknown.any?
+  picked & existing
+end
+
+# Status bar icons (Omarchy bar, waybar, xbar) live in ~/.brainiac/waybar.json,
+# keyed by display name (matched case-insensitively). Unlisted agents show ❓.
+def bar_config_file
+  File.join(BRAINIAC_DIR, "waybar.json")
+end
+
+def read_bar_config
+  File.exist?(bar_config_file) ? JSON.parse(File.read(bar_config_file, encoding: "utf-8")) : {}
 rescue JSON::ParserError
-  nil
+  {}
+end
+
+def bar_icon(display_name)
+  (read_bar_config["agents"] || []).find { |a| a["name"].to_s.casecmp?(display_name) }&.dig("emoji")
+end
+
+# Add or update the agent's bar icon, keeping its color and the other agents.
+# A nil icon removes the agent from the file.
+def write_bar_icon(display_name, icon)
+  config = read_bar_config
+  agents = config["agents"] || []
+  existing = agents.find { |a| a["name"].to_s.casecmp?(display_name) }
+  if icon.nil?
+    agents.delete(existing)
+  elsif existing
+    existing["emoji"] = icon
+  else
+    agents << { "name" => display_name, "emoji" => icon }
+  end
+  config["agents"] = agents
+  config["default_emoji"] ||= "❓"
+  config["schema_version"] ||= "1.0"
+  config["last_updated"] = Time.now.iso8601
+  File.write(bar_config_file, "#{JSON.pretty_generate(config)}\n")
+end
+
+def prompt_for_bar_icon(display_name)
+  print "Status bar icon for #{display_name} (an emoji, blank to skip): "
+  icon = $stdin.gets.to_s.strip
+  icon.empty? ? nil : icon
+end
+
+# Payload handed to plugins' on_agent_created: the registry entry plus the
+# setup inputs plugins need to provision accounts (avatar, description, email).
+# "open_browser" tells plugins whether they may launch a browser for their
+# manual steps (false with --no-browser, BRAINIAC_NO_BROWSER, or no terminal).
+def agent_hook_payload(agent_key, entry, open_browser: true)
+  entry.merge(
+    "agent_key" => agent_key,
+    "avatar_path" => entry["avatar"],
+    "description" => agent_persona_description(agent_key),
+    "email" => entry["email"],
+    "open_browser" => open_browser && $stdin.tty? && !ENV["BRAINIAC_NO_BROWSER"]
+  ).compact
 end
 
 # Run CLI-time plugin hooks for agent removal.
@@ -560,6 +837,78 @@ def generate_plugin_skill_md(plugin_name, pascal_name)
     | `:create_work_item` | Create card/issue/ticket |
     | `:detect_cli_provider` | Detect CLI provider |
     | `:detect_effort` | Detect effort level |
+    | `:agent_added` | New agent in agents.json (after reload) |
+    | `:agent_updated` | Existing agent's entry changed (after reload) |
+    | `:agent_removed` | Agent removed from agents.json (after reload) |
+
+    ## Agent Onboarding (`on_agent_created`)
+
+    `brainiac agent create` writes the brainiac files (agents.json, persona, brain),
+    then asks each plugin to provision the new agent on its service: a Discord bot,
+    a Fizzy user, a Basecamp person. `brainiac agent setup <name>` runs the same hook
+    again. If your plugin gives agents an identity on some service, implement it.
+
+    Define it in `cli.rb` (or a file `cli.rb` requires), since it runs in the CLI context:
+
+    ```ruby
+    # cli.rb
+    require_relative "agent_setup"
+
+    module Brainiac
+      module Plugins
+        module MyService
+          # Called by `brainiac agent create` / `brainiac agent setup`.
+          def self.on_agent_created(agent_key, entry)
+            AgentSetup.run(agent_key, entry)
+          end
+
+          def self.on_agent_removed(agent_key, display_name) # optional: clean up config
+          end
+        end
+      end
+    end
+    ```
+
+    `entry` is the agents.json entry plus:
+
+    | Key | Value |
+    |-----|-------|
+    | `agent_key` | Registry key, e.g. `quill` |
+    | `display_name` | e.g. `Quill` |
+    | `avatar_path` | Profile image (png/jpg/gif/webp) or absent |
+    | `description` | Persona text (can be several paragraphs) or absent |
+    | `email` | Email for the agent's accounts (from `--email` / `agent_email_template`) or absent |
+    | `open_browser` | `true` when you may launch a browser for a manual step |
+
+    Rules:
+
+    1. **Idempotent.** `agent setup` re-runs every hook. Check your config first and
+       print `✓ <Name> already ... (skipping)` when the work is done.
+    2. **Automate everything the API allows.** Only stop for steps the service truly
+       can't do by API (e.g. Discord has no create-application endpoint). Then print
+       numbered steps and the URL, and read the result with `$stdin.noecho(&:gets)`
+       for secrets.
+    3. **Browser.** If `entry["open_browser"]` is true, open the URL as well as printing
+       it (`xdg-open` on Linux, `open` on macOS, spawned and detached). Don't open links
+       that must be used while signed in as someone else (e.g. a join link for the bot's
+       own account), because they'd land in the user's own session. Say "open in a
+       private window" instead.
+    4. **Optional inputs.** Skip quietly if `avatar_path`, `description` or `email` is missing.
+       Return without error when `$stdin` isn't a TTY and you need input.
+    5. **Never raise for expected failures.** Print `✗ ... re-run: brainiac agent setup <key>`.
+       Uncaught exceptions are reported as "hook failed" and the next plugin runs.
+    6. **Prefix output** with `  [MyService]` so it's clear whose step is running.
+
+    Users choose which plugins run with `--skip` / `--only` (or by answering "n" when
+    asked during create). Core filters on the plugin name before calling you, so
+    plugins don't need to handle this.
+
+    **Going live without a restart.** `agent create` / `agent setup` tell the running
+    server to reload `agents.json`. The server may already have seen the agent before
+    your hook wrote its token, so a server-side plugin that starts something per agent
+    (a gateway connection, a poller) must handle `:agent_updated` as well as
+    `:agent_added`: start it when the credential appears or changes, stop it when it's
+    removed.
 
     ## Channel Prompts
 
@@ -1207,10 +1556,14 @@ when "setup"
 
   puts ""
   puts "Next steps:"
-  puts "  1. Register projects: cd ~/Code/myproject && brainiac register"
-  puts "  2. Initialize brain: brainiac brain init"
-  puts "  3. Install plugins: brainiac install discord / fizzy / github / zoho"
-  puts "  4. Start server: brainiac server"
+  puts "  1. Install plugins: brainiac install discord / fizzy / github / zoho / basecamp"
+  puts "  2. Register projects: cd ~/Code/myproject && brainiac register"
+  puts "  3. Start server: brainiac server --daemon"
+  if agent_name
+    puts "  4. Finish #{agent_name} (persona, role, icon, plugin accounts): brainiac agent setup #{existing_agents.first}"
+  else
+    puts "  4. Add an agent (persona, role, icon, plugin accounts): brainiac agent create <Name> --local"
+  end
 
   # Shell completion setup
   puts ""
@@ -2254,18 +2607,36 @@ when "agent"
       puts "Usage: brainiac agent create <name> [options]"
       puts ""
       puts "Options:"
-      puts "  --local              Mark agent as local (dispatches on this machine)"
-      puts "  --role <role>        Assign a role (repeatable)"
-      puts "  --cli <provider>     Set CLI provider (default: kiro)"
-      puts "  --persona <text>     Create a persona style file with this description"
+      puts "  --avatar <path>        Profile picture (png/jpg/gif/webp), used by plugins (Discord, Fizzy)"
+      puts "  --icon <emoji>         Status bar icon (Omarchy bar, waybar, xbar), e.g. --icon ⚖️"
+      puts "  --description <text>   Persona description (\"-\" reads stdin, \"@file\" reads a file)"
+      puts "  --description-file <path>  Read the persona description from a file"
+      puts "  --email <address>      Email for the agent's accounts (default: agent_email_template)"
+      puts "  --local                Mark agent as local (dispatches on this machine)"
+      puts "  --role <role>          Assign a role (repeatable)"
+      puts "  --role-file <path>     Create a role from a markdown file and assign it"
+      puts "                         (named after the file, e.g. blog-writer.md → blog-writer,"
+      puts "                         or after a new --role name; an identical role is reused)"
+      puts "  --cli <provider>       Set CLI provider (default: kiro)"
+      puts "  --skip <plugins>       Don't set up these plugins for this agent, e.g. --skip basecamp"
+      puts "  --only <plugins>       Set up just these plugins, e.g. --only discord,fizzy"
+      puts "  --no-browser           Print setup links instead of opening them"
       puts ""
-      puts "If no options are given and stdin is a terminal, interactive mode is used."
+      puts "With no flags and a terminal, interactive mode is used. If no description is"
+      puts "given on a terminal, $EDITOR opens so you can write a full persona. Without"
+      puts "--role/--role-file you're asked to pick an existing role or write a new one,"
+      puts "and without --icon you're asked for a status bar emoji."
+      puts "After the brainiac files are written, each installed plugin sets up its part"
+      puts "(Discord bot, Fizzy user, Basecamp person), asking first unless --skip/--only"
+      puts "is given. Re-run with: brainiac agent setup <name>"
       puts ""
       puts "Examples:"
-      puts "  brainiac agent create MyAgent   # interactive"
+      puts "  brainiac agent create Quill --local --avatar quill.png   # opens $EDITOR for the persona"
+      puts "  brainiac agent create Quill --local --avatar quill.png --description @quill.md"
+      puts "  brainiac agent create MyAgent                            # interactive"
       puts "  brainiac agent create SecurityBot --local --role code-reviewer"
-      puts "  brainiac agent create Jane --role general-engineer --cli grok"
-      puts "  brainiac agent create Merlin --persona \"Wise, enigmatic, helpful\""
+      puts "  brainiac agent create \"Judge Dredd\" --local --avatar dredd.png --icon ⚖️ \\"
+      puts "    --description-file dredd-style.md --role-file law-specialist.md"
       exit 1
     end
 
@@ -2273,14 +2644,22 @@ when "agent"
     registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
 
     if registry[agent_key]
-      puts "Agent '#{name}' already exists. Use 'brainiac agent #{agent_key} show' to view."
+      puts "Agent '#{name}' already exists. Use 'brainiac agent #{agent_key} show' to view,"
+      puts "or 'brainiac agent setup #{agent_key}' to finish plugin setup."
       exit 1
     end
 
     local = false
     roles = []
+    role_file = nil
     cli_provider = nil
     persona_text = nil
+    avatar = nil
+    icon = nil
+    email = nil
+    skip_plugins = []
+    only_plugins = nil
+    open_browser = true
 
     if ARGV.any?
       # Flag mode
@@ -2291,13 +2670,37 @@ when "agent"
           local = true
         when "--role"
           ARGV.shift
-          roles << ARGV.shift
+          roles << role_name_arg(ARGV.shift)
+        when "--role-file"
+          ARGV.shift
+          role_file = File.expand_path(ARGV.shift.to_s)
         when "--cli"
           ARGV.shift
           cli_provider = ARGV.shift
-        when "--persona"
+        when "--description", "--persona"
           ARGV.shift
-          persona_text = ARGV.shift
+          persona_text = read_description_arg(ARGV.shift.to_s)
+        when "--description-file"
+          ARGV.shift
+          persona_text = File.read(File.expand_path(ARGV.shift.to_s)).strip
+        when "--avatar"
+          ARGV.shift
+          avatar = ARGV.shift
+        when "--icon"
+          ARGV.shift
+          icon = ARGV.shift.to_s.strip
+        when "--email"
+          ARGV.shift
+          email = ARGV.shift
+        when "--skip"
+          ARGV.shift
+          skip_plugins.concat(plugin_list_arg(ARGV.shift))
+        when "--only"
+          ARGV.shift
+          only_plugins = plugin_list_arg(ARGV.shift)
+        when "--no-browser"
+          ARGV.shift
+          open_browser = false
         else
           puts "Unknown option: #{ARGV[0]}"
           exit 1
@@ -2319,23 +2722,62 @@ when "agent"
       input = $stdin.gets.chomp
       cli_provider = input.empty? ? nil : input
 
-      # Show available roles
-      roles_dir = File.join(BRAINIAC_DIR, "roles")
-      available_roles = Dir.exist?(roles_dir) ? Dir.glob(File.join(roles_dir, "*.md")).map { |f| File.basename(f, ".md") } : []
-      hint = available_roles.any? ? " (#{available_roles.join(", ")})" : ""
-      print "Roles#{hint} (comma-separated) []: "
+      print "Avatar image path (or blank to skip) []: "
       input = $stdin.gets.chomp
-      roles = input.empty? ? [] : input.split(",").map(&:strip)
+      avatar = input.empty? ? nil : input
 
-      print "Persona description (tone/style, or blank to skip) []: "
+      default_email = default_agent_email(agent_key, name)
+      print "Email for the agent's accounts#{" [#{default_email}]" if default_email}: "
       input = $stdin.gets.chomp
-      persona_text = input.empty? ? nil : input
+      email = input.empty? ? default_email : input
     end
+
+    # A persona is usually a paragraph or more — give it a real editor.
+    if persona_text.nil? && $stdin.tty?
+      print "Write #{name}'s persona description in #{ENV["VISUAL"] || ENV["EDITOR"] || "vi"}? [Y/n]: "
+      persona_text = edit_description_in_editor(name) unless $stdin.gets.to_s.strip.downcase.start_with?("n")
+    end
+
+    new_role = nil
+    if role_file && !File.file?(role_file)
+      puts "❌ Role file not found: #{role_file}"
+      exit 1
+    end
+    if role_file
+      role_name, write_role = role_from_file(role_file, roles)
+      new_role = role_name if write_role
+      roles |= [role_name]
+    elsif roles.empty? && $stdin.tty?
+      roles = prompt_for_agent_role(agent_key, name)
+    end
+    icon = prompt_for_bar_icon(name) if icon.nil? && $stdin.tty?
+
+    missing_roles = roles - available_roles - [new_role]
+    if missing_roles.any?
+      puts "❌ Unknown role(s): #{missing_roles.join(", ")}. Available: #{available_roles.join(", ")}"
+      puts "   Create one with --role-file, or 'brainiac role create <name>'."
+      exit 1
+    end
+
+    email ||= default_agent_email(agent_key, name)
 
     entry = { "display_name" => name }
     entry["local"] = true if local
     entry["cli_provider"] = cli_provider if cli_provider
     entry["role"] = roles.size == 1 ? roles.first : roles if roles.any?
+    entry["email"] = email if email
+    entry["skip_plugins"] = skip_plugins.uniq if skip_plugins.any?
+
+    if avatar
+      begin
+        entry["avatar"] = store_agent_avatar(agent_key, avatar)
+      rescue ArgumentError => e
+        puts "❌ #{e.message}"
+        exit 1
+      end
+    end
+
+    puts "✓ Created role #{write_role_file(new_role, File.read(role_file))}" if new_role
 
     registry[agent_key] = entry
     File.write(agent_registry_file, JSON.pretty_generate(registry))
@@ -2343,19 +2785,31 @@ when "agent"
     puts "  Local: #{local}" if local
     puts "  Role: #{roles.join(", ")}" if roles.any?
     puts "  CLI: #{cli_provider}" if cli_provider
+    puts "  Email: #{email}" if email
+    puts "  Avatar: #{entry["avatar"]}" if entry["avatar"]
+    if icon && !icon.empty?
+      write_bar_icon(name, icon)
+      puts "  Bar icon: #{icon}"
+    end
 
     # Create persona directory and style file if requested
     if persona_text
       persona_dir = File.join(BRAINIAC_DIR, "brain", "persona", agent_key)
       FileUtils.mkdir_p(persona_dir)
       persona_file = File.join(persona_dir, "style.md")
-      unless File.exist?(persona_file)
+      if File.exist?(persona_file)
+        # Already there (e.g. a re-create); leave it alone.
+      elsif frontmatter?(persona_text)
+        File.write(persona_file, "#{persona_text.strip}\n")
+        puts "  Persona: #{persona_file}"
+      else
         File.write(persona_file, <<~MD)
           ---
           name: #{agent_key}-style
           description: Persona voice for #{name}.
           ---
           # #{name} — Persona
+
           #{persona_text}
         MD
         puts "  Persona: #{persona_file}"
@@ -2368,10 +2822,125 @@ when "agent"
       brain_init(name)
     end
 
-    # Let plugins prompt for additional config (e.g. Discord user ID)
-    notify_plugins_agent_created(agent_key, entry)
+    # Each plugin provisions its side (Discord bot, Fizzy user, Basecamp person, ...).
+    # Without --skip/--only, a terminal user is asked per plugin; "no" answers
+    # are saved so `agent setup` leaves those plugins alone too.
+    confirm = $stdin.tty? && skip_plugins.empty? && only_plugins.nil?
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: skip_plugins, only: only_plugins, confirm: confirm)
+    if skip_plugins.any? && entry["skip_plugins"] != skip_plugins.uniq
+      # Re-read: the plugin hooks above wrote their tokens (DISCORD_BOT_TOKEN,
+      # FIZZY_TOKEN, ...) into agents.json, and the copy we loaded at the start
+      # would clobber them.
+      registry = JSON.parse(File.read(agent_registry_file))
+      registry[agent_key] ||= entry
+      registry[agent_key]["skip_plugins"] = skip_plugins.uniq
+      File.write(agent_registry_file, JSON.pretty_generate(registry))
+      puts "  Skipping #{skip_plugins.uniq.join(", ")} for #{name} (undo: brainiac agent setup #{agent_key} --only <plugin>)"
+    end
 
     # Notify running server to reload and trigger :agent_added hook
+    notify_server_reload
+
+  when "setup"
+    name = ARGV.shift
+    unless name
+      puts "Usage: brainiac agent setup <name> [--avatar <path>] [--icon <emoji>] [--email <address>] [--role <role>]"
+      puts "                                   [--role-file <path>] [--skip <plugins>] [--only <plugins>] [--no-browser]"
+      puts ""
+      puts "Re-runs every plugin's agent setup (Discord bot, Fizzy user, Basecamp person)."
+      puts "Steps that are already done are skipped, so it's safe to run after an"
+      puts "interrupted 'agent create' or to set up a newly installed plugin."
+      puts "An agent without a role is asked to pick or write one, and one without a"
+      puts "status bar icon is asked for an emoji."
+      puts ""
+      puts "  --icon e      Set the status bar icon (Omarchy bar, waybar, xbar)"
+      puts "  --role r      Assign an existing role"
+      puts "  --role-file f Create a role from a markdown file (named after the file) and assign it"
+      puts "  --skip a,b    Never set up these plugins for this agent (saved)"
+      puts "  --only a,b    Run just these plugins (also un-skips them)"
+      puts "  --no-browser  Print links instead of opening them"
+      exit 1
+    end
+
+    agent_key = name.downcase.gsub(/[^a-z0-9-]/, "-")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    entry = registry[agent_key]
+    unless entry
+      puts "Agent '#{name}' not found in registry."
+      exit 1
+    end
+
+    only_plugins = nil
+    open_browser = true
+    new_roles = []
+    role_file = nil
+    icon = nil
+    while ARGV.any?
+      case ARGV.shift
+      when "--icon"
+        icon = ARGV.shift.to_s.strip
+      when "--role"
+        new_roles << role_name_arg(ARGV.shift)
+      when "--role-file"
+        role_file = File.expand_path(ARGV.shift.to_s)
+        unless File.file?(role_file)
+          puts "❌ Role file not found: #{role_file}"
+          exit 1
+        end
+      when "--skip"
+        entry["skip_plugins"] = ((entry["skip_plugins"] || []) + plugin_list_arg(ARGV.shift)).uniq
+      when "--only"
+        only_plugins = plugin_list_arg(ARGV.shift)
+      when "--no-browser"
+        open_browser = false
+      when "--avatar"
+        begin
+          entry["avatar"] = store_agent_avatar(agent_key, ARGV.shift.to_s)
+        rescue ArgumentError => e
+          puts "❌ #{e.message}"
+          exit 1
+        end
+      when "--email"
+        entry["email"] = ARGV.shift
+      else
+        puts "Unknown option. Run 'brainiac agent setup' for usage."
+        exit 1
+      end
+    end
+    entry["email"] ||= default_agent_email(agent_key, entry["display_name"] || name)
+    entry.delete("email") unless entry["email"]
+    # Explicitly running a plugin with --only un-skips it for good.
+    entry["skip_plugins"] -= only_plugins if only_plugins && entry["skip_plugins"]
+    entry.delete("skip_plugins") if entry["skip_plugins"] == []
+
+    display = entry["display_name"] || name
+    if role_file
+      role_name, write_role = role_from_file(role_file, new_roles)
+      puts "✓ Created role #{write_role_file(role_name, File.read(role_file))}" if write_role
+      new_roles |= [role_name]
+    elsif new_roles.empty? && entry["role"].nil? && $stdin.tty?
+      new_roles = prompt_for_agent_role(agent_key, display)
+    end
+    unknown = new_roles - available_roles
+    if unknown.any?
+      puts "❌ Unknown role(s): #{unknown.join(", ")}. Available: #{available_roles.join(", ")}"
+      exit 1
+    end
+    puts "✓ Role: #{assign_roles(entry, new_roles).join(", ")}" if new_roles.any?
+
+    icon = prompt_for_bar_icon(display) if icon.nil? && bar_icon(display).nil? && $stdin.tty?
+    if icon && !icon.empty?
+      write_bar_icon(display, icon)
+      puts "✓ Bar icon: #{icon}"
+    end
+
+    registry[agent_key] = entry
+    File.write(agent_registry_file, JSON.pretty_generate(registry))
+
+    puts "Setting up #{entry["display_name"] || name} (#{agent_key})"
+    notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
+                                 skip: entry["skip_plugins"] || [], only: only_plugins)
     notify_server_reload
 
   when "remove", "delete", "rm"
@@ -2394,6 +2963,7 @@ when "agent"
     File.write(agent_registry_file, JSON.pretty_generate(registry))
     puts "✓ Removed agent '#{display}' (#{agent_key}) from registry"
     puts "  Note: Persona files at ~/.brainiac/brain/persona/#{agent_key}/ were not deleted."
+    write_bar_icon(display, nil) if bar_icon(display)
 
     # Let plugins clean up their config
     notify_plugins_agent_removed(agent_key, display)
@@ -2407,12 +2977,14 @@ when "agent"
              brainiac agent list
              brainiac agent default [name]
              brainiac agent create <name> [options]
+             brainiac agent setup <name> [--skip|--only <plugins>]
              brainiac agent remove <name>
 
       Commands:
         list                              List all agents in the registry
         default [name]                    Show or set the default agent
-        create <name> [options]           Add a new agent to the registry
+        create <name> [options]           Add a new agent and run every plugin's setup
+        setup <name>                      Re-run plugin setup (skips steps already done)
         remove <name>                     Remove an agent from the registry
         <name> show                       Show agent configuration (tokens redacted)
         <name> set <field> <value>        Update a config field (local, cli, role, persona, display_name)
@@ -2421,14 +2993,21 @@ when "agent"
         <name> env --delete <KEY>         Remove an env var from an agent
 
       Create options (or interactive if no flags given):
+        --avatar <path>      Profile picture, used by plugins (Discord, Fizzy)
+        --description <text> Persona description ("-" = stdin, "@file" = file; $EDITOR if omitted)
+        --email <address>    Email for the agent's accounts (default: agent_email_template)
         --local              Mark agent as local (dispatches on this machine)
         --role <role>        Assign a role (repeatable)
         --cli <provider>     Set CLI provider (default: kiro)
-        --persona <text>     Create a persona style file
+        --skip <plugins>     Don't set up these plugins for this agent (saved; also for setup)
+        --only <plugins>     Set up just these plugins (also for setup)
+        --no-browser         Print setup links instead of opening them
 
       Examples:
         brainiac agent list
         brainiac agent default Sherlock
+        brainiac agent create Quill --local --avatar quill.png
+        brainiac agent setup quill
         brainiac agent create SecurityBot --local --role code-reviewer
         brainiac agent create Jane --cli grok
         brainiac agent create MyAgent             # interactive mode
@@ -2627,8 +3206,9 @@ when "role"
 
       files.each do |f|
         name = File.basename(f, ".md")
-        # Read first non-empty, non-heading line as description
-        desc = File.readlines(f).find { |l| !l.strip.empty? && !l.start_with?("#") && !l.start_with?("---") }&.strip || ""
+        # First non-empty, non-heading line after any frontmatter is the description
+        body = File.read(f).sub(/\A---\n.*?\n---\n/m, "")
+        desc = body.lines.find { |l| !l.strip.empty? && !l.start_with?("#") }&.strip || ""
         agents = agent_roles[name]
         agent_str = agents ? " (#{agents.join(", ")})" : ""
         puts "#{name}#{agent_str} — #{desc[0..70]}"
@@ -2725,19 +3305,64 @@ when "role"
     puts "✓ Removed role '#{role_name}' from #{agent_name}"
 
   when "create", "add"
-    name = ARGV[0]
-    unless name
-      puts "Usage: brainiac role create <name>"
+    name = ARGV.shift
+    if name.nil? || name.start_with?("--")
+      puts "Usage: brainiac role create <name> [--from <file>] [--assign <agent>]"
+      puts ""
+      puts "Without --from, $EDITOR opens on a role template (or the template is written"
+      puts "as-is when there's no terminal)."
       exit 1
     end
-    FileUtils.mkdir_p(roles_dir)
+    name = role_name_arg(name)
+    from = nil
+    assign_to = nil
+    while ARGV.any?
+      case ARGV.shift
+      when "--from" then from = File.expand_path(ARGV.shift.to_s)
+      when "--assign" then assign_to = ARGV.shift
+      else
+        puts "Unknown option. Run 'brainiac role create' for usage."
+        exit 1
+      end
+    end
+
     file = File.join(roles_dir, "#{name}.md")
     if File.exist?(file)
       puts "Role '#{name}' already exists. Edit #{file} directly."
       exit 1
     end
-    File.write(file, "# Role: #{name.split("-").map(&:capitalize).join(" ")}\n\nDescribe this role's responsibilities here.\n")
-    puts "Created #{file} — edit it to define the role."
+    if from && !File.file?(from)
+      puts "File not found: #{from}"
+      exit 1
+    end
+
+    agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    agent_key = assign_to && role_name_arg(assign_to)
+    if agent_key && !registry[agent_key]
+      puts "Agent '#{assign_to}' not found."
+      exit 1
+    end
+    agent_display = agent_key && (registry[agent_key]["display_name"] || assign_to)
+
+    text = if from
+             File.read(from)
+           elsif $stdin.tty?
+             edit_description_in_editor(name, role_template(name, agent_display))
+           else
+             role_template(name, agent_display).gsub(/^\s*<!--.*?-->\s*\n?/, "")
+           end
+    unless text
+      puts "Empty role, nothing created."
+      exit 1
+    end
+    puts "✓ Created #{write_role_file(name, text, agent_display)}"
+
+    if agent_key
+      assign_roles(registry[agent_key], [name])
+      File.write(agent_registry_file, JSON.pretty_generate(registry))
+      puts "✓ Assigned role '#{name}' to #{agent_display}"
+    end
 
   else
     puts <<~HELP
@@ -2746,7 +3371,8 @@ when "role"
       Commands:
         list                   List configured roles
         show <name>            Show role definition
-        create <name>          Create a new role file
+        create <name> [--from <file>] [--assign <agent>]
+                               Create a role (opens $EDITOR on a template)
         assign <agent> <role>    Assign a role to an agent (additive)
         unassign <agent> <role>  Remove a role from an agent
     HELP
@@ -3248,6 +3874,12 @@ when "plugin"
             def self.cli(args)
               Cli.run(args)
             end
+
+            # Optional: provision a new agent on #{pascal_name} during
+            # `brainiac agent create` / `brainiac agent setup`. Must be idempotent.
+            # See "Agent Onboarding" in skills/#{plugin_name}/SKILL.md for the payload and rules.
+            # def self.on_agent_created(agent_key, entry)
+            # end
 
             # Subcommand names for bash completion.
             def self.completions
@@ -3992,7 +4624,7 @@ when "help", "--help", "-h", nil
       Brainiac CLI - Manage projects with Brainiac server
 
       Usage:
-        brainiac setup                  Bootstrap a new machine (deps, dirs, configs)
+        brainiac setup                  Bootstrap a new machine (dirs, example configs, CLI providers)
         brainiac server [options]       Start the Brainiac webhook server (foreground)
         brainiac start [options]        Alias for 'brainiac server'
         brainiac stop                   Stop the running server
@@ -4062,11 +4694,14 @@ when "help", "--help", "-h", nil
       Role Commands:
         role list                        List configured roles and assignments
         role show <name>                 Show role definition
-        role create <name>               Create a new role file
+        role create <name> [--from f] [--assign a]  Create a role (template in $EDITOR)
         role assign <agent> <role>       Assign a role to an agent (additive)
         role unassign <agent> <role>     Remove a role from an agent
 
       Agent Commands:
+        agent create <name> [options]      Add an agent: persona, role, icon, plugin accounts
+        agent setup <name> [options]       Finish or re-run plugin setup (skips what's done)
+        agent remove <name>                Remove an agent from the registry
         agent list                         List all agents in the registry
         agent <name> show                  Show agent configuration (tokens redacted)
         agent <name> env <KEY> <VALUE>     Set an env var for an agent

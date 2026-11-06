@@ -142,7 +142,7 @@ def check_intent(message, agent_name:, channel: "conversation", context: nil)
   # Deterministic pre-check: if the message explicitly names another agent
   # and does NOT name this agent, skip without consulting the LLM.
   # This handles the common case of "Effie, tell me another" when checking Galen.
-  if intent_names_other_agent?(message, agent_name)
+  if intent_names_other_agent?(message, agent_name, context)
     LOG.info "[Intent] Deterministic skip for #{agent_name} — message addresses another agent"
     return false
   end
@@ -327,11 +327,16 @@ end
 #   - "Was Effie nice to you?" (asking about Effie)
 #   - "I liked what Effie said" (referencing Effie)
 #
+# Agents running on other machines aren't in AGENT_REGISTRY, so bot authors seen in
+# the conversation context ("Name [bot]: ...") count as agents too.
+#
 # @param message [String] The message text
 # @param agent_name [String] The agent being evaluated
+# @param context [String, nil] Conversation history
 # @return [Boolean] true if another agent is directly addressed and this one isn't
-def intent_names_other_agent?(message, agent_name)
-  return false unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+def intent_names_other_agent?(message, agent_name, context = nil)
+  names = intent_agent_display_names.keys | context_bot_names(context).map(&:downcase)
+  return false if names.empty?
 
   msg_lower = message.downcase.strip
   agent_lower = agent_name.downcase
@@ -340,9 +345,7 @@ def intent_names_other_agent?(message, agent_name)
   return false if directly_addressed_to?(msg_lower, agent_lower)
 
   # Check if any OTHER agent is directly addressed (not merely mentioned)
-  AGENT_REGISTRY.each do |key, entry|
-    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
-    other_lower = display.downcase
+  names.each do |other_lower|
     next if other_lower == agent_lower
     next unless msg_lower.match?(/\b#{Regexp.escape(other_lower)}\b/)
 
@@ -403,64 +406,66 @@ def build_intent_agent_roster(agent_name)
   names.join(", ")
 end
 
+# Map of lowercased agent display name => display name, from the local AGENT_REGISTRY.
+def intent_agent_display_names
+  return {} unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+
+  AGENT_REGISTRY.each_with_object({}) do |(key, entry), names|
+    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
+    names[display.downcase] = display
+  end
+end
+
+# Parse a context line ("username: message", or "username [bot]: message" when the
+# plugin knows the author is a bot). Returns [username, bot?] or nil.
+def parse_context_author(line)
+  match = line.match(/\A(\S+?)( \[bot\])?:\s/)
+  match && [match[1], !match[2].nil?]
+end
+
+# Usernames of every bot author in the context.
+def context_bot_names(context)
+  return [] if context.nil?
+
+  context.lines.filter_map do |line|
+    username, bot = parse_context_author(line)
+    username if bot
+  end.uniq
+end
+
 # Detect the last agent to respond in the conversation context.
 # Returns a prompt-friendly string telling the model who was last to respond.
-#
-# The context is formatted as "username: message\n..." lines.
-# We scan backwards to find the most recent line authored by a known agent.
 #
 # @param context [String, nil] Conversation history
 # @param agent_name [String] The current agent being evaluated
 # @return [String] Prompt block describing the last responder
 def detect_last_responder(context, _agent_name = nil)
-  return "No agent has spoken yet." if context.nil? || context.strip.empty?
-  return "No agent has spoken yet." unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
+  responder = detect_last_responder_name(context)
+  return "No agent has spoken yet." unless responder
 
-  # Build a lookup of agent display names (lowercase) to their proper display name
-  agent_names = {}
-  AGENT_REGISTRY.each do |key, entry|
-    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
-    agent_names[display.downcase] = display
-  end
-
-  # Scan context lines in reverse to find the last agent message
-  lines = context.strip.lines.reverse
-  lines.each do |line|
-    # Lines are formatted as "username: message content"
-    match = line.match(/\A(\S+?):\s/)
-    next unless match
-
-    username = match[1].downcase
-    next unless agent_names.key?(username)
-
-    responder = agent_names[username]
-    return "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
-  end
-
-  "No agent has spoken yet."
+  "#{responder} was the last to speak. The human is continuing the conversation with #{responder}."
 end
 
 # Detect the last agent to respond — returns just the display name (or nil).
 # Used for deterministic conversational-flow checks without LLM involvement.
 #
+# The context is formatted as "username: message\n..." lines. We scan backwards for
+# the most recent line from a known agent, or from any bot — an agent on another
+# machine is still the one the human is talking to.
+#
 # @param context [String, nil] Conversation history
 # @return [String, nil] Display name of last agent to speak, or nil
 def detect_last_responder_name(context)
   return nil if context.nil? || context.strip.empty?
-  return nil unless defined?(AGENT_REGISTRY) && !AGENT_REGISTRY.empty?
 
-  agent_names = {}
-  AGENT_REGISTRY.each do |key, entry|
-    display = entry.is_a?(Hash) ? (entry["display_name"] || key.capitalize) : key.capitalize
-    agent_names[display.downcase] = display
-  end
+  agent_names = intent_agent_display_names
 
   context.strip.lines.reverse_each do |line|
-    match = line.match(/\A(\S+?):\s/)
-    next unless match
+    username, bot = parse_context_author(line)
+    next unless username
 
-    username = match[1].downcase
-    return agent_names[username] if agent_names.key?(username)
+    return agent_names[username.downcase] if agent_names.key?(username.downcase)
+    return username if bot
   end
 
   nil

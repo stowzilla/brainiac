@@ -144,6 +144,27 @@ class TestIntent < Minitest::Test
     assert_equal "No agent has spoken yet.", detect_last_responder("", "Sherlock")
   end
 
+  def test_detect_last_responder_name_sees_bot_from_another_machine
+    context = "Andy: hey\nSherlock [bot]: on it\nChad [bot]: copy looks good\nAndy: ship it"
+    assert_equal "Chad", detect_last_responder_name(context)
+  end
+
+  def test_detect_last_responder_name_matches_registry_agent_with_bot_tag
+    context = "Andy: hey\nRobin [bot]: on it\nAndy: thanks"
+    assert_equal "Robin", detect_last_responder_name(context)
+  end
+
+  def test_detect_last_responder_name_ignores_unknown_humans
+    context = "Andy: hey\nSherlock [bot]: on it\nBob: me too"
+    assert_equal "Sherlock", detect_last_responder_name(context)
+  end
+
+  def test_intent_names_other_agent_from_another_machine
+    context = "Chad [bot]: here's the draft"
+    assert intent_names_other_agent?("Chad, tighten the headline", "Sherlock", context)
+    refute intent_names_other_agent?("Chad, tighten the headline", "Sherlock")
+  end
+
   # --- Pending work detection ---
 
   def test_check_pending_work_returns_false_when_disabled
