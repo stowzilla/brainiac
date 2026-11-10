@@ -333,6 +333,16 @@ A provider without `readonly_args` can't be used read-only; the call fails inste
 
 `claude` is the only `stream_format` so far. Lines that aren't JSON pass through unchanged.
 
+`subagents` is optional and writes the "Subagents" section of the agent's prompt. `tool` is the CLI's subagent tool, `usage` lines become how-to bullets, and `models` maps each job to a cheaper model. The session's own model (the `[fable]`/`[opus]` tag) stays the orchestrator: it plans, decides and reviews, and hands research and well-specified labor down a tier. A provider without the block gets no Subagents section, so an agent is never told to call a tool its CLI doesn't have.
+
+```json
+"subagents": {
+  "tool": "Agent",
+  "models": { "research and file sweeps": "haiku", "well-specified implementation": "sonnet" },
+  "usage": ["Pass `model` (`haiku`, `sonnet`, `opus`, `fable`) to pick the tier. Omit it and the subagent runs on your model."]
+}
+```
+
 Which provider runs is decided in this order: a `[cli:X]` tag, the agent's `cli_provider` in `agents.json`, the project's `cli_provider`, then `default_cli_provider` in `brainiac.json`. With none of those set, brainiac uses the `AGENT_CLI` env var, or kiro-cli.
 
 #### Asking an agent from a plugin

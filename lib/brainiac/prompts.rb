@@ -112,34 +112,7 @@ PROMPT_CORE = <<~PROMPT
   If the task is ambiguous or you're uncertain about requirements, ask before starting.
   If you're 90% sure, proceed. If you're 60% sure, ask.
 
-  ## Subagents (Delegating Work)
-  You have access to the `use_subagent` tool, which spawns independent child agents that run
-  in parallel and report back. Use them to preserve your context window for implementation.
-
-  **When to use subagents:**
-  - Cross-repo investigation ("how does opszilla-android call this endpoint?")
-  - Heavy codebase research before implementation (reading many files you won't need later)
-  - Parallel tasks that don't depend on each other
-  - When your context is getting heavy and you need to offload research
-
-  **When NOT to use subagents:**
-  - Simple, directed lookups (one file, one function, one grep)
-  - Tasks that require your brain context, persona, or memory
-  - Posting comments or external communication (only you can do that)
-
-  **How to use them effectively:**
-  - Be specific in your query — tell the subagent exactly what to find and where to look
-  - Include relevant file paths and repo locations in the query
-  - Use `relevant_context` to pass information the subagent needs
-  - You can specify `agent_name` to use a specialized agent (e.g., "robin" for Android research)
-  - Run `ListAgents` first if you want to see available specialized agents
-  - Up to 4 subagents can run in parallel
-  - To discover project locations for cross-repo work, run: `brainiac list`
-
-  **Limitations:** Subagents don't get your brain context, persona, or memory.
-  They can read files and run commands, but cannot post to Discord, GitHub, or other channels.
-  They're excellent researchers — use them as such.
-
+  {{SUBAGENTS}}
   ## Image Reading Limits
   Read at most 4-5 images per tool call. Summarize what you saw before reading more.
   Loading too many images at once can exceed the API request size limit and crash your session.
@@ -249,6 +222,66 @@ def populate_prompt_vars(vars, agent_name:, board_key:)
 
   roster_lines = agent_roster.map { |_key, display| "  - @#{display}" }.join("\n")
   vars["AGENT_ROSTER"] ||= roster_lines
+end
+
+# The Subagents section of PROMPT_CORE, built from the provider's `subagents` block in
+# cli-providers/<name>.json. Rendered at dispatch time (run_agent) because that's where the
+# provider is resolved. Providers without the block get no section: telling an agent to call
+# a tool its CLI doesn't have is worse than saying nothing.
+#
+#   "subagents": {
+#     "tool": "Agent",
+#     "models": { "research": "haiku", "implement": "sonnet" },
+#     "usage": ["Pass `model` to pick the tier."]
+#   }
+def subagent_prompt_section(subagents, model: nil)
+  return "" unless subagents.is_a?(Hash) && subagents["tool"]
+
+  lines = ["## Subagents (Delegating Work)"]
+  lines << "You have the `#{subagents["tool"]}` tool, which spawns child agents that run in parallel and report back."
+  lines << "Their file dumps stay out of your context, so long sessions stay lean."
+  lines << ""
+  lines << "**Delegate when the work is big, not because of the channel.** A card or a Discord request that"
+  lines << "spans many files or repos is worth delegating. A five-tool-call answer is not: each subagent"
+  lines << "starts cold and rereads everything, so it costs more than doing it yourself."
+  lines << ""
+  lines << "**Good jobs for subagents:** cross-repo investigation, sweeping many files you won't need later,"
+  lines << "independent tasks that can run in parallel, and mechanical edits you've already specified exactly."
+  lines << ""
+  lines << "**Keep for yourself:** design and architecture decisions, judgment calls, anything that needs your"
+  lines << "brain context, persona, or memory, final review of the change, and all external communication."
+  lines << "Subagents gather facts and do well-specified labor; they don't make the call. If a subagent's"
+  lines << "report drives a decision, verify the part that matters before acting on it."
+  append_subagent_models(lines, subagents["models"], model)
+  lines << ""
+  lines << "**How to use them:**"
+  Array(subagents["usage"]).each { |line| lines << "- #{line}" }
+  lines << "- Brief each subagent like a peer: the goal, exact files and repos, and what you've ruled out."
+  lines << "- Run `brainiac list` to find project paths for cross-repo work."
+  lines << ""
+  lines << "**Limitations:** Subagents don't get your brain context, persona, or memory, and can't post to"
+  lines << "Discord, GitHub, or other channels."
+  "#{lines.join("\n")}\n\n"
+end
+
+# Model tiers: you stay on the session's model (the [fable]/[opus] tag) for planning and the
+# final word; cheaper tiers take the labor.
+def append_subagent_models(lines, models, model)
+  return unless models.is_a?(Hash) && !models.empty?
+
+  lines << ""
+  lines << "**Model tiers:** You#{" (#{model})" if model} are the orchestrator. Pick a cheaper model for each subagent's job:"
+  models.each { |job, tier| lines << "- #{job}: `#{tier}`" }
+  lines << "Never hand a design or review decision down a tier to save money; that's the expensive part you're here for."
+end
+
+# Fill the {{SUBAGENTS}} slot left in PROMPT_CORE. A no-op for prompts that don't have it
+# (resume prompts, cron prompts).
+def fill_subagent_prompt(prompt, resolved, model: nil)
+  return prompt unless prompt.include?("{{SUBAGENTS}}")
+
+  section = subagent_prompt_section(resolved["subagents"], model: model)
+  prompt.sub("{{SUBAGENTS}}\n", section).sub("{{SUBAGENTS}}", section)
 end
 
 # Lean prompt for resumed sessions. The previous session already has the full context
