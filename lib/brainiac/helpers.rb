@@ -35,7 +35,8 @@ def load_cli_provider(provider_name)
   %w[prompt_flag readonly_args list_models_command resume_flag resume_args resume_id_flag new_session_id_flag
      session_list_command session_id_field session_directory_field session_updated_field
      session_list_path session_dir output_last_message_flag cwd_flag config_override_flag
-     effort_config_key effort_map title_flag heaviness_probe settings_model_cmd stream_args stream_format].each do |key|
+     effort_config_key effort_map title_flag heaviness_probe settings_model_cmd stream_args stream_format
+     subagents].each do |key|
     next unless raw[key]
     next if raw[key].respond_to?(:empty?) && raw[key].empty?
 
@@ -935,7 +936,7 @@ def run_agent(prompt, project_config:, chdir: nil, log_name: "agent", model: nil
   log_file = File.join(chdir, "tmp/agent-#{log_name}-#{timestamp}.log")
   FileUtils.mkdir_p(File.dirname(log_file))
 
-  prompt_file = write_agent_prompt_file(prompt, log_name, timestamp)
+  prompt_file = write_agent_prompt_file(fill_subagent_prompt(prompt, resolved, model: model), log_name, timestamp)
   output_file = prepare_output_file(resolved, log_name, timestamp)
 
   cmd = build_agent_cmd(resolved, agent_config_name: agent_config_name, model: model, effort: effort,

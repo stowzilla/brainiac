@@ -1297,4 +1297,33 @@ class TestHelpers < Minitest::Test
       FileUtils.rm_f(provider_file)
     end
   end
+
+  def test_fill_subagent_prompt_renders_provider_tool_and_tiers
+    resolved = { "subagents" => { "tool" => "Agent", "models" => { "research" => "haiku" },
+                                  "usage" => ["Pass `model` to pick the tier."] } }
+    prompt = fill_subagent_prompt("before\n{{SUBAGENTS}}\nafter", resolved, model: "fable")
+
+    assert_includes prompt, "You have the `Agent` tool"
+    assert_includes prompt, "You (fable) are the orchestrator"
+    assert_includes prompt, "- research: `haiku`"
+    assert_includes prompt, "- Pass `model` to pick the tier."
+    refute_includes prompt, "use_subagent"
+    refute_includes prompt, "{{SUBAGENTS}}"
+  end
+
+  def test_fill_subagent_prompt_drops_section_without_provider_block
+    prompt = fill_subagent_prompt("before\n{{SUBAGENTS}}\nafter", {})
+
+    assert_equal "before\nafter", prompt
+  end
+
+  def test_load_cli_provider_keeps_subagents_block
+    provider_file = File.join(CLI_PROVIDERS_DIR, "test-subagents.json")
+    FileUtils.mkdir_p(CLI_PROVIDERS_DIR)
+    File.write(provider_file, JSON.generate("binary" => "x", "subagents" => { "tool" => "Agent" }))
+
+    assert_equal({ "tool" => "Agent" }, load_cli_provider("test-subagents")["subagents"])
+  ensure
+    FileUtils.rm_f(provider_file)
+  end
 end

@@ -28,5 +28,14 @@
     "comment": "Optional. Lets brainiac record how 'heavy' a finished session was (context window usage + credits) in the durable session history. type selects the probe strategy; db_path points at the provider's local usage store. Omit this block to record timing/identity only.",
     "type": "kiro_sqlite",
     "db_path": "~/.local/share/kiro-cli/data.sqlite3"
+  },
+  "subagents": {
+    "comment": "Optional. Renders the Subagents section of the agent prompt. tool is the CLI's subagent tool; usage lines are appended as how-to bullets; models (job => tier) tells the agent which cheaper model to hand each job. Omit the block for CLIs with no subagent tool.",
+    "tool": "use_subagent",
+    "usage": [
+      "Use `relevant_context` to pass information the subagent needs.",
+      "Set `agent_name` for a specialized agent (e.g. \"robin\" for Android research); run `ListAgents` to see them.",
+      "Up to 4 subagents can run in parallel."
+    ]
   }
 }
