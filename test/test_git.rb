@@ -18,6 +18,21 @@ class TestGit < Minitest::Test
     assert_match(/\A(main|master)\z/, branch)
   end
 
+  def test_get_default_branch_empty_repo
+    empty = File.join(@test_dir, "empty-repo")
+    system("git", "init", "-q", "-b", "main", empty)
+    assert_equal "main", get_default_branch(empty)
+  end
+
+  def test_create_worktree_in_empty_repo
+    empty = File.join(@test_dir, "empty-repo")
+    system("git", "init", "-q", "-b", "main", empty)
+    wt_path = File.join(@test_dir, "empty-repo--first-branch")
+    result = create_or_reuse_worktree(repo_path: empty, branch: "first-branch", worktree_path: wt_path)
+    assert_equal wt_path, result
+    assert File.directory?(wt_path)
+  end
+
   def test_capture_git_state
     head, status = capture_git_state(@repo_path)
     assert_match(/\A[0-9a-f]{40}\z/, head)

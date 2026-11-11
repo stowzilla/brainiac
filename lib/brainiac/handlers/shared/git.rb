@@ -46,11 +46,13 @@ def debounced_repo_fetch(repo_path)
 end
 
 def get_default_branch(repo_path)
-  default_branch = run_cmd("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: repo_path).strip
+  run_cmd("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", chdir: repo_path).strip.sub("origin/", "")
+rescue StandardError
+  # symbolic-ref also works on an unborn branch (empty repo), unlike rev-parse HEAD
   begin
-    run_cmd("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", chdir: repo_path).strip.sub("origin/", "")
+    run_cmd("git", "symbolic-ref", "--short", "HEAD", chdir: repo_path).strip
   rescue StandardError
-    default_branch
+    run_cmd("git", "rev-parse", "--abbrev-ref", "HEAD", chdir: repo_path).strip
   end
 end
 
@@ -180,7 +182,13 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
     attach_or_create_worktree_for_branch(repo_path, branch, worktree_path)
   else
     LOG.info "Creating new branch #{branch} and worktree"
-    run_cmd("git", "worktree", "add", "-b", branch, worktree_path, base_ref, chdir: repo_path)
+    if ref_exists?(repo_path, base_ref)
+      run_cmd("git", "worktree", "add", "-b", branch, worktree_path, base_ref, chdir: repo_path)
+    else
+      # Empty repo (no commits yet): there's nothing to branch from, so start an orphan branch.
+      LOG.warn "Base ref #{base_ref} not found in #{repo_path} (empty repo?) — creating orphan branch #{branch}"
+      run_cmd("git", "worktree", "add", "--orphan", "-b", branch, worktree_path, chdir: repo_path)
+    end
   end
 
   trust_version_manager(worktree_path, chdir: worktree_path)
@@ -188,6 +196,10 @@ def create_or_reuse_worktree(repo_path:, branch:, base_ref: nil, worktree_path: 
   run_project_hook(repo_path, "worktree-setup", extra_env: { "WORKTREE_PATH" => worktree_path })
 
   worktree_path
+end
+
+def ref_exists?(repo_path, ref)
+  system("git", "rev-parse", "--verify", "--quiet", "#{ref}^{commit}", chdir: repo_path, out: File::NULL, err: File::NULL)
 end
 
 # Remove an orphaned worktree directory (exists on disk but not tracked by git).
