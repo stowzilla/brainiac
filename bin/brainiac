@@ -244,6 +244,66 @@ def plugin_list_arg(value)
   value.to_s.split(",").map { |p| p.strip.downcase.delete_prefix("brainiac-") }.reject(&:empty?)
 end
 
+# Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
+# Duplicated from lib/brainiac/helpers.rb since bin/brainiac doesn't load the full runtime.
+def load_cli_provider_for_setup(provider_name)
+  return {} unless provider_name
+
+  provider_file = File.join(BRAINIAC_DIR, "cli-providers", "#{provider_name}.json")
+  return {} unless File.exist?(provider_file)
+
+  JSON.parse(File.read(provider_file))
+rescue JSON::ParserError
+  {}
+end
+
+# Run a CLI provider's setup_hook for a new agent.
+# The hook receives agent_key and entry JSON on stdin.
+# Returns true if the hook ran successfully, false otherwise.
+def run_cli_provider_setup_hook(provider_name, agent_key, entry)
+  config = load_cli_provider_for_setup(provider_name)
+  hook = config["setup_hook"]
+  return true unless hook && !hook.empty?
+
+  # Expand ~ in hook path
+  hook_path = hook.start_with?("~") ? File.expand_path(hook) : hook
+
+  unless File.executable?(hook_path)
+    puts "  [#{provider_name}] setup_hook not executable: #{hook_path}"
+    return false
+  end
+
+  puts "  [#{provider_name}] Running setup hook..."
+  input = JSON.generate({ "agent_key" => agent_key, "entry" => entry })
+  stdout, stderr, status = Open3.capture3(hook_path, stdin_data: input)
+  if status.success?
+    puts stdout unless stdout.strip.empty?
+    true
+  else
+    puts "  [#{provider_name}] setup_hook failed (exit #{status.exitstatus})"
+    puts stderr unless stderr.strip.empty?
+    false
+  end
+rescue StandardError => e
+  puts "  [#{provider_name}] setup_hook error: #{e.message}"
+  false
+end
+
+# Run setup hook for the CLI provider configured on an agent (or the default).
+def run_agent_cli_provider_setup_hook(agent_key, entry)
+  provider = entry["cli_provider"]
+  provider ||= begin
+    brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+    JSON.parse(File.read(brainiac_config_path))["default_cli_provider"] if File.exist?(brainiac_config_path)
+  rescue JSON::ParserError
+    nil
+  end
+  # Default to kiro if no provider is configured anywhere
+  provider ||= "kiro"
+
+  run_cli_provider_setup_hook(provider, agent_key, entry)
+end
+
 AVATAR_EXTENSIONS = %w[.png .jpg .jpeg .gif .webp].freeze
 
 # Resolve a description flag value: "-" reads stdin, "@path" reads a file,
@@ -2502,16 +2562,97 @@ when "provider"
     puts "Synced #{added.size} new model(s) to #{file}:"
     added.each { |a| puts "  + #{a}" }
 
+  when "setup-agent"
+    provider_name = ARGV.shift
+    agent_name = ARGV.shift
+    unless provider_name && agent_name
+      puts "Usage: brainiac provider setup-agent <provider> <agent>"
+      puts ""
+      puts "Manually runs the CLI provider's setup_hook for an agent."
+      puts "This is useful for backfilling existing agents after adding a setup_hook."
+      puts ""
+      puts "Example:"
+      puts "  brainiac provider setup-agent kiro galen"
+      exit 1
+    end
+
+    config = load_cli_provider_for_setup(provider_name)
+    hook = config["setup_hook"]
+    unless hook && !hook.empty?
+      puts "Provider '#{provider_name}' has no setup_hook configured."
+      puts "Edit ~/.brainiac/cli-providers/#{provider_name}.json and add:"
+      puts '  "setup_hook": "~/.brainiac/cli-providers/hooks/kiro-agent-setup.sh"'
+      exit 1
+    end
+
+    agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    agent_key = agent_name.downcase.gsub(/[^a-z0-9-]/, "-")
+    entry = registry[agent_key]
+    unless entry
+      puts "Agent '#{agent_name}' not found in registry."
+      exit 1
+    end
+
+    if run_cli_provider_setup_hook(provider_name, agent_key, entry)
+      puts "✓ Setup hook completed for #{entry["display_name"] || agent_name}"
+    else
+      puts "❌ Setup hook failed"
+      exit 1
+    end
+
+  when "setup-all-agents"
+    provider_name = ARGV.shift
+    unless provider_name
+      puts "Usage: brainiac provider setup-all-agents <provider>"
+      puts ""
+      puts "Runs the CLI provider's setup_hook for ALL local agents."
+      puts "Useful for backfilling after adding a setup_hook to an existing provider."
+      exit 1
+    end
+
+    config = load_cli_provider_for_setup(provider_name)
+    hook = config["setup_hook"]
+    unless hook && !hook.empty?
+      puts "Provider '#{provider_name}' has no setup_hook configured."
+      exit 1
+    end
+
+    agent_registry_file = File.join(BRAINIAC_DIR, "agents.json")
+    registry = File.exist?(agent_registry_file) ? JSON.parse(File.read(agent_registry_file)) : {}
+    local_agents = registry.select { |_, e| e.is_a?(Hash) && e["local"] }
+
+    if local_agents.empty?
+      puts "No local agents found."
+      exit 0
+    end
+
+    puts "Running #{provider_name} setup_hook for #{local_agents.size} local agent(s)..."
+    succeeded = 0
+    failed = 0
+    local_agents.each do |agent_key, entry|
+      display = entry["display_name"] || agent_key
+      if run_cli_provider_setup_hook(provider_name, agent_key, entry)
+        succeeded += 1
+      else
+        failed += 1
+      end
+    end
+    puts ""
+    puts "✓ #{succeeded} succeeded, #{failed} failed"
+
   else
     puts <<~HELP
       Usage: brainiac provider <command>
 
       Commands:
-        list                 List configured CLI providers
-        show <name>          Show provider configuration
-        add <name>           Create a new provider config
-        list-models <name>   Query available models from the CLI provider
-        sync-models <name>   Add discovered models to provider config
+        list                              List configured CLI providers
+        show <name>                       Show provider configuration
+        add <name>                        Create a new provider config
+        list-models <name>                Query available models from the CLI provider
+        sync-models <name>                Add discovered models to provider config
+        setup-agent <provider> <agent>    Run provider's setup_hook for one agent
+        setup-all-agents <provider>       Run provider's setup_hook for all local agents
     HELP
   end
 
@@ -2822,6 +2963,9 @@ when "agent"
       brain_init(name)
     end
 
+    # Run CLI provider's setup_hook (e.g., create ~/.kiro/agents/<key>.json)
+    run_agent_cli_provider_setup_hook(agent_key, entry)
+
     # Each plugin provisions its side (Discord bot, Fizzy user, Basecamp person, ...).
     # Without --skip/--only, a terminal user is asked per plugin; "no" answers
     # are saved so `agent setup` leaves those plugins alone too.
@@ -2939,6 +3083,8 @@ when "agent"
     File.write(agent_registry_file, JSON.pretty_generate(registry))
 
     puts "Setting up #{entry["display_name"] || name} (#{agent_key})"
+    # Run CLI provider's setup_hook (e.g., create ~/.kiro/agents/<key>.json)
+    run_agent_cli_provider_setup_hook(agent_key, entry)
     notify_plugins_agent_created(agent_key, agent_hook_payload(agent_key, entry, open_browser: open_browser),
                                  skip: entry["skip_plugins"] || [], only: only_plugins)
     notify_server_reload
