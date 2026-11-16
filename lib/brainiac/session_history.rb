@@ -220,12 +220,29 @@ end
 # credits. v3 doesn't record the model's context window, so only the percentage and
 # credits are reported.
 def kiro_v3_session_heaviness(chdir, sessions_dir: nil)
+  session_json, modified_at = kiro_v3_latest_session(chdir, sessions_dir: sessions_dir)
+  return nil unless session_json
+
+  pct, credits = kiro_v3_session_usage(File.join(File.dirname(session_json), "messages.jsonl"))
+  return nil if pct.nil? && credits.zero?
+
+  fields = {}
+  fields["context_usage_pct"] = pct.to_f.round(2) if pct
+  fields["credits_used"] = credits.round(4) if credits.positive?
+  { updated_ms: (modified_at * 1000).to_i, fields: fields }
+rescue Errno::ENOENT
+  nil
+end
+
+# Returns [session.json path, lastModifiedAt epoch seconds] for the most recent v3
+# session in this cwd, or nil.
+def kiro_v3_latest_session(chdir, sessions_dir: nil)
   key = File.expand_path(chdir)
   dir = File.join(File.expand_path(sessions_dir || KIRO_DEFAULT_SESSIONS_DIR),
                   Digest::SHA256.hexdigest(key)[0, 16])
   return nil unless File.directory?(dir)
 
-  latest = Dir.glob(File.join(dir, "*", "session.json")).filter_map do |path|
+  Dir.glob(File.join(dir, "*", "session.json")).filter_map do |path|
     meta = JSON.parse(File.read(path))
     next unless Array(meta["workspacePaths"]).include?(key)
 
@@ -233,11 +250,13 @@ def kiro_v3_session_heaviness(chdir, sessions_dir: nil)
   rescue JSON::ParserError, ArgumentError, Errno::ENOENT
     nil
   end.max_by(&:last)
-  return nil unless latest
+end
 
+# Returns [latest context usage %, summed credits] from a v3 messages.jsonl.
+def kiro_v3_session_usage(messages_path)
   pct = nil
   credits = 0.0
-  File.foreach(File.join(File.dirname(latest[0]), "messages.jsonl")) do |line|
+  File.foreach(messages_path) do |line|
     next unless line.include?("contextUsage") || line.include?("usage_summary")
 
     payload = JSON.parse(line)["payload"] || {}
@@ -249,14 +268,7 @@ def kiro_v3_session_heaviness(chdir, sessions_dir: nil)
   rescue JSON::ParserError
     next
   end
-  return nil if pct.nil? && credits.zero?
-
-  fields = {}
-  fields["context_usage_pct"] = pct.to_f.round(2) if pct
-  fields["credits_used"] = credits.round(4) if credits.positive?
-  { updated_ms: (latest[1] * 1000).to_i, fields: fields }
-rescue Errno::ENOENT
-  nil
+  [pct, credits]
 end
 
 # Single-quote a string for safe literal interpolation into SQLite SQL.
