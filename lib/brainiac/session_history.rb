@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+require "time"
 require "timeout"
 
 # Durable session history + "session heaviness" tracking.
@@ -131,7 +133,7 @@ def session_heaviness(resolved:, chdir:)
 
   case probe["type"]
   when "kiro_sqlite"
-    kiro_session_heaviness(chdir, db_path: probe["db_path"])
+    kiro_session_heaviness(chdir, db_path: probe["db_path"], sessions_dir: probe["sessions_dir"])
   end
 rescue StandardError => e
   LOG.warn "[SessionHistory] Heaviness probe failed for #{chdir}: #{e.message}"
@@ -148,7 +150,22 @@ end
 # into brainiac; KIRO_DEFAULT_DB_PATH is only the fallback.
 KIRO_DEFAULT_DB_PATH = File.join(Dir.home, ".local", "share", "kiro-cli", "data.sqlite3")
 
-def kiro_session_heaviness(chdir, db_path: nil)
+# kiro-cli 3.x can run either engine (settings `chat.agentEngine`), and they store
+# sessions in different places: the v2 engine in the sqlite above, the v3 engine as
+# files under ~/.kiro/sessions. Probe both and keep whichever saw this cwd most
+# recently, so heaviness keeps working whichever engine the user has configured.
+KIRO_DEFAULT_SESSIONS_DIR = File.join(Dir.home, ".kiro", "sessions")
+
+def kiro_session_heaviness(chdir, db_path: nil, sessions_dir: nil)
+  candidates = [
+    kiro_v2_session_heaviness(chdir, db_path: db_path),
+    kiro_v3_session_heaviness(chdir, sessions_dir: sessions_dir)
+  ].compact
+  best = candidates.max_by { |c| c[:updated_ms] }
+  best && best[:fields]
+end
+
+def kiro_v2_session_heaviness(chdir, db_path: nil)
   db = File.expand_path(db_path || KIRO_DEFAULT_DB_PATH)
   return nil unless File.exist?(db)
 
@@ -159,7 +176,7 @@ def kiro_session_heaviness(chdir, db_path: nil)
   # from hanging if kiro-cli is mid-write.
   sql = <<~SQL.gsub(/\s+/, " ").strip
     WITH latest AS (
-      SELECT value FROM conversations_v2
+      SELECT value, updated_at FROM conversations_v2
       WHERE key = #{sqlite_quote(key)} ORDER BY updated_at DESC LIMIT 1
     )
     SELECT
@@ -169,7 +186,8 @@ def kiro_session_heaviness(chdir, db_path: nil)
          ORDER BY CAST(r.key AS INTEGER) DESC LIMIT 1),
       (SELECT ROUND(SUM(CAST(u.value ->> 'value' AS REAL)), 4)
          FROM latest, json_each(json_extract(latest.value, '$.user_turn_metadata.usage_info')) u
-         WHERE (u.value ->> 'unit') = 'credit')
+         WHERE (u.value ->> 'unit') = 'credit'),
+      latest.updated_at
     FROM latest;
   SQL
 
@@ -186,7 +204,7 @@ def kiro_session_heaviness(chdir, db_path: nil)
   row = out.strip
   return nil if row.empty?
 
-  window, pct, credits = row.split("\t", 3)
+  window, pct, credits, updated_ms = row.split("\t", 4)
   window = window.to_i
   return nil if window.zero?
 
@@ -194,7 +212,51 @@ def kiro_session_heaviness(chdir, db_path: nil)
   fields = { "context_window_tokens" => window, "context_usage_pct" => pct.round(2) }
   fields["context_used_tokens"] = (window * pct / 100.0).round if pct.positive?
   fields["credits_used"] = credits.to_f.round(4) if credits && !credits.empty?
-  fields
+  { updated_ms: updated_ms.to_i, fields: fields }
+end
+
+# v3 layout: <sessions_dir>/<sha256(cwd)[0,16]>/<session_id>/{session.json,messages.jsonl}.
+# messages.jsonl carries `contextUsage` metadata events and per-turn `usage_summary`
+# credits. v3 doesn't record the model's context window, so only the percentage and
+# credits are reported.
+def kiro_v3_session_heaviness(chdir, sessions_dir: nil)
+  key = File.expand_path(chdir)
+  dir = File.join(File.expand_path(sessions_dir || KIRO_DEFAULT_SESSIONS_DIR),
+                  Digest::SHA256.hexdigest(key)[0, 16])
+  return nil unless File.directory?(dir)
+
+  latest = Dir.glob(File.join(dir, "*", "session.json")).filter_map do |path|
+    meta = JSON.parse(File.read(path))
+    next unless Array(meta["workspacePaths"]).include?(key)
+
+    [path, Time.parse(meta["lastModifiedAt"].to_s).to_f]
+  rescue JSON::ParserError, ArgumentError, Errno::ENOENT
+    nil
+  end.max_by(&:last)
+  return nil unless latest
+
+  pct = nil
+  credits = 0.0
+  File.foreach(File.join(File.dirname(latest[0]), "messages.jsonl")) do |line|
+    next unless line.include?("contextUsage") || line.include?("usage_summary")
+
+    payload = JSON.parse(line)["payload"] || {}
+    if payload["key"] == "contextUsage"
+      pct = payload.dig("value", "usagePercentage")
+    elsif payload["type"] == "usage_summary"
+      Array(payload["promptTurnSummaries"]).each { |u| credits += u["usage"].to_f if u["unit"] == "credit" }
+    end
+  rescue JSON::ParserError
+    next
+  end
+  return nil if pct.nil? && credits.zero?
+
+  fields = {}
+  fields["context_usage_pct"] = pct.to_f.round(2) if pct
+  fields["credits_used"] = credits.round(4) if credits.positive?
+  { updated_ms: (latest[1] * 1000).to_i, fields: fields }
+rescue Errno::ENOENT
+  nil
 end
 
 # Single-quote a string for safe literal interpolation into SQLite SQL.
