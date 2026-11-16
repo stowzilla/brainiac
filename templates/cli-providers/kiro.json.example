@@ -25,7 +25,7 @@
   },
   "efforts": ["low", "medium", "high", "xhigh", "max"],
   "heaviness_probe": {
-    "comment": "Optional. Lets brainiac record how 'heavy' a finished session was (context window usage + credits) in the durable session history. type selects the probe strategy; db_path points at the provider's local usage store. Omit this block to record timing/identity only.",
+    "comment": "Optional. Lets brainiac record how 'heavy' a finished session was (context window usage + credits) in the durable session history. type selects the probe strategy; db_path points at the v2 engine's sqlite store; optional sessions_dir (default ~/.kiro/sessions) points at the v3 engine's session files. Both are probed and the most recent session for the cwd wins. Omit this block to record timing/identity only.",
     "type": "kiro_sqlite",
     "db_path": "~/.local/share/kiro-cli/data.sqlite3"
   },
