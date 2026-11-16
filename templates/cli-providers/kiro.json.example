@@ -12,6 +12,8 @@
   "session_directory_field": "cwd",
   "session_updated_field": "updatedAt",
   "list_models_command": "kiro-cli chat --list-models --format json",
+  "setup_hook": "~/.brainiac/cli-providers/hooks/kiro-agent-setup.sh",
+  "setup_hook_comment": "Optional. Script that runs after brainiac agent create/setup. Receives JSON on stdin with agent_key and entry. Use to create ~/.kiro/agents/<key>.json or other CLI-specific setup.",
   "models": {
     "opus": "claude-opus-4.5",
     "sonnet": "claude-sonnet-4.6",
