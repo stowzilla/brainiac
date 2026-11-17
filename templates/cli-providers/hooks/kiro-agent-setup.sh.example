@@ -46,10 +46,12 @@ if [[ -n "$ROLE" ]] && [[ -f "${HOME}/.brainiac/roles/${ROLE}.md" ]]; then
 fi
 
 # Create the agent file
+# Use AGENT_KEY (lowercase) for name — Kiro-cli 3.x is case-sensitive
+# and brainiac passes lowercase to --agent
 if [[ -n "$ROLE_RESOURCE" ]]; then
   cat > "$AGENT_FILE" <<EOF
 {
-  "name": "${DISPLAY_NAME:-$AGENT_KEY}",
+  "name": "${AGENT_KEY}",
   "tools": ["*"],
   "resources": [
     ${ROLE_RESOURCE}
@@ -59,7 +61,7 @@ EOF
 else
   cat > "$AGENT_FILE" <<EOF
 {
-  "name": "${DISPLAY_NAME:-$AGENT_KEY}",
+  "name": "${AGENT_KEY}",
   "tools": ["*"]
 }
 EOF
