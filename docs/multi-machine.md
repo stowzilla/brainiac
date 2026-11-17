@@ -101,7 +101,7 @@ If this machine already has a public address (an ngrok static domain, a named Cl
 | Zoho | `https://<tunnel>/zoho` | `https://<hub>/hooks/zoho` |
 | Basecamp | `https://<tunnel>/basecamp` | `https://<hub>/hooks/basecamp` |
 
-For GitHub, change the Payload URL in the app or repository webhook settings and keep the content type as `application/json`. For Fizzy, edit the webhook's URL in the board settings. Changing only the URL keeps the signing secret, and the hub forwards the body and signature untouched, so the machine checks them as before.
+For GitHub, change the Payload URL in the app or repository webhook settings and keep the content type as `application/json`. For Fizzy, change the webhook's URL in the board's settings if it lets you edit it in place. The hub forwards the body and signature untouched, so as long as the signing secret is unchanged the machine checks them as before.
 
 The plugin can also replace the Fizzy webhook for you (`brainiac fizzy board webhook <board> https://<hub>/hooks/fizzy/<board>`), but that creates a **new** signing secret and saves it to this machine's `fizzy.json`. If you do that after adding other machines, copy `fizzy.json` to them again.
 
