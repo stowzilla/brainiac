@@ -335,6 +335,18 @@ class TestHubInbox < Minitest::Test
     assert_equal 1, @seen.size
   end
 
+  def test_hub_jobs_cannot_name_the_admin_api_or_dashboard
+    body = "{}"
+    ["/api/reload", "/API/reload", "/api", "/dashboard", "/hub/../api/reload", "/fizzy/../api/reload"].each do |path|
+      status, = @inbox.call(env_for(path, body, hub_headers(path, body, job: "job-#{path}")))
+      assert_equal 403, status, path
+    end
+    assert_empty @seen
+
+    # Ordinary local requests to the admin API are not the inbox's business.
+    assert_equal 200, @inbox.call(env_for("/api/status", "")).first
+  end
+
   def test_hub_headers_are_ignored_when_no_hub_is_configured
     Brainiac::Hub.node = Brainiac::Hub::Node.new({})
     body = "{}"

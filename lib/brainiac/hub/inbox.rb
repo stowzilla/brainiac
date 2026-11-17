@@ -16,6 +16,11 @@ module Brainiac
       ACCEPTED = [202, { "content-type" => "application/json" }, ['{"status":"accepted"}']].freeze
       DUPLICATE = [200, { "content-type" => "application/json" }, ['{"status":"duplicate"}']].freeze
       REFUSED = [401, { "content-type" => "application/json" }, ['{"error":"invalid hub signature"}']].freeze
+      FORBIDDEN = [403, { "content-type" => "application/json" }, ['{"error":"not a hub route"}']].freeze
+      # The admin API and dashboard are never hub deliveries. Queued work is
+      # replayed from localhost, where their token check is skipped, so a hub
+      # job must not be able to name them.
+      OFF_LIMITS = %r{\A/(api|dashboard)(/|\z)}i
 
       def initialize(app, hub: Brainiac::Hub, async: true)
         @app = app
@@ -28,6 +33,8 @@ module Brainiac
         hub_only = env["PATH_INFO"].to_s.start_with?("/hub/")
         return @app.call(env) unless hub_only || (job_id && @hub.enabled?)
 
+        return FORBIDDEN if off_limits?(env["PATH_INFO"].to_s)
+
         body = env["rack.input"]&.read.to_s
         return REFUSED unless job_id && signed?(env, job_id, body)
         return DUPLICATE unless @hub.first_delivery?(job_id)
@@ -37,6 +44,10 @@ module Brainiac
       end
 
       private
+
+      def off_limits?(path)
+        path.match?(OFF_LIMITS) || path.split("/").include?("..")
+      end
 
       def signed?(env, job_id, body)
         @hub.valid_signature?(

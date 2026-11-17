@@ -101,7 +101,9 @@ If this machine already has a public address (an ngrok static domain, a named Cl
 | Zoho | `https://<tunnel>/zoho` | `https://<hub>/hooks/zoho` |
 | Basecamp | `https://<tunnel>/basecamp` | `https://<hub>/hooks/basecamp` |
 
-For Fizzy, the plugin can do it: `brainiac fizzy board webhook <board> https://<hub>/hooks/fizzy/<board>`. For GitHub, change the Payload URL in the app or repository webhook settings and keep the content type as `application/json`. Leave the secrets alone: the hub forwards the body and signature untouched, and the machine checks them as before.
+For GitHub, change the Payload URL in the app or repository webhook settings and keep the content type as `application/json`. For Fizzy, edit the webhook's URL in the board settings. Changing only the URL keeps the signing secret, and the hub forwards the body and signature untouched, so the machine checks them as before.
+
+The plugin can also replace the Fizzy webhook for you (`brainiac fizzy board webhook <board> https://<hub>/hooks/fizzy/<board>`), but that creates a **new** signing secret and saves it to this machine's `fizzy.json`. If you do that after adding other machines, copy `fizzy.json` to them again.
 
 **4. Test it.** Comment on a card. `brainiac logs` on the machine shows a line like `[Hub] Job <id> /fizzy/<board> -> 200`.
 
@@ -179,7 +181,7 @@ brainiac machines
 For **new work** the hub picks, in this order:
 
 1. **The machine you asked for**, if it is online:
-   - Fizzy: a card tag `machine:<name>` (also `machine-<name>`).
+   - Fizzy: a card tag `machine:<name>` (also `machine-<name>`). Add the tag before the card is first assigned or commented on. After that the card has an owner and the tag is not looked at again.
    - Any webhook: `?machine=<name>` on the webhook URL. A board whose webhook is `https://<hub>/hooks/fizzy/<board>?machine=gpu` sends all its new cards to `gpu`.
 2. **The online machine with the lowest `priority` number.** If the machine you asked for is offline, this is the fallback: priorities are your fallback order.
 3. If no machine is online, the event waits in the hub for the first machine that checks in.
@@ -322,6 +324,8 @@ Restart the server after changing any of these.
 
 - **Discord work runs on the leader.** You cannot yet send a Discord conversation to a chosen machine. Use `--no-leader` to control which machine leads.
 - **In-flight work does not move by itself.** See [When a machine is offline](#when-a-machine-is-offline).
+- **A Discord thread does not follow a leader change.** A session already running on the old leader finishes and posts its reply. The next message in that thread goes to the new leader, which has no worktree or CLI session for it and starts from the brain's memory of the thread.
+- **The sender sees the hub's answer, not the plugin's.** The hub always answers `202`. A sender that reads the response body (a webhook "test" button, a setup handshake) gets the hub's. Zoho's first-time handshake has not been tried through the hub: do that setup against a machine directly.
 - **A queued event can go stale.** Senders that sign a timestamp (the Posh Nosh plugin allows five minutes) reject an event that waited longer than that.
 - **OAuth setup pages** (`/zoho/auth`, `/zoho/callback`) are not served through the hub. Run those against a machine directly.
 - **The monitor and dashboard show one machine.** Each shows the sessions on its own machine.
