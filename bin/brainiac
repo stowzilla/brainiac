@@ -3844,6 +3844,12 @@ when "uninstall"
   puts "  To fully remove: gem uninstall #{gem_name}"
   puts "  Restart the server to apply: brainiac restart"
 
+when "hub", "machines"
+  # Multi-machine: this machine as a node of a brainiac-hub (docs/multi-machine.md)
+  require_relative "../lib/brainiac/hub/cli"
+  ARGV.unshift("status") if subcommand == "machines"
+  exit Brainiac::Hub::CLI.new(config_path: File.join(BRAINIAC_DIR, "brainiac.json")).run(ARGV)
+
 when "plugins"
   plugins_cmd = ARGV.shift
 
@@ -4791,6 +4797,8 @@ when "help", "--help", "-h", nil
         brainiac plugins                List installed plugins
         brainiac brain <command>        Manage agent long-term memory (brain)
         brainiac cron <command>         Manage scheduled agent tasks
+        brainiac hub <command>          Multi-machine: connect to a hub, see machines, move work
+        brainiac machines               Short for 'brainiac hub status'
         brainiac provider <command>     Manage CLI providers
         brainiac role <command>         Manage agent roles
         brainiac agent <command>        Manage agent registry (env, list, show)

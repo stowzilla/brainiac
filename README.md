@@ -238,7 +238,7 @@ Writing a plugin that should take part in this? See "Agent Onboarding (`on_agent
 |------------|----------|---------|
 | Ruby 3.4+ | Yes | [mise](https://mise.jdx.dev), rbenv, or system |
 | An AI agent CLI | Yes | [Kiro CLI](https://kiro.dev), [Grok CLI](https://x.ai), or any CLI that accepts prompts on stdin |
-| [ngrok](https://ngrok.com) | Yes | Webhook tunneling |
+| [ngrok](https://ngrok.com) or [cloudflared](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) | Yes | Webhook tunneling (cloudflared for [multi-machine](docs/multi-machine.md)) |
 | [qmd](https://github.com/tobi/qmd) | For brain | `npm install -g @tobilu/qmd` (Node.js >= 22) |
 | [Fizzy CLI](https://github.com/robzolkos/fizzy-cli) | For `brainiac-fizzy` | Card management |
 | [GitHub CLI](https://cli.github.com) (`gh`) | For `brainiac-github` | PR/issue operations |
@@ -451,6 +451,15 @@ Andy's Linux box                    Adam's macOS
 ```
 
 Both machines receive the same webhooks. The agent registry (`~/.brainiac/agents.json`) controls which agents are local — only agents marked `"local": true` will be dispatched on that machine.
+
+### One fleet, several machines
+
+The setup above gives each machine its own agents. To run the *same* agents on several machines (a desktop, a mini-PC, a GPU box) without two of them answering the same event, put a hub in front: webhooks go to the hub, and the hub pushes each one to a single machine. See [docs/multi-machine.md](docs/multi-machine.md).
+
+```bash
+brainiac hub setup --url <hub url> --token <node token> --machine mini --tunnel cloudflared
+brainiac machines     # who is online, who holds Discord and cron
+```
 
 ### Step 1: Agent Registry
 
