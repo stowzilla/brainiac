@@ -3,6 +3,8 @@
 # Shared helpers: project identification, card map, run_cmd, run_agent, signatures, model detection.
 
 require "English"
+require "shellwords"
+require "openssl"
 CLI_PROVIDERS_DIR = File.join(BRAINIAC_DIR, "cli-providers")
 
 # Load a CLI provider config from ~/.brainiac/cli-providers/<name>.json.
@@ -1584,7 +1586,74 @@ def resolve_effort_level(level, allowed)
 end
 
 def notify_unauthorized(action, creator_name, card_info)
-  msg = "Unauthorized: #{creator_name} triggered #{action} on #{card_info}"
-  LOG.warn msg
-  system("#{NOTIFICATION_COMMAND} '#{msg}'") if NOTIFICATION_COMMAND
+  security_alert("unauthorized:#{action}", "Unauthorized: #{creator_name} triggered #{action} on #{card_info}")
+end
+
+# --- Access control and security alerts ---
+
+# Headers a tunnel or reverse proxy adds. A request carrying any of them did
+# not start on this machine, whatever its Host header or source address says:
+# ngrok and cloudflared both connect from loopback.
+FORWARDED_REQUEST_HEADERS = %w[
+  HTTP_X_FORWARDED_FOR HTTP_X_FORWARDED_HOST HTTP_X_FORWARDED_PROTO HTTP_FORWARDED
+  HTTP_X_REAL_IP HTTP_CF_CONNECTING_IP HTTP_CF_RAY HTTP_TRUE_CLIENT_IP
+].freeze
+LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"].freeze
+LOOPBACK_ADDRESS = /\A(127\.\d+\.\d+\.\d+|::1|::ffff:127\.\d+\.\d+\.\d+)\z/
+SECURITY_ALERT_INTERVAL = 600
+SECURITY_ALERTS = { mutex: Mutex.new, sent: {} }.freeze
+
+# True only for a request made on this machine, straight to the server (CLI,
+# waybar, daemon). Anything that came through a tunnel or proxy is remote.
+def local_request?(env)
+  return false if FORWARDED_REQUEST_HEADERS.any? { |header| !env[header].to_s.empty? }
+  return false unless env["REMOTE_ADDR"].to_s.match?(LOOPBACK_ADDRESS)
+
+  LOCAL_HOSTS.include?(env["HTTP_HOST"].to_s.downcase.sub(/:\d+\z/, ""))
+end
+
+# Where a request claims to come from, for logs and alerts.
+def request_origin(env)
+  %w[HTTP_CF_CONNECTING_IP HTTP_X_FORWARDED_FOR HTTP_X_REAL_IP REMOTE_ADDR].each do |header|
+    value = env[header].to_s.split(",").first.to_s.strip
+    return value[0, 64] unless value.empty?
+  end
+  "unknown"
+end
+
+# Decide an admin API / dashboard request. Returns :ok, :no_token (remote
+# request and no dashboard_token configured, so nothing remote is allowed) or
+# :bad_token.
+def admin_access(env, provided, token: DASHBOARD_TOKEN)
+  return :ok if local_request?(env)
+  return :no_token if token.to_s.empty?
+
+  provided = provided.to_s
+  token = token.to_s
+  matches = provided.bytesize == token.bytesize && OpenSSL.fixed_length_secure_compare(provided, token)
+  matches ? :ok : :bad_token
+end
+
+# Tell the operator someone tried something they are not allowed to do: a log
+# line every time, plus the desktop notification command and a "security"
+# notification at most once per SECURITY_ALERT_INTERVAL per kind, because public
+# tunnel URLs get scanned and a scan must not become a notification storm.
+def security_alert(kind, message, now: Time.now.to_i)
+  LOG.warn "[Security] #{message}"
+  due = SECURITY_ALERTS[:mutex].synchronize do
+    last = SECURITY_ALERTS[:sent][kind.to_s]
+    next false if last && now - last < SECURITY_ALERT_INTERVAL
+
+    SECURITY_ALERTS[:sent][kind.to_s] = now
+    true
+  end
+  return false unless due
+
+  # Argument list, never a shell string: the message carries text from outside.
+  system(*Shellwords.split(NOTIFICATION_COMMAND), message.to_s) if NOTIFICATION_COMMAND
+  send_notification(:security, "🚨 #{message}") if respond_to?(:send_notification, true)
+  true
+rescue StandardError => e
+  LOG.error "[Security] Alert failed: #{e.message}"
+  false
 end
