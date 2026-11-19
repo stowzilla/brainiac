@@ -33,10 +33,10 @@ module Brainiac
         hub_only = env["PATH_INFO"].to_s.start_with?("/hub/")
         return @app.call(env) unless hub_only || (job_id && @hub.enabled?)
 
-        return FORBIDDEN if off_limits?(env["PATH_INFO"].to_s)
+        return refuse(env, FORBIDDEN, "names an admin route") if off_limits?(env["PATH_INFO"].to_s)
 
         body = env["rack.input"]&.read.to_s
-        return REFUSED unless job_id && signed?(env, job_id, body)
+        return refuse(env, REFUSED, "bad or missing hub signature") unless job_id && signed?(env, job_id, body)
         return DUPLICATE unless @hub.first_delivery?(job_id)
 
         deliver(env.merge("rack.input" => StringIO.new(body), "brainiac.hub.job" => job_id))
@@ -44,6 +44,19 @@ module Brainiac
       end
 
       private
+
+      # Someone reached this machine's public URL claiming to be the hub. Say so:
+      # it means the tunnel URL is known to a stranger, or the node token is wrong.
+      def refuse(env, response, reason)
+        origin = env["HTTP_CF_CONNECTING_IP"] || env["HTTP_X_FORWARDED_FOR"] || env["REMOTE_ADDR"]
+        message = "Refused hub delivery to #{env["PATH_INFO"]} from #{origin.to_s[0, 64]} (#{reason})"
+        if respond_to?(:security_alert, true)
+          security_alert("hub", message)
+        else
+          LOG.warn "[Security] #{message}"
+        end
+        response
+      end
 
       def off_limits?(path)
         path.match?(OFF_LIMITS) || path.split("/").include?("..")
