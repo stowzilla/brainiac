@@ -150,7 +150,7 @@ helpers do
     return if verdict == :ok
 
     reason = verdict == :no_token ? "no dashboard_token is configured" : "wrong or missing token"
-    security_alert("admin", "Refused #{request.request_method} #{request.path_info} from #{request_origin(request.env)} (#{reason})")
+    security_alert("admin", "Refused #{request.request_method} #{request.path_info[0, 80]} from #{request_origin(request.env)} (#{reason})")
     halt(verdict == :no_token ? 403 : 401, "Unauthorized")
   end
 end
