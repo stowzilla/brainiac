@@ -8,6 +8,7 @@ require "open3"
 require "net/http"
 require "uri"
 require "time"
+require "securerandom"
 
 # Brainiac CLI - Register and manage projects with Brainiac server
 
@@ -690,6 +691,36 @@ def update_handler_config(name, enabled)
   action = enabled ? "enabled" : "disabled"
   puts "✓ Handler '#{name}' #{action}"
   puts "  Restart the server for changes to take effect: brainiac restart"
+end
+
+# Generate the dashboard/admin API token and store it in brainiac.json.
+# An existing token is kept unless rotate is set, so re-running the command
+# never locks out whoever already holds it.
+def configure_dashboard_token(rotate: false)
+  brainiac_config_path = File.join(BRAINIAC_DIR, "brainiac.json")
+  config = File.exist?(brainiac_config_path) ? JSON.parse(File.read(brainiac_config_path)) : {}
+  abort "Error: #{brainiac_config_path} must contain a JSON object." unless config.is_a?(Hash)
+
+  existing = config["dashboard_token"].to_s
+  if !existing.empty? && !rotate
+    File.chmod(0o600, brainiac_config_path)
+    puts "A dashboard token is already set in #{brainiac_config_path}."
+    puts "  Replace it with: brainiac token --rotate"
+    return
+  end
+
+  token = SecureRandom.hex(32)
+  config["dashboard_token"] = token
+  ensure_brainiac_dir
+  File.write(brainiac_config_path, JSON.pretty_generate(config))
+  File.chmod(0o600, brainiac_config_path)
+
+  puts "✓ Dashboard token #{existing.empty? ? "generated" : "rotated"} and saved to #{brainiac_config_path}"
+  puts "  Token: #{token}"
+  puts "  Remote requests to /dashboard and /api/ must send it as ?token= or Authorization: Bearer."
+  puts "  Restart the server for changes to take effect: brainiac restart"
+rescue JSON::ParserError => e
+  abort "Error: #{brainiac_config_path} is not valid JSON, nothing written (#{e.message})"
 end
 
 # After installing a plugin, load it and run its setup if it provides one.
@@ -1864,6 +1895,14 @@ when "config"
   end.parse!(into: options)
 
   configure_server(options)
+
+when "token"
+  OptionParser.new do |opts|
+    opts.banner = "Usage: brainiac token [options]"
+    opts.on("--rotate", "Replace the existing token")
+  end.parse!(into: options)
+
+  configure_dashboard_token(rotate: options[:rotate])
 
 when "server", "s", "start"
   OptionParser.new do |opts|
@@ -4796,6 +4835,7 @@ when "help", "--help", "-h", nil
         brainiac agent <command>        Manage agent registry (env, list, show)
         brainiac screenshot <app> <path> Take screenshot with 1Password credentials
         brainiac config                 Configure Brainiac CLI
+        brainiac token [--rotate]       Generate the dashboard/admin API token and save it to brainiac.json
         brainiac path                   Show Brainiac config directory
         brainiac version                Show version
         brainiac help                   Show this help message
