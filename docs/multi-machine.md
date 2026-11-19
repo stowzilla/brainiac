@@ -211,7 +211,9 @@ Discord has no webhook for the hub to receive, so the leader does the routing. F
 
 When the work belongs to another machine, the leader passes the message through the hub. That machine runs the agent in its own worktree and posts the reply as the same bot. Each reply ends with a small `ran on <machine>` line (`"machine_footer": false` in `discord.json` turns it off).
 
-A tag inside an existing thread **moves the thread**. The new machine makes a worktree from the thread's branch on the remote, so push first. `[machine:<name of the leader>]` brings a thread back.
+A tag inside an existing thread **moves the thread**. A machine new to the thread makes a worktree from the thread's branch on the remote, so push first. A machine that had the thread before reuses its old worktree as it was, so pull there if another machine pushed since. `[machine:<name of the leader>]` brings a thread back to the leader.
+
+A thread keeps its machine after Discord archives it and its worktree is cleaned up: the next message goes back there and gets a fresh worktree. `brainiac hub release discord:<agent>:<thread id>` forgets the owner.
 
 The leader answers in the channel when it cannot do what you asked:
 
@@ -221,11 +223,11 @@ The leader answers in the channel when it cannot do what you asked:
 | Machine offline, new conversation | The next machine by `priority` runs it, and the leader says which |
 | Machine offline, existing thread | The thread stays where it is, and the leader says so |
 | The thread's own machine is offline | The message waits in the hub for it. Send it again with `[machine:<name>]` to move the thread |
-| The hub cannot be reached | Nothing runs. Send it again |
+| The hub cannot be reached while handing work over | Nothing runs. Send it again |
 
 Messages sent while the agent is working, and the ❌ ❔ ❓ 🧠 reactions, reach the machine doing the work.
 
-Every machine you send Discord work to needs the same agents in `agents.json` (with their `DISCORD_BOT_TOKEN`), the project registered, and the agent CLI logged in. A machine that lacks the agent's token ignores the work, and nothing is posted.
+Every machine you send Discord work to needs the same agents in `agents.json` (with their `DISCORD_BOT_TOKEN`), the same `discord.json` (it maps channels to projects), the project registered, and the agent CLI logged in. A machine that lacks the agent's token ignores the work, and nothing is posted.
 
 ## Discord and cron: the leader
 
@@ -353,6 +355,7 @@ Restart the server after changing any of these.
 ## Limits
 
 - **Untagged Discord work starts on the leader.** A new conversation runs on the leader unless the message says `[machine:<name>]`. Direct messages have no thread to own, so each one needs the tag. Fizzy tags and `priority` do not apply to Discord.
+- **Thread owner lookup needs the hub.** If the hub does not answer when the leader asks who owns a thread, the leader runs an untagged message itself.
 - **Discord reactions on older messages.** The leader keeps the list of messages it handed to other machines in memory. After the leader restarts or changes, ❌ ❔ ❓ 🧠 on those earlier messages are not forwarded.
 - **In-flight work does not move by itself.** See [When a machine is offline](#when-a-machine-is-offline).
 - **A Discord thread without a worktree does not follow a leader change.** Threads with a worktree are owned and keep going to their machine. A thread in a channel with no project has nothing on disk, so its next message runs on whichever machine leads, from the brain's memory of the thread.
