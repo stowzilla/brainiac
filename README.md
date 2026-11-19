@@ -770,7 +770,11 @@ Channel mappings and authorization are stored in `~/.brainiac/discord.json`:
 
 `owner_discord_id` identifies the server owner for admin-level notifications.
 
-`dashboard_token` protects the web dashboard at `/dashboard`. If set, requests must include this token to access the dashboard.
+`dashboard_token` protects the web dashboard at `/dashboard` and the admin API under `/api/`. Requests made on the machine itself (the CLI, waybar) never need it. Any other request, including one that arrives through an ngrok or Cloudflare tunnel, must send it as `?token=` or `Authorization: Bearer`. With no `dashboard_token` set, remote requests to those paths are refused.
+
+Run `brainiac token` to generate one and save it to `brainiac.json` (`brainiac token --rotate` replaces it), then `brainiac restart`.
+
+Refused attempts are logged as `[Security]`. To also be told about them, set the `NOTIFICATION_COMMAND` env var (for example `notify-send`) or add a `"security"` entry under `notifications`. Alerts are limited to one per ten minutes per kind.
 
 `user_mappings` maps display names to Discord user IDs. This serves two purposes: agents use it to format proper `<@ID>` mentions (plain text `@Name` doesn't work in Discord), and the bot recognition system uses it to identify remote agent bots running on other machines. Add humans, remote agents, and anyone else the agents might need to mention. Get IDs by enabling Developer Mode in Discord and right-clicking a user.
 
@@ -975,7 +979,7 @@ If the target channel is a forum channel, a new forum post is created with a cus
 
 ## Web Dashboard
 
-Brainiac includes a web dashboard at `http://localhost:4567/dashboard` that shows active agent sessions, project status, and system health. Protected by a `dashboard_token` configured in `~/.brainiac/discord.json`.
+Brainiac includes a web dashboard at `http://localhost:4567/dashboard` that shows active agent sessions, project status, and system health. From any other machine it needs the `dashboard_token` from `~/.brainiac/brainiac.json`; without one, remote access is refused.
 
 ## Monitoring
 

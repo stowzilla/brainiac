@@ -137,29 +137,30 @@ helpers GitHelpers
 # Register BeltHelpers for Belt app detection
 helpers BeltHelpers
 
-# Dashboard authentication helpers
+# Admin API and dashboard authentication.
+#
+# Requests made on this machine (CLI, waybar, daemon) need no token. Everything
+# else needs dashboard_token from brainiac.json, and is refused outright when no
+# token is configured: the server usually sits behind a public tunnel for
+# webhooks, and that tunnel reaches these routes too.
 helpers do
-  def authenticate_dashboard!
-    return unless DASHBOARD_TOKEN # No token configured = no auth (local-only mode)
-
+  def authenticate_admin!
     provided = params["token"] || request.env["HTTP_AUTHORIZATION"]&.sub(/^Bearer /i, "")
-    halt 401, "Unauthorized" unless provided == DASHBOARD_TOKEN
-  end
+    verdict = admin_access(request.env, provided)
+    return if verdict == :ok
 
-  def localhost_request?
-    host = request.env["HTTP_HOST"].to_s
-    host.include?("localhost") || host.include?("127.0.0.1")
+    reason = verdict == :no_token ? "no dashboard_token is configured" : "wrong or missing token"
+    security_alert("admin", "Refused #{request.request_method} #{request.path_info[0, 80]} from #{request_origin(request.env)} (#{reason})")
+    halt(verdict == :no_token ? 403 : 401, "Unauthorized")
   end
 end
 
 before "/dashboard" do
-  authenticate_dashboard!
+  authenticate_admin!
 end
 
 before "/api/*" do
-  # Skip auth for all localhost requests (CLI, waybar, daemon, etc.)
-  pass if localhost_request?
-  authenticate_dashboard!
+  authenticate_admin!
 end
 
 # --- Admin API routes ---
