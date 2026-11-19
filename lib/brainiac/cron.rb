@@ -617,6 +617,10 @@ def cron_loop
 
     now = Time.now
 
+    # Multi-machine: a job copied to several machines must fire once, so only
+    # the hub leader runs cron. Without a hub this is always true.
+    next if defined?(Brainiac::Hub) && !Brainiac::Hub.leader?
+
     CRON_JOBS_MUTEX.synchronize do
       CRON_JOBS.each_value do |job|
         next unless job[:enabled]

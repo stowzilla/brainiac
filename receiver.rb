@@ -14,6 +14,7 @@ SERVER_ROOT = File.expand_path(__dir__)
 # Load all modules
 require_relative "lib/brainiac/hooks"
 require_relative "lib/brainiac/config"
+require_relative "lib/brainiac/hub"
 require_relative "lib/brainiac/users"
 require_relative "lib/brainiac/agents"
 require_relative "lib/brainiac/brain"
@@ -100,7 +101,19 @@ end
 
 configure do
   use SelectiveLogger, LOG
+  # Multi-machine: acknowledge deliveries pushed by the hub, then run them.
+  # Passes everything else straight through (see lib/brainiac/hub.rb).
+  use Brainiac::Hub::Inbox
 end
+
+# Tell the hub when this machine shuts down, so it stops pushing here and the
+# leader role moves on. quit! runs inside a signal handler, hence the thread.
+Sinatra::Application.singleton_class.prepend(Module.new do
+  def quit!
+    Thread.new { Brainiac::Hub.stop! }.join(5)
+    super
+  end
+end)
 
 LOG.info "[Brainiac] Starting v#{BRAINIAC_VERSION} on port #{settings.port} (#{settings.environment})"
 LOG.info "[Brainiac] Server root: #{SERVER_ROOT} (pid #{Process.pid})"
@@ -195,12 +208,18 @@ start_cron_thread
 CURATOR_THREAD = Thread.new do
   loop do
     sleep(86_400) # Run once per day
+    next unless Brainiac::Hub.leader? # the brain is shared; one machine curates it
+
     LOG.info "[Curator] Running scheduled skill curation..."
     curate_skills
   rescue StandardError => e
     LOG.warn "[Curator] Error: #{e.message}"
   end
 end
+
+# Multi-machine: register this machine with the hub (no-op without a "hub" block
+# in brainiac.json). Runs after plugins load so their leader hooks are in place.
+Brainiac::Hub.start!(port: settings.port)
 
 LOG.info "[Monitor] Starting daemon..."
 daemon_path = File.join(__dir__, "monitor", "daemon.rb")

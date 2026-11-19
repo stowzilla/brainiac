@@ -20,6 +20,8 @@
 #   :post_comment       — After an agent posts a comment/response
 #   :resolve_base_branch — Resolve custom base branch for worktree creation
 #   :resolve_pr_target   — Resolve custom PR target branch (instead of default branch)
+#   :hub_leader_acquired — Multi-machine: this machine now holds the leader role (start single-holder work)
+#   :hub_leader_lost     — Multi-machine: this machine gave up the leader role (stop single-holder work)
 #
 # Usage (in plugin .register):
 #   Brainiac.on(:agent_completed) do |ctx|

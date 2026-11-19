@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Multi-machine support through a `brainiac-hub`. With a `hub` block in `brainiac.json`, the server checks in with the hub, runs a tunnel (or reports a fixed public URL), acknowledges hub deliveries before running them, and only the leader machine runs cron and the Discord gateways. New `brainiac hub` and `brainiac machines` commands, new `:hub_leader_acquired` / `:hub_leader_lost` hooks. Off unless configured. See `docs/multi-machine.md`.
+
 ## 0.9.2 — 2026-11-02
 
 - Add filesystem-search guardrail to PROMPT_CORE — forbids `find /`, `find ~`, `grep -r /`, and `locate`, which hang indefinitely on macOS (autofs, iCloud, sealed sim volumes). Teaches agents to use `gem which` / `Gem.loaded_specs` and scope `find` to known gem/repo roots with a depth limit.
