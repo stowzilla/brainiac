@@ -19,6 +19,14 @@ class TestInlineTags < Minitest::Test
     assert_nil result[:project]
   end
 
+  def test_parse_machine_tag
+    result = parse_inline_tags("[Machine:Mini-PC] [opus] fix the thing")
+    assert_equal "mini-pc", result[:machine]
+    assert_equal "opus", result[:model_tag]
+    assert_equal "fix the thing", result[:clean_text]
+    assert_nil parse_inline_tags("no tag here")[:machine]
+  end
+
   def test_parse_model_tag_opus
     result = parse_inline_tags("[opus] do the thing")
     assert_equal "opus", result[:model_tag]

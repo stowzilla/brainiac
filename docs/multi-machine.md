@@ -8,6 +8,7 @@ Run the same agents on several machines without two of them answering the same e
 - [Part 2: Connect the machine you already run](#part-2-connect-the-machine-you-already-run)
 - [Part 3: Add another machine](#part-3-add-another-machine)
 - [Choosing which machine does the work](#choosing-which-machine-does-the-work)
+- [Discord: choosing the machine](#discord-choosing-the-machine)
 - [Discord and cron: the leader](#discord-and-cron-the-leader)
 - [Tunnels: how the hub reaches a machine](#tunnels-how-the-hub-reaches-a-machine)
 - [When a machine is offline](#when-a-machine-is-offline)
@@ -197,11 +198,40 @@ The new machine starts from the pushed branch and the brain's memory. The CLI's 
 
 **GitHub events** carry a branch, not a card. The hub maps them two ways: a branch named `fizzy-<number>-...` follows that card, and each machine reports the branches it has worktrees for when it checks in.
 
+## Discord: choosing the machine
+
+Discord has no webhook for the hub to receive, so the leader does the routing. For each message an agent should answer, the leader picks:
+
+1. **The machine named in the message**: `[machine:<name>]`, written like the other inline tags.
+   ```
+   @Galen [machine:mini] fix the flaky login test
+   ```
+2. **The thread's machine.** Once a machine has made a worktree for a thread it owns that thread (`discord:<agent>:<thread id>` in `brainiac hub assignments discord:`). Follow-ups go back to it without a tag, whichever machine is the leader.
+3. **The leader itself**, for everything else.
+
+When the work belongs to another machine, the leader passes the message through the hub. That machine runs the agent in its own worktree and posts the reply as the same bot. Each reply ends with a small `ran on <machine>` line (`"machine_footer": false` in `discord.json` turns it off).
+
+A tag inside an existing thread **moves the thread**. The new machine makes a worktree from the thread's branch on the remote, so push first. `[machine:<name of the leader>]` brings a thread back.
+
+The leader answers in the channel when it cannot do what you asked:
+
+| Situation | What happens |
+|-----------|--------------|
+| No machine has that name | Nothing runs. The leader lists the machines it knows |
+| Machine offline, new conversation | The next machine by `priority` runs it, and the leader says which |
+| Machine offline, existing thread | The thread stays where it is, and the leader says so |
+| The thread's own machine is offline | The message waits in the hub for it. Send it again with `[machine:<name>]` to move the thread |
+| The hub cannot be reached | Nothing runs. Send it again |
+
+Messages sent while the agent is working, and the ❌ ❔ ❓ 🧠 reactions, reach the machine doing the work.
+
+Every machine you send Discord work to needs the same agents in `agents.json` (with their `DISCORD_BOT_TOKEN`), the project registered, and the agent CLI logged in. A machine that lacks the agent's token ignores the work, and nothing is posted.
+
 ## Discord and cron: the leader
 
 One machine at a time is the leader. The leader:
 
-- holds the Discord connection for every bot, so **Discord conversations run on the leader**
+- holds the Discord connection for every bot. It hears every Discord message and either runs it or hands it to another machine (see [Discord: choosing the machine](#discord-choosing-the-machine))
 - runs `cron.json`
 - runs the daily skill curation
 
@@ -287,7 +317,7 @@ brainiac hub release <key>           # forget the owner
 brainiac hub disable                 # back to a standalone machine
 ```
 
-Keys look like `fizzy:1834`, `branch:yourorg/my-app:fizzy-1834-fix-login` and `pr:yourorg/my-app:212`.
+Keys look like `fizzy:1834`, `branch:yourorg/my-app:fizzy-1834-fix-login`, `pr:yourorg/my-app:212` and `discord:galen:1572301950530363575` (agent, then thread id).
 
 ## Settings reference
 
@@ -322,9 +352,10 @@ Restart the server after changing any of these.
 
 ## Limits
 
-- **Discord work runs on the leader.** You cannot yet send a Discord conversation to a chosen machine. Use `--no-leader` to control which machine leads.
+- **Untagged Discord work starts on the leader.** A new conversation runs on the leader unless the message says `[machine:<name>]`. Direct messages have no thread to own, so each one needs the tag. Fizzy tags and `priority` do not apply to Discord.
+- **Discord reactions on older messages.** The leader keeps the list of messages it handed to other machines in memory. After the leader restarts or changes, ❌ ❔ ❓ 🧠 on those earlier messages are not forwarded.
 - **In-flight work does not move by itself.** See [When a machine is offline](#when-a-machine-is-offline).
-- **A Discord thread does not follow a leader change.** A session already running on the old leader finishes and posts its reply. The next message in that thread goes to the new leader, which has no worktree or CLI session for it and starts from the brain's memory of the thread.
+- **A Discord thread without a worktree does not follow a leader change.** Threads with a worktree are owned and keep going to their machine. A thread in a channel with no project has nothing on disk, so its next message runs on whichever machine leads, from the brain's memory of the thread.
 - **The sender sees the hub's answer, not the plugin's.** The hub always answers `202`. A sender that reads the response body (a webhook "test" button, a setup handshake) gets the hub's. Zoho's first-time handshake has not been tried through the hub: do that setup against a machine directly.
 - **A queued event can go stale.** Senders that sign a timestamp (the Posh Nosh plugin allows five minutes) reject an event that waited longer than that.
 - **OAuth setup pages** (`/zoho/auth`, `/zoho/callback`) are not served through the hub. Run those against a machine directly.

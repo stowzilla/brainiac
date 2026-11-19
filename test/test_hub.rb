@@ -229,6 +229,18 @@ class TestHub < Minitest::Test
     assert_equal [:get, "/assignments?prefix=fizzy%3A"], @client.calls.last
   end
 
+  def test_owner_reads_one_key_and_release_forgets_it
+    configure
+
+    assert_equal "mini", Brainiac::Hub.owner("fizzy:1")
+    assert_equal [:get, "/assignments?key=fizzy%3A1"], @client.calls.last
+    # A hub without the single-key read answers with the whole table: only an exact match counts.
+    assert_nil Brainiac::Hub.owner("discord:galen:9")
+
+    Brainiac::Hub.release("discord:galen:9")
+    assert_equal [:delete, "/assignments?key=discord%3Agalen%3A9"], @client.calls.last
+  end
+
   # --- tunnel ---
 
   def test_tunnel_reads_the_quick_tunnel_url_and_reports_changes

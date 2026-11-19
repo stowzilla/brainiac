@@ -59,6 +59,17 @@ module Brainiac
         (client.get(path) || {})["assignments"] || []
       end
 
+      # The machine that owns one work key, or nil (also nil if the hub did not answer).
+      def owner(key)
+        rows = (client.get("/assignments?key=#{URI.encode_www_form_component(key)}") || {})["assignments"] || []
+        rows.find { |row| row["key"] == key }&.fetch("machine", nil)
+      end
+
+      # Forget a key's owner (the work is finished or its worktree is gone).
+      def release(key)
+        client.delete("/assignments?key=#{URI.encode_www_form_component(key)}")
+      end
+
       # Give work keys to a machine. overwrite: false only fills in unowned keys.
       def assign(keys, machine, overwrite: true)
         client.put("/assignments", { machine: machine, keys: Array(keys), overwrite: overwrite })
